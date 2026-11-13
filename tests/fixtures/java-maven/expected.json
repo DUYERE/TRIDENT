@@ -1,0 +1,221 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "java-maven-synthetic-v1",
+  "purpose": "R0 synthetic materials and future R1-R3 acceptance oracle; not current analyzer output",
+  "path_base": "directory containing expected.json",
+  "synthetic_data_only": true,
+  "execution": {
+    "maven": "not_run",
+    "java_compilation": "not_run",
+    "java_samples": "not_run",
+    "java_tests": "not_run",
+    "rce": "not_tested",
+    "product_analysis": "not_run",
+    "allowed_current_validation": "read-only JSON/XML/path/anchor/test-inventory checks using Python standard library"
+  },
+  "project": {
+    "build_system": "Maven",
+    "parent_pom": "pom.xml",
+    "modules": ["jdbc-app", "advisory-control"],
+    "source_roots": [
+      "jdbc-app/src/main/java",
+      "advisory-control/src/main/java"
+    ],
+    "test_roots": [
+      "jdbc-app/src/test/java",
+      "advisory-control/src/test/java"
+    ],
+    "resolution_kind": "bounded_static_declarations",
+    "effective_tree_status": "unknown",
+    "transitive_dependencies_status": "unknown",
+    "artifact_hashes": null,
+    "limitations": [
+      "Only explicit local parent/module/property/dependencyManagement cases are asserted.",
+      "No Maven profiles, BOMs, environment/settings interpolation, ranges, conflict mediation or repository resolution were executed.",
+      "Pinned auxiliary versions are recipe inputs, not security approvals or a trusted dependency lock.",
+      "No web server, DataSource wiring or dynamic handler configuration is provided."
+    ]
+  },
+  "advisory_fixture": "advisories/CVE-2022-42889.json",
+  "dependency_assertions": [
+    {
+      "id": "commons-text-candidate",
+      "module": "jdbc-app",
+      "dependency": "org.apache.commons:commons-text",
+      "scope": "compile",
+      "direct": true,
+      "declaration_pom": "jdbc-app/pom.xml",
+      "management_pom": "pom.xml",
+      "property_pom": "pom.xml",
+      "property": "commons-text.version",
+      "expected_version": "1.9",
+      "advisory_id": "CVE-2022-42889",
+      "version_matched": true,
+      "supply_chain_status": "version_matched",
+      "finding_status": "candidate",
+      "relevant_vulnerable_callsite_status": "not_found_in_visible_sources",
+      "component_callsite": "jdbc-app/src/main/java/example/synthetic/FixtureText.java",
+      "component_callsite_anchor": "fixture:candidate-benign-call",
+      "callsite_api": "StringEscapeUtils.escapeHtml4",
+      "input_reachability": "unknown",
+      "runtime_status": "not_run",
+      "rce_confirmed": false,
+      "all_cves_safe": false
+    },
+    {
+      "id": "commons-text-advisory-control",
+      "module": "advisory-control",
+      "dependency": "org.apache.commons:commons-text",
+      "scope": "compile",
+      "direct": true,
+      "declaration_pom": "advisory-control/pom.xml",
+      "management_pom": "pom.xml",
+      "property_pom": "advisory-control/pom.xml",
+      "property": "commons-text.version",
+      "expected_version": "1.10.0",
+      "advisory_id": "CVE-2022-42889",
+      "version_matched": false,
+      "supply_chain_status": "not_affected",
+      "assessment_scope": "CVE-2022-42889 version criterion only",
+      "component_callsite": "advisory-control/src/main/java/example/synthetic/control/AdvisoryControlText.java",
+      "component_callsite_anchor": "fixture:control-benign-call",
+      "runtime_status": "not_run",
+      "rce_confirmed": false,
+      "all_cves_safe": false
+    }
+  ],
+  "source_assertions": [
+    {
+      "id": "jdbc-concatenation-positive",
+      "classification": "positive",
+      "category": "SQL injection",
+      "cwe": "CWE-89",
+      "severity": "high",
+      "expected_analysis_status": "static_confirmed",
+      "runtime_status": "not_run",
+      "http_route": "GET /synthetic/customers/unsafe",
+      "source": {
+        "path": "jdbc-app/src/main/java/example/synthetic/CustomerController.java",
+        "symbol": "CustomerController.unsafe",
+        "anchor": "fixture:unsafe-http-source",
+        "parameter": "@RequestParam(\"name\") String name"
+      },
+      "flow": [
+        "CustomerController.unsafe(name)",
+        "CustomerRepository.findByNameUnsafe(name)",
+        "SQL concatenation using name",
+        "Statement.executeQuery(sql)"
+      ],
+      "sink": {
+        "path": "jdbc-app/src/main/java/example/synthetic/CustomerRepository.java",
+        "symbol": "CustomerRepository.findByNameUnsafe",
+        "anchor": "fixture:jdbc-concat-sink",
+        "api": "Statement.executeQuery(String)"
+      },
+      "sanitizer": null,
+      "preconditions": ["Future isolated invocation with a supplied synthetic DataSource"],
+      "forbid_claims": ["runtime_confirmed", "production_deployment_confirmed", "RCE"]
+    },
+    {
+      "id": "jdbc-parameterized-negative",
+      "classification": "negative",
+      "category": "SQL injection",
+      "cwe": "CWE-89",
+      "expected_analysis_status": "refuted",
+      "assessment_scope": "name value parameter on this exact query, not blanket application safety",
+      "runtime_status": "not_run",
+      "http_route": "GET /synthetic/customers/parameterized",
+      "source": {
+        "path": "jdbc-app/src/main/java/example/synthetic/CustomerController.java",
+        "symbol": "CustomerController.parameterized",
+        "anchor": "fixture:safe-http-source",
+        "parameter": "@RequestParam(\"name\") String name"
+      },
+      "flow": [
+        "CustomerController.parameterized(name)",
+        "CustomerRepository.findByNameParameterized(name)",
+        "PreparedStatement.setString(1, name)",
+        "PreparedStatement.executeQuery()"
+      ],
+      "sink": {
+        "path": "jdbc-app/src/main/java/example/synthetic/CustomerRepository.java",
+        "symbol": "CustomerRepository.findByNameParameterized",
+        "anchor": "fixture:jdbc-value-binding",
+        "api": "PreparedStatement.setString(int, String)"
+      },
+      "protection": "constant SQL structure with a bound value placeholder",
+      "forbid_claims": ["confirmed SQL injection on name", "all inputs and all routes safe"]
+    },
+    {
+      "id": "dynamic-call-boundary",
+      "classification": "unknown",
+      "expected_analysis_status": "inconclusive",
+      "coverage_status": "unknown",
+      "runtime_status": "not_run",
+      "http_route": "GET /synthetic/customers/dynamic",
+      "source": {
+        "path": "jdbc-app/src/main/java/example/synthetic/CustomerController.java",
+        "symbol": "CustomerController.dynamic",
+        "anchor": "fixture:dynamic-http-source",
+        "parameter": "@RequestParam(\"name\") String name"
+      },
+      "boundary": {
+        "path": "jdbc-app/src/main/java/example/synthetic/DynamicCustomerLookup.java",
+        "symbol": "DynamicCustomerLookup.findByName",
+        "anchor": "fixture:dynamic-invocation",
+        "api": "Class.getMethod(...).invoke(null, name)"
+      },
+      "unresolved_property": "fixture.lookup.class",
+      "missing_evidence": ["handler class name", "handler implementation", "runtime wiring"],
+      "forbid_claims": ["safe", "not_reachable", "confirmed SQL injection", "confirmed RCE"]
+    }
+  ],
+  "future_validation": {
+    "status": "materials_only_not_run",
+    "database": "fresh H2 in-memory synthetic_customers table per test; no TCP/file database",
+    "test_files": [
+      "jdbc-app/src/test/java/example/synthetic/CustomerRepositoryTest.java",
+      "advisory-control/src/test/java/example/synthetic/control/AdvisoryControlTextTest.java"
+    ],
+    "required_test_count": 9,
+    "expected_skipped": 0,
+    "cases": [
+      {"class": "example.synthetic.CustomerRepositoryTest", "method": "unsafeExactMatchPreservesBusinessResult", "tag": "business", "baseline": "pass", "patched": "pass"},
+      {"class": "example.synthetic.CustomerRepositoryTest", "method": "unsafeMissingNameReturnsEmpty", "tag": "business", "baseline": "pass", "patched": "pass"},
+      {"class": "example.synthetic.CustomerRepositoryTest", "method": "parameterizedExactMatchPreservesBusinessResult", "tag": "business", "baseline": "pass", "patched": "pass"},
+      {"class": "example.synthetic.CustomerRepositoryTest", "method": "parameterizedMissingNameReturnsEmpty", "tag": "business", "baseline": "pass", "patched": "pass"},
+      {"class": "example.synthetic.CustomerRepositoryTest", "method": "parameterizedQuotedNameRemainsLiteral", "tag": "business", "baseline": "pass", "patched": "pass"},
+      {"class": "example.synthetic.CustomerRepositoryTest", "method": "unsafeTautologyMustRemainLiteral", "tag": "security", "baseline": "fail_assertion_due_to_extra_rows", "patched": "pass"},
+      {"class": "example.synthetic.CustomerRepositoryTest", "method": "unsafeCommentMustRemainLiteral", "tag": "security", "baseline": "fail_assertion_due_to_extra_rows", "patched": "pass"},
+      {"class": "example.synthetic.CustomerRepositoryTest", "method": "parameterizedTautologyRemainsLiteral", "tag": "security", "baseline": "pass", "patched": "pass"},
+      {"class": "example.synthetic.control.AdvisoryControlTextTest", "method": "syntheticLabelEscapesMarkup", "tag": "business", "baseline": "pass", "patched": "pass"}
+    ],
+    "expected_totals": {
+      "baseline": {"executed": 9, "passed": 7, "failed": 2, "errors": 0, "skipped": 0},
+      "patched": {"executed": 9, "passed": 9, "failed": 0, "errors": 0, "skipped": 0}
+    },
+    "patch_scope": ["jdbc-app/src/main/java/example/synthetic/CustomerRepository.java:findByNameUnsafe"],
+    "patch_strategy": "Replace concatenation with a constant parameterized query and setString; preserve selected columns, equality, ordering and resource handling.",
+    "gate_requirements": [
+      "Obtain separate approval for an isolated fixed execution recipe and dependency acquisition.",
+      "Freeze identical test file hashes before baseline and patched runs; do not modify tests or controls.",
+      "Record JDK, Maven, recipe, dependency hashes, suite hash, logs, exit code and actual per-method outcomes.",
+      "Baseline security failures must be assertion failures caused by extra synthetic rows, not compiler errors, missing dependencies or SQL syntax errors.",
+      "Business regressions and the protected control must actually run and pass on both copies.",
+      "Zero tests, skipped required methods, timeout, missing evidence or compilation errors must never yield validated.",
+      "Re-analyze the patch and verify the original source snapshot remains unchanged."
+    ],
+    "failure_scenarios": [
+      {"id": "missing-dynamic-handler", "expected_status": "unknown", "must_not": "invent a target or auto-repair business behavior"},
+      {"id": "compile-error", "expected_status": "validation_failed", "must_not": "count as vulnerability reproduction"},
+      {"id": "zero-or-skipped-tests", "expected_status": "validation_failed", "must_not": "accept exit code zero alone"},
+      {"id": "timeout-or-missing-dependencies", "expected_status": "inconclusive", "must_not": "label patch validated"}
+    ]
+  },
+  "forbidden_global_claims": [
+    "R1, R2 or R3 product capability is implemented by adding these fixtures.",
+    "Static fixture validation proves Maven build success or Java behavior.",
+    "Planned baseline/patch outcomes are actual execution results.",
+    "Project import/read/search success proves AST, taint analysis or vulnerability confirmation."
+  ]
+}
