@@ -1,6 +1,6 @@
 # R2 第二片：Spring MVC 入口清单契约（注解级）
 
-- 日期：2026-11-12
+- 日期：2026-11-12（2026-11-13 增加 `produces` 与 `response_body`）
 - 状态：已实现并完成本地真实 CLI 验收；**不是 Java AST、调用图或污点分析**。
 - 入口：`trident audit endpoints`、`internal/audit/`、`scripts/test-audit.py`。
 
@@ -25,14 +25,16 @@
 8. 重复路由按“HTTP 方法 + 路径”标记 `duplicate`；同一路径的不同方法不互斥；`unspecified` 方法使用 `*` 参与重复检测。
 9. 只识别 Spring MVC 注解；Servlet、JAX-RS、WebFlux、接口继承、元注解和配置类路由不在本片范围。
 10. 识别基于注解短名，未解析 import/类型系统；与 Spring 注解同名的自定义注解可能被误识别，输出限制中固定声明这一点。
+11. `produces`：解析映射注解的 `produces` 属性，接受字符串字面量与已知 `MediaType.*_VALUE` 常量（`TEXT_HTML_VALUE`、`APPLICATION_XHTML_XML_VALUE`、`APPLICATION_JSON_VALUE`、`TEXT_PLAIN_VALUE`、`APPLICATION_XML_VALUE`、`ALL_VALUE`）；其他表达式标记 `produces_status=unresolved`，缺失或空值标记 `absent`，不猜测。
+12. `response_body`：`@RestController` 或方法级 `@ResponseBody` 为 true；普通 `@Controller` 方法返回 `String` 视为视图名，不是响应体。该标记供数据流判断反射型返回值，不改变路由清单语义。
 
 ## 3. 输出契约
 
 `trident audit endpoints --snapshot <dir> --snapshot-hash <sha256>` 输出单个 JSON 对象：
 
-- 身份：`schema_version`、`tool_version`、`snapshot_hash`、`analysis_kind=spring_mvc_annotation_inventory`、`partial`。
+- 身份：`schema_version`、`tool_version`、`snapshot_hash`、`analysis_kind=http_annotation_inventory`、`partial`。
 - `controllers[]`：文件、包、类、符号、文件 SHA-256、注解、base paths/status、起止行。
-- `endpoints[]`：完整路径、base/relative 路径、HTTP 方法、方法状态、文件/包/类/方法/符号、文件 SHA-256、注解、起止行、方法行、参数、`path_status`/`path_reason`、`fixture:*` 锚点（若存在）、`duplicate`。
+- `endpoints[]`：完整路径、base/relative 路径、HTTP 方法、方法状态、`produces`/`produces_status`、`response_body`、文件/包/类/方法/符号、文件 SHA-256、注解、起止行、方法行、参数、`path_status`/`path_reason`、`fixture:*` 锚点（若存在）、`duplicate`。
 - `coverage`：扫描/拒绝的 Java 文件数、控制器/入口数、未解析路径、重复路由、跳过的嵌套类；`java_ast=not_available`、`taint_analysis=not_run`、`runtime_status=not_run`。
 - `limitations[]`：固定说明无 AST/类型解析、无 Source/Sink/污点、路径拼接近似、常量折叠不支持、仅 Spring MVC、运行时未验证。
 
@@ -52,4 +54,12 @@
 - 未执行 Java/编译器/Maven、未调用模型，源与快照不变。
 - Linux race：此前一次尝试因 Docker Desktop 引擎未运行未完成；重新启动 Docker Desktop 并启动专属 `trident-p0-postgres-1` 后补跑，`python scripts/test-linux.py` 通过（固定镜像，`-race -tags=integration -p 1 ./...`，包含 `internal/audit` 与历史数据库回归）。
 
-未验证：Java AST/类型解析、调用图、Source/Sink、Sanitizer、跨方法污点、反射/动态调用、Servlet/JAX-RS/WebFlux、元注解/接口继承、context-path、部署与运行时利用。
+未验证：Java AST/类型解析、调用图、Source/Sink、Sanitizer、跨方法污点、反射/动态调用、WebFlux、元注解/接口继承、context-path、部署与运行时利用。
+
+## 5. 2026-11-13 扩展（JAX-RS/Servlet、SARIF、import 可达性）
+
+1. 入口识别新增 JAX-RS `@Path` 类资源、`@GET/@POST/@PUT/@DELETE/@PATCH/@HEAD/@OPTIONS` 方法、`@Path` 方法子路径、`@Produces` 与 `@QueryParam/@PathParam/@FormParam/@HeaderParam/@CookieParam/@MatrixParam/@BeanParam` 参数；`@Path` 类默认 `response_body=true`。
+2. 入口识别新增 `@WebServlet` 类与 `doGet/doPost/doPut/doDelete/doHead/doOptions`；Servlet 参数不绑定 `HttpServletRequest.getParameter`，因此只进入入口清单、不产生请求 source。
+3. `audit sarif` 从统一 findings 导出确定性 SARIF 2.1.0；`static_confirmed=warning`、`inconclusive=note`、`refuted=none`，结果属性与 run 属性始终 `runtime_status=not_run`。
+4. `audit reachability` 解析 Java import，并用显式 `--package-map` 将 `group:artifact` 映射到包前缀；分类只有 `import_reachable/import_not_observed/unverified`。import 命中不是调用可达性，未配置映射时全部 `unverified`。
+5. 新增验收 `python scripts/test-intel.py`：SARIF 2.1.0、3 条结果、import 可达 2 条、无映射全部 unverified、错误哈希与不安全 package map 拒绝；`go test ./internal/audit` 覆盖 JAX-RS/Servlet 入口。

@@ -93,7 +93,7 @@ def main():
 
         report = invoke("audit", "endpoints", *common, retries=3)
         require(report["schema_version"] == 1
-                and report["analysis_kind"] == "spring_mvc_annotation_inventory"
+                and report["analysis_kind"] == "http_annotation_inventory"
                 and report["snapshot_hash"] == snapshot_hash,
                 "Unexpected endpoint report identity")
         require(report["partial"] is False

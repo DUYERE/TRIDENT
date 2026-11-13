@@ -45,6 +45,9 @@ type classInfo struct {
 	EndLine        int
 	Annotations    []string
 	Controller     bool
+	Rest           bool
+	JAXRS          bool
+	Servlet        bool
 	BasePaths      []string
 	BasePathStatus string
 }
@@ -68,6 +71,14 @@ var mappingAnnotations = map[string]bool{
 	"PutMapping":     true,
 	"DeleteMapping":  true,
 	"PatchMapping":   true,
+	"Path":           true,
+	"GET":            true,
+	"POST":           true,
+	"PUT":            true,
+	"DELETE":         true,
+	"PATCH":          true,
+	"HEAD":           true,
+	"OPTIONS":        true,
 }
 
 var bindingAnnotations = map[string]bool{
@@ -79,6 +90,13 @@ var bindingAnnotations = map[string]bool{
 	"ModelAttribute":   true,
 	"RequestPart":      true,
 	"SessionAttribute": true,
+	"QueryParam":       true,
+	"PathParam":        true,
+	"FormParam":        true,
+	"HeaderParam":      true,
+	"CookieParam":      true,
+	"MatrixParam":      true,
+	"BeanParam":        true,
 }
 
 var httpMappingMethods = map[string][]string{
@@ -87,6 +105,17 @@ var httpMappingMethods = map[string][]string{
 	"PutMapping":    {"PUT"},
 	"DeleteMapping": {"DELETE"},
 	"PatchMapping":  {"PATCH"},
+	"GET":           {"GET"},
+	"POST":          {"POST"},
+	"PUT":           {"PUT"},
+	"DELETE":        {"DELETE"},
+	"PATCH":         {"PATCH"},
+	"HEAD":          {"HEAD"},
+	"OPTIONS":       {"OPTIONS"},
+}
+
+var servletMethods = map[string]string{
+	"doGet": "GET", "doPost": "POST", "doPut": "PUT", "doDelete": "DELETE", "doHead": "HEAD", "doOptions": "OPTIONS",
 }
 
 func parseJavaFile(file, sha256 string, data []byte) (parsedJava, error) {
@@ -235,13 +264,25 @@ func (p *javaParser) parseClass(name string, line, endLine, bodyOpen, bodyClose 
 	}
 	for _, ann := range annotations {
 		switch ann.Name {
-		case "Controller", "RestController":
+		case "Controller":
 			class.Controller = true
+		case "RestController":
+			class.Controller = true
+			class.Rest = true
+		case "Path":
+			class.Controller = true
+			class.JAXRS = true
+			class.Rest = true
+		case "WebServlet":
+			class.Controller = true
+			class.Servlet = true
 		}
 	}
 	var requestMappings int
 	for _, ann := range annotations {
-		if ann.Name != "RequestMapping" {
+		switch ann.Name {
+		case "RequestMapping", "Path", "WebServlet":
+		default:
 			continue
 		}
 		requestMappings++
@@ -391,6 +432,31 @@ func (p *javaParser) handleMethod(class classInfo, annotations []annotation, nam
 			mappings = append(mappings, ann)
 		}
 	}
+	if class.Servlet && len(mappings) == 0 {
+		httpMethod, isServletMethod := servletMethods[methodName]
+		if !isServletMethod {
+			return false
+		}
+		parameters, err := parseParameters(p.code[paramOpen+1 : paramClose])
+		if err != nil {
+			p.problem("parameter_limit:" + class.Symbol + "." + methodName)
+			return true
+		}
+		methodLine := p.code[nameIndex].Line
+		startLine := methodLine
+		if len(annotations) > 0 {
+			startLine = annotations[0].Line
+		}
+		anchor, anchorLine := p.anchor(methodLine, endLine)
+		if class.BasePathStatus == "absent" || len(class.BasePaths) == 0 {
+			p.problem("servlet_route_mapping_missing:" + class.Symbol + "." + methodName)
+			return true
+		}
+		for _, base := range class.BasePaths {
+			p.appendEndpoint(class, annotation{Name: "WebServlet", Line: startLine}, joinRoute(base, ""), base, "", []string{httpMethod}, "specified", []string{}, "absent", false, parameters, methodName, startLine, endLine, methodLine, class.BasePathStatus, "", anchor, anchorLine)
+		}
+		return true
+	}
 	if len(mappings) == 0 {
 		return false
 	}
@@ -409,9 +475,64 @@ func (p *javaParser) handleMethod(class classInfo, annotations []annotation, nam
 		startLine = annotations[0].Line
 	}
 	anchor, anchorLine := p.anchor(methodLine, endLine)
+	responseBody := class.Rest
+	for _, ann := range annotations {
+		if ann.Name == "ResponseBody" {
+			responseBody = true
+		}
+	}
+	if class.JAXRS {
+		httpMethods := []string{}
+		pathMapping := annotation{Name: "Path", Line: startLine}
+		pathPresent := false
+		for _, mapping := range mappings {
+			if methods, ok := httpMappingMethods[mapping.Name]; ok {
+				httpMethods = append(httpMethods, methods...)
+				continue
+			}
+			if mapping.Name == "Path" {
+				pathMapping = mapping
+				pathPresent = true
+			}
+		}
+		if len(httpMethods) == 0 {
+			httpMethods = []string{}
+		}
+		httpMethods = dedupeStrings(httpMethods)
+		methodState := "unspecified"
+		if len(httpMethods) > 0 {
+			methodState = "specified"
+		}
+		methodPaths, methodStatus := annotationPaths(pathMapping)
+		if !pathPresent {
+			methodPaths, methodStatus = []string{""}, "absent"
+		}
+		produces, producesStatus := jaxrsProduces(annotations)
+		basePaths := class.BasePaths
+		baseStatus := class.BasePathStatus
+		if baseStatus == "absent" {
+			basePaths = []string{""}
+		}
+		if baseStatus == "unresolved" || methodStatus == "unresolved" {
+			reason := "non_literal_path"
+			if baseStatus == "unresolved" {
+				reason = "unresolved_base_path"
+			}
+			p.appendEndpoint(class, pathMapping, "", "", "", httpMethods, methodState, produces, producesStatus, responseBody, parameters, methodName, startLine, endLine, methodLine, "unresolved", reason, anchor, anchorLine)
+			return true
+		}
+		for _, base := range basePaths {
+			for _, relative := range methodPaths {
+				path := joinRoute(base, relative)
+				p.appendEndpoint(class, pathMapping, path, base, relative, httpMethods, methodState, produces, producesStatus, responseBody, parameters, methodName, startLine, endLine, methodLine, "resolved", "", anchor, anchorLine)
+			}
+		}
+		return true
+	}
 	for _, mapping := range mappings {
 		methodPaths, methodStatus := annotationPaths(mapping)
 		httpMethods, methodState := annotationHTTPMethods(mapping)
+		produces, producesStatus := annotationProduces(mapping)
 		basePaths := class.BasePaths
 		baseStatus := class.BasePathStatus
 		if baseStatus == "absent" {
@@ -425,45 +546,48 @@ func (p *javaParser) handleMethod(class classInfo, annotations []annotation, nam
 			if baseStatus == "unresolved" {
 				reason = "unresolved_base_path"
 			}
-			p.appendEndpoint(class, mapping, "", "", "", httpMethods, methodState, parameters, methodName, startLine, endLine, methodLine, "unresolved", reason, anchor, anchorLine)
+			p.appendEndpoint(class, mapping, "", "", "", httpMethods, methodState, produces, producesStatus, responseBody, parameters, methodName, startLine, endLine, methodLine, "unresolved", reason, anchor, anchorLine)
 			continue
 		}
 		for _, base := range basePaths {
 			for _, relative := range methodPaths {
 				path := joinRoute(base, relative)
-				p.appendEndpoint(class, mapping, path, base, relative, httpMethods, methodState, parameters, methodName, startLine, endLine, methodLine, "resolved", "", anchor, anchorLine)
+				p.appendEndpoint(class, mapping, path, base, relative, httpMethods, methodState, produces, producesStatus, responseBody, parameters, methodName, startLine, endLine, methodLine, "resolved", "", anchor, anchorLine)
 			}
 		}
 	}
 	return true
 }
 
-func (p *javaParser) appendEndpoint(class classInfo, mapping annotation, path, base, relative string, httpMethods []string, methodState string, parameters []Parameter, methodName string, startLine, endLine, methodLine int, pathStatus, reason, anchor string, anchorLine int) {
+func (p *javaParser) appendEndpoint(class classInfo, mapping annotation, path, base, relative string, httpMethods []string, methodState string, produces []string, producesStatus string, responseBody bool, parameters []Parameter, methodName string, startLine, endLine, methodLine int, pathStatus, reason, anchor string, anchorLine int) {
 	if len(p.Endpoints) >= MaxEndpoints {
 		p.problem("endpoint_limit")
 		return
 	}
 	p.Endpoints = append(p.Endpoints, Endpoint{
-		Path:         path,
-		BasePath:     base,
-		RelativePath: relative,
-		HTTPMethods:  append([]string{}, httpMethods...),
-		MethodStatus: methodState,
-		File:         p.file,
-		Package:      p.pkg,
-		Class:        class.Name,
-		Method:       methodName,
-		Symbol:       class.Symbol + "." + methodName,
-		SHA256:       p.sha256,
-		Annotation:   mapping.Name,
-		StartLine:    startLine,
-		EndLine:      endLine,
-		MethodLine:   methodLine,
-		Parameters:   parameters,
-		PathStatus:   pathStatus,
-		PathReason:   reason,
-		Anchor:       anchor,
-		AnchorLine:   anchorLine,
+		Path:           path,
+		BasePath:       base,
+		RelativePath:   relative,
+		HTTPMethods:    append([]string{}, httpMethods...),
+		MethodStatus:   methodState,
+		Produces:       append([]string{}, produces...),
+		ProducesStatus: producesStatus,
+		ResponseBody:   responseBody,
+		File:           p.file,
+		Package:        p.pkg,
+		Class:          class.Name,
+		Method:         methodName,
+		Symbol:         class.Symbol + "." + methodName,
+		SHA256:         p.sha256,
+		Annotation:     mapping.Name,
+		StartLine:      startLine,
+		EndLine:        endLine,
+		MethodLine:     methodLine,
+		Parameters:     parameters,
+		PathStatus:     pathStatus,
+		PathReason:     reason,
+		Anchor:         anchor,
+		AnchorLine:     anchorLine,
 	})
 }
 
@@ -630,7 +754,7 @@ func splitAnnotationArgs(tokens []javaToken) []annotationArg {
 func annotationPaths(ann annotation) ([]string, string) {
 	var selected []annotationArg
 	for _, arg := range ann.Args {
-		if arg.Key == "" || arg.Key == "value" || arg.Key == "path" {
+		if arg.Key == "" || arg.Key == "value" || arg.Key == "path" || arg.Key == "urlPatterns" {
 			selected = append(selected, arg)
 		}
 	}
@@ -651,6 +775,101 @@ func annotationPaths(ann annotation) ([]string, string) {
 		return nil, "absent"
 	}
 	return paths, "resolved"
+}
+
+// annotationProduces extracts the declared response media types. Only literal
+// strings and well-known MediaType constants are accepted; other expressions
+// stay unresolved instead of being guessed.
+func annotationProduces(ann annotation) ([]string, string) {
+	var values []string
+	present := false
+	for _, arg := range ann.Args {
+		if arg.Key != "produces" {
+			continue
+		}
+		present = true
+		resolved, literal := mediaTypeValues(arg.Tokens)
+		if !literal {
+			return nil, "unresolved"
+		}
+		values = append(values, resolved...)
+	}
+	if !present || len(values) == 0 {
+		return []string{}, "absent"
+	}
+	return dedupeStrings(values), "resolved"
+}
+
+// jaxrsProduces reads a standalone @Produces annotation, whose media types are
+// positional arguments rather than Spring's produces= attribute.
+func jaxrsProduces(annotations []annotation) ([]string, string) {
+	for _, ann := range annotations {
+		if ann.Name != "Produces" {
+			continue
+		}
+		var values []string
+		for _, arg := range ann.Args {
+			resolved, literal := mediaTypeValues(arg.Tokens)
+			if !literal {
+				return nil, "unresolved"
+			}
+			values = append(values, resolved...)
+		}
+		if len(values) == 0 {
+			return []string{}, "absent"
+		}
+		return dedupeStrings(values), "resolved"
+	}
+	return []string{}, "absent"
+}
+
+func mediaTypeValues(tokens []javaToken) ([]string, bool) {
+	var values []string
+	for i := 0; i < len(tokens); i++ {
+		token := tokens[i]
+		switch {
+		case token.Tok == scanner.String:
+			value, err := unquoteJava(token.Text)
+			if err != nil {
+				return nil, false
+			}
+			values = append(values, value)
+		case token.Text == "{" || token.Text == "}" || token.Text == ",":
+			continue
+		case token.Tok == scanner.Ident:
+			name := token.Text
+			if i+2 < len(tokens) && tokens[i+1].Text == "." && tokens[i+2].Tok == scanner.Ident {
+				name = tokens[i+2].Text
+				i += 2
+			}
+			mediaType := knownMediaType(name)
+			if mediaType == "" {
+				return nil, false
+			}
+			values = append(values, mediaType)
+		default:
+			return nil, false
+		}
+	}
+	return values, true
+}
+
+func knownMediaType(name string) string {
+	switch name {
+	case "TEXT_HTML_VALUE", "TEXT_HTML":
+		return "text/html"
+	case "APPLICATION_XHTML_XML_VALUE", "APPLICATION_XHTML_XML":
+		return "application/xhtml+xml"
+	case "APPLICATION_JSON_VALUE", "APPLICATION_JSON":
+		return "application/json"
+	case "TEXT_PLAIN_VALUE", "TEXT_PLAIN":
+		return "text/plain"
+	case "APPLICATION_XML_VALUE", "APPLICATION_XML":
+		return "application/xml"
+	case "ALL_VALUE", "WILDCARD":
+		return "*/*"
+	}
+	return ""
 }
 
 func annotationHTTPMethods(ann annotation) ([]string, string) {

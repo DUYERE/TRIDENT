@@ -1,0 +1,238 @@
+#!/usr/bin/env python
+"""[01] 构建并驱动真实 CLI 验证只读 Web 控制台；不执行 Java/模型/数据库。"""
+from contextlib import contextmanager
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+FIXTURE = ROOT / "tests" / "fixtures" / "java-maven"
+ADVISORY = FIXTURE / "advisories" / "CVE-2022-42889.json"
+TOKEN = "web-acceptance-token-0123456789"
+
+
+def tree_hashes(root):
+    return {str(path.relative_to(root)).replace(os.sep, "/"): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(root.rglob("*")) if path.is_file()}
+
+
+@contextmanager
+def temporary_work():
+    work = tempfile.mkdtemp(prefix="trident-web-")
+    try:
+        yield work
+    finally:
+        for attempt in range(40):
+            try:
+                shutil.rmtree(work)
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                if attempt == 39:
+                    print(f"WARNING: temporary verification directory retained: {work}", file=sys.stderr)
+                else:
+                    time.sleep(0.25)
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def header(headers, name):
+    for key, value in headers.items():
+        if key.lower() == name.lower():
+            return value
+    return ""
+
+
+def request(base, path, method="GET", headers=None, body=None):
+    request_headers = dict(headers or {})
+    data = None
+    if body is not None:
+        data = body.encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+    call = urllib.request.Request(base + path, data=data, method=method, headers=request_headers)
+    try:
+        with urllib.request.urlopen(call, timeout=30) as response:
+            return response.status, dict(response.headers), response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, dict(error.headers), error.read()
+
+
+def main():
+    fixture_before = tree_hashes(FIXTURE)
+    require(fixture_before, "Missing synthetic Java fixture")
+    require(ADVISORY.is_file(), "Missing synthetic advisory fixture")
+    env = os.environ.copy()
+    for name in ("TRIDENT_DATABASE_URL", "TRIDENT_TOKEN", "TRIDENT_TEST_DATABASE_URL",
+                 "TRIDENT_TEST_ADMIN_TOKEN"):
+        env.pop(name, None)
+    with temporary_work() as work:
+        parent = Path(work)
+        binary = parent / ("trident.exe" if os.name == "nt" else "trident")
+        subprocess.run(["go", "build", "-o", str(binary), "./cmd/trident"],
+                       cwd=ROOT, env=env, check=True, timeout=180)
+        snapshot = parent / "snapshot"
+        imported = subprocess.run(
+            [str(binary), "project", "import", "--source", str(FIXTURE), "--snapshot", str(snapshot)],
+            cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", timeout=120)
+        require(imported.returncode == 0, imported.stderr.strip() or "import failed")
+        snapshot_hash = json.loads(imported.stdout)["snapshot_hash"]
+        snapshot_before = tree_hashes(snapshot)
+
+        port = free_port()
+        base = f"http://127.0.0.1:{port}"
+        server = subprocess.Popen(
+            [str(binary), "web", "--snapshot", str(snapshot), "--snapshot-hash", snapshot_hash,
+             "--advisories", str(ADVISORY), "--addr", f"127.0.0.1:{port}", "--token", TOKEN],
+            cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        try:
+            ready = False
+            for _ in range(80):
+                if server.poll() is not None:
+                    break
+                try:
+                    status, _, _ = request(base, "/")
+                    if status == 200:
+                        ready = True
+                        break
+                except (urllib.error.URLError, ConnectionError):
+                    pass
+                time.sleep(0.1)
+            require(ready, "console did not become ready: " + (server.stderr.read() if server.poll() is not None else "timeout"))
+
+            status, headers, body = request(base, "/")
+            require(status == 200 and b"TRIDENT" in body, "console shell missing")
+            require(header(headers, "Content-Security-Policy") and header(headers, "X-Content-Type-Options") == "nosniff",
+                    "security headers missing")
+            status, _, body = request(base, "/assets/app.js")
+            require(status == 200 and b"read-only console" in body, "console script missing")
+            for asset in ("/assets/brand.png", "/assets/favicon.png"):
+                status, asset_headers, asset_body = request(base, asset)
+                require(status == 200 and header(asset_headers, "Content-Type") == "image/png"
+                        and len(asset_body) > 512, f"brand asset missing: {asset}")
+            status, _, _ = request(base, "/assets/")
+            require(status == 404, "asset directory listing must be rejected")
+
+            console = {"X-Trident-Request": "console"}
+            status, _, body = request(base, "/api/overview", headers=console)
+            require(status == 401 and b"unauthorized" in body, "missing token must be rejected")
+            status, _, _ = request(base, "/api/overview", headers={"X-Trident-Token": TOKEN})
+            require(status == 403, "missing console header must be rejected")
+            status, _, _ = request(base, "/api/overview", headers={**console, "X-Trident-Token": "wrong-token-0123456789"})
+            require(status == 401, "wrong token must be rejected")
+
+            status, headers, _ = request(base, "/api/session", method="POST", headers=console,
+                                         body=json.dumps({"token": TOKEN}))
+            require(status == 204, f"session exchange failed: {status}")
+            cookie_header = header(headers, "Set-Cookie")
+            require("HttpOnly" in cookie_header and "SameSite=Strict" in cookie_header,
+                    "session cookie flags missing")
+            cookie = cookie_header.split(";", 1)[0]
+            authorized = {**console, "Cookie": cookie}
+
+            status, _, body = request(base, "/api/health", headers=authorized)
+            require(status == 200 and json.loads(body)["status"] == "ok", "health failed")
+
+            status, _, body = request(base, "/api/overview", headers=authorized)
+            require(status == 200, f"overview failed: {status}")
+            overview = json.loads(body)
+            require(overview["schema_version"] == 1 and overview["snapshot"]["hash"] == snapshot_hash,
+                    "overview snapshot identity mismatch")
+            require(overview["snapshot"]["total_files"] == 14, "overview file count mismatch")
+            require(overview["counts"]["total"] == 4 and overview["counts"]["static_confirmed"] == 1,
+                    "overview finding counts mismatch")
+            require(overview["analysis"]["runtime_status"] == "not_run", "runtime status must stay not_run")
+            categories = {item["key"]: item for item in overview["categories"]}
+            require(categories["sql"]["static_confirmed"] == 1 and categories["dependency"]["total"] == 1,
+                    "category counts mismatch")
+
+            status, _, body = request(base, "/api/findings?status=static_confirmed&limit=10", headers=authorized)
+            require(status == 200, "findings request failed")
+            listing = json.loads(body)
+            require(listing["filtered"] == 1 and listing["items"][0]["kind"] == "sql_injection",
+                    "confirmed finding filter mismatch")
+            finding_id = listing["items"][0]["id"]
+            status, _, body = request(base, "/api/finding?id=" + urllib.parse.quote(finding_id, safe=""), headers=authorized)
+            require(status == 200, "finding detail failed")
+            detail = json.loads(body)
+            require(detail["runtime_status"] == "not_run" and detail["evidence"] and detail["hypotheses"],
+                    "finding detail evidence missing")
+
+            status, _, body = request(base, "/api/endpoints", headers=authorized)
+            endpoints = json.loads(body)
+            require(status == 200 and endpoints["total"] == 3, "endpoint inventory mismatch")
+            require(endpoints["items"][0]["path"].startswith("/synthetic/customers/"), "endpoint path mismatch")
+
+            status, _, body = request(base, "/api/dependencies", headers=authorized)
+            dependencies = json.loads(body)["report"]
+            require(status == 200 and dependencies["project"]["build_system"] == "Maven",
+                    "dependency build system mismatch")
+            require(any(match["finding_status"] == "candidate" for match in dependencies["advisory_matches"]),
+                    "advisory candidate missing")
+
+            status, _, body = request(base, "/api/files?limit=50", headers=authorized)
+            files = json.loads(body)
+            require(status == 200 and files["total"] == 14, "file list mismatch")
+            status, _, body = request(base, "/api/file?path=pom.xml&limit=20", headers=authorized)
+            require(status == 200 and json.loads(body)["sha256"], "file read missing digest")
+            status, _, _ = request(base, "/api/file?path=" + urllib.parse.quote("../pom.xml"), headers=authorized)
+            require(status == 400, "path traversal must be rejected")
+            status, _, _ = request(base, "/api/file?path=missing.java", headers=authorized)
+            require(status == 404, "missing file must be 404")
+            status, _, body = request(base, "/api/search?q=RestController", headers=authorized)
+            require(status == 200 and json.loads(body)["matches"], "source search missing match")
+
+            status, headers, body = request(base, "/api/report", headers=authorized)
+            require(status == 200 and "attachment" in header(headers, "Content-Disposition"),
+                    "report download headers missing")
+            report = json.loads(body)
+            require(report["coverage"]["findings_total"] == 4, "report coverage mismatch")
+
+            status, headers, body = request(base, "/api/sbom", headers=authorized)
+            require(status == 200 and "attachment" in header(headers, "Content-Disposition")
+                    and json.loads(body)["bomFormat"] == "CycloneDX", "SBOM download failed")
+
+            status, _, _ = request(base, "/api/findings?limit=0", headers=authorized)
+            require(status == 400, "invalid limit must be rejected")
+            print("[01] console shell, token gate, session cookie and security headers: PASS")
+            print("[02] overview, findings, endpoints, dependencies and file tools: PASS")
+            print("[03] runtime_status=not_run, traversal rejection and evidence report: PASS")
+        finally:
+            server.terminate()
+            try:
+                server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait(timeout=5)
+
+        require(tree_hashes(snapshot) == snapshot_before, "snapshot changed during console verification")
+        require(tree_hashes(FIXTURE) == fixture_before, "fixture changed during console verification")
+        print("[04] snapshot and fixture are byte-identical; no database/model/Java execution: PASS")
+        print("TRIDENT web console acceptance passed.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        sys.exit(1)

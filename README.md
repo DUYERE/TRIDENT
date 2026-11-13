@@ -4,7 +4,7 @@
 
 **当前执行基线：[TRIDENT 统一安全 Agent 执行方案 v2.0](docs/TRIDENT_统一安全Agent执行方案_v2.0.md)。** 旧三角色架构和 P0—P6 平台路线已废止，后续按新方案 R0—R6 推进。
 
-**当前开发基线保留 `0.2.0-p0.2` 离线治理，已新增 R0 样本、R1 快照/四项只读工具、统一 Agent Core/持久 Run/OpenAI 兼容协议适配，以及 R2 离线 Maven 声明/固定公告匹配、Spring MVC 注解级入口清单、JDBC SQL Source/Sink 静态证据和统一 Finding/Hypothesis 证据模型。真实外部模型自主闭环尚未验收；Maven 有效依赖树、完整 Java AST/污点分析、其他漏洞类别和自动修复未实现；这不是完整 R1/R2，也不是 MVP。实际验证与限制以进度记录为准。**
+**当前开发基线保留 `0.2.0-p0.2` 离线治理，已新增 R0 样本、R1 快照/四项只读工具、统一 Agent Core/持久 Run/OpenAI 兼容协议适配，R2 离线 Maven/Gradle 声明、公告区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类 Source/Sink 静态证据、统一 Finding/Hypothesis 证据模型、SARIF/import 可达性、只读 Web 分析控制台、九个 Agent 只读工具和 CycloneDX SBOM，以及 R3 补丁生成、策略约束、隔离验证（JUnit XML/JaCoCo/多测试类）、质量评分、多轮修复、Docker/gVisor 沙箱。已完成获准的真实模型只读闭环（DeepSeek `deepseek-flash` Run 43、`deepseek-v4-pro` Run 46、真实 `CodeScan-Artex-main` 快照 Run 48）与真实模型补丁生成 + Maven/Docker 验证；其他模型/快照仍需逐次授权。Maven/Gradle 在线有效依赖树、完整 Java AST/污点分析、硬件 VM 隔离、真实项目 AI 补丁与更多生产验证未实现；这不是完整 R1—R6，也不是 MVP。实际验证与限制以进度记录为准。**
 
 **开发交接入口：[当前进度与维护记录](docs/development-progress.md)。** 每个切片在该文档记录已实现/已验证/待完成、准确测试结果和下一步，运行时状态不以 Markdown 作为权威源。
 
@@ -40,7 +40,7 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident project search --snapshot "$T
 
 ## R2 首片：离线 Maven 声明与固定公告匹配
 
-`sca inspect` 复用已导入的只读快照，不需要数据库或模型密钥，不执行 Maven/Java、不访问仓库。它只解析本地 POM 声明（父 POM、属性覆盖、dependencyManagement、直接依赖），并用调用者显式指定的固定公告 JSON 做精确版本匹配。`version_matched` 只是候选风险，不是 RCE 或可达性确认；没有传递依赖树、制品 Hash、AST/污点或运行时验证。
+`sca inspect` 复用已导入的只读快照，不需要数据库或模型密钥，不执行 Maven/Gradle/Java、不访问仓库。它解析本地 Maven POM 声明（父 POM、属性覆盖、dependencyManagement、直接依赖）以及常见 Gradle Groovy/Kotlin 依赖声明，并用调用者显式指定的固定公告 JSON 做精确版本或调用者声明区间/别名匹配。`version_matched` 只是候选风险，不是 RCE 或可达性确认；没有在线依赖解析、制品 Hash、AST/污点或运行时验证。`sca tree` 只输出快照内模块边与同快照 GAV 匹配，外部依赖是叶子。
 
 ```bash
 # [01] 复用 project import 生成的快照；摘要仍保存在快照之外。
@@ -50,11 +50,21 @@ TRIDENT_HASH="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], en
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident sca inspect --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" --advisories 'E:/pentest agent/TRIDENT/tests/fixtures/java-maven/advisories/CVE-2022-42889.json'
 ```
 
-结果与限制见 [SCA 契约](docs/sca-contract.md)；真实 CLI 验收为 `python scripts/test-sca.py`。
+结果与限制见 [SCA 契约](docs/sca-contract.md)；真实 CLI 验收为 `python scripts/test-sca.py` 与 `python scripts/test-intel.py`。
 
-## R2 入口清单：Spring MVC 注解级
+### SBOM：CycloneDX 1.5
 
-`audit endpoints` 复用同一只读快照，不编译或运行 Java。它用有界词法扫描识别 `Controller/RestController`、`RequestMapping` 家族、base+method 路径和常见参数绑定，输出路径、符号、文件 SHA-256、起止行、`fixture:*` 锚点与覆盖限制。注释和字符串中的注解不会误匹配；非字面量路径、text block 文件和嵌套类显式标记 unresolved/partial。**这是入口清单，不是 Java AST、调用图或污点分析；路由声明不等于部署或可利用。**
+`trident sca sbom` 将同一份声明级报告转换为确定性的 CycloneDX 1.5 JSON；序列号由快照 SHA-256 派生，不写时间戳，同一输入字节级一致。组件按唯一 Maven GAV 去重，公告候选写为 `in_triage`、严重度 `unknown`、`affects` 指向声明组件；`runtime_status=not_run` 与“无传递树/无制品哈希/无可达性”的限制写入 metadata properties。官方 Schema 固定副本位于 `tests/schemas/`，由 Python `jsonschema` 校验；SBOM 不是有效依赖树，也不能证明漏洞可利用。
+
+```bash
+go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident sca sbom --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" --advisories 'E:/pentest agent/TRIDENT/tests/fixtures/java-maven/advisories/CVE-2022-42889.json'
+```
+
+Web 控制台依赖页提供“导出 SBOM”，对应 `GET /api/sbom`。契约见 [SBOM 契约](docs/sbom-contract.md)；真实 CLI + 官方 Schema 验收为 `python scripts/test-sbom.py`。
+
+## R2 入口清单：Spring MVC / JAX-RS / Servlet 注解级
+
+`audit endpoints` 复用同一只读快照，不编译或运行 Java。它用有界词法扫描识别 Spring MVC `Controller/RestController`、`RequestMapping` 家族，JAX-RS `@Path`/`@GET` 家族与参数绑定，以及 `@WebServlet` 的 `doGet/doPost` 入口；输出路径、符号、文件 SHA-256、起止行、`fixture:*` 锚点与覆盖限制。注释和字符串中的注解不会误匹配；非字面量路径、text block 文件和嵌套类显式标记 unresolved/partial；Servlet 参数未绑定 `HttpServletRequest.getParameter`，因此不带请求 source。**这是入口清单，不是 Java AST、调用图或污点分析；路由声明不等于部署或可利用。**
 
 ```bash
 # [01] 沿用上一节导入的快照与摘要；不重新读取源目录。
@@ -65,7 +75,7 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit endpoints --snapshot "$
 
 ## R2 数据流：JDBC SQL 与非 SQL 注入类别 Source/Sink
 
-`audit dataflow` 复用入口清单，对请求绑定参数做有界方法内/跨方法追踪，识别 JDBC SQL sink（`Statement.execute*`、`prepareStatement`）以及常量结构 `PreparedStatement` + 值绑定的负例；同一引擎还识别命令注入（`Runtime.exec`、`ProcessBuilder` command→start）、SSRF（`URL.openConnection/openStream`、`RestTemplate`）、路径遍历（文件流构造器、`Files.*`）、模板注入（SpEL `parseExpression`、模板引擎 `process`）、XSS（响应 `write`/`print`/`println`/`append`）、反序列化（`new ObjectInputStream`/`new XMLDecoder`、污点流 `readObject`）、XXE（`DocumentBuilder`/`SAXParser.parse`、`XMLInputFactory`、`Unmarshaller`、`Transformer`）与 LDAP 注入（`InitialDirContext`/`LdapTemplate` 的 `search`/`lookup`/`authenticate`）。SQL 构造覆盖字符串 `+`、`StringBuilder`/`StringBuffer.append` + `toString()`、字面量 `String.format` 和构造器/静态工厂结果；跨方法还跟踪 resolved 方法的 tainted 返回值、builder 参数突变、接口/继承分派、重载选择（含 lambda、泛型方法、可变参数）和按类层级的字段污点；容器传播覆盖 `List`/`Set`/`Map`/`Queue` 的 `add`/`put` 写入与 `get`/`values`/`keySet`/`entrySet`/`iterator` 读取。仅常量 `append`、无转换符的 `format`、清洁返回值、常量命令/URL/路径/响应/反序列化流/XML/LDAP 或未触及的类别不产生 sink 证据；计算出的格式串、未知 builder 接收者、多实现分派、无法消解的重载、快照外父类型或未知 sink 接收者输出边界。每个参数始终有一个 SQL finding，其他类别仅在该参数观察到对应 sink/边界时附加 finding，均附 flow、文件 SHA、行号和 `fixture:*` 锚点。**这不是完整污点分析或运行时验证；动态/未解析边界和未观察到路径一律 inconclusive，不冒充安全。**
+`audit dataflow` 复用入口清单，对请求绑定参数做有界方法内/跨方法追踪，识别 JDBC SQL sink（`Statement.execute*`、`prepareStatement`、`JdbcTemplate`/`NamedParameterJdbcTemplate` 查询更新家族、JPA/Hibernate `createQuery`/`createNativeQuery`）以及常量结构 `PreparedStatement` + 值绑定的负例；同一引擎还识别命令注入（`Runtime.exec`、`ProcessBuilder` command→start）、SSRF（`URL.openConnection/openStream`、`RestTemplate`、`HttpRequest.uri`、`WebClient.uri`）、路径遍历（文件流构造器、`Files.*`）、模板注入（SpEL `parseExpression`、模板引擎 `process`）、XSS（响应 `write`/`print`/`println`/`append`）、反序列化（`new ObjectInputStream`/`new XMLDecoder`、污点流 `readObject`、链式 `new ObjectInputStream(...).readObject()`）、XXE（`DocumentBuilder`/`SAXParser`/`SAXReader.parse`、`SAXReader`/`XMLReader.read`、`XMLInputFactory` 流/事件读取、`Unmarshaller`、`Transformer`、`SAXBuilder`、`Digester`、`DocumentHelper.parseText`）、LDAP 注入（`InitialDirContext`/`LdapTemplate` 的 `search`/`lookup`/`authenticate`）与上传（`MultipartFile.transferTo`、`Part.write`）。SQL 构造覆盖字符串 `+`、`StringBuilder`/`StringBuffer.append` + `toString()`、字面量 `String.format` 和构造器/静态工厂结果；跨方法还跟踪 resolved 方法的 tainted 返回值、builder 参数突变、接口/继承分派、重载选择（含 lambda、泛型方法、可变参数）、按类层级的字段污点和 import 感知的简单类型解析；容器传播覆盖 `List`/`Set`/`Map`/`Queue` 的 `add`/`put` 写入与 `get`/`values`/`keySet`/`entrySet`/`iterator` 读取、数组元素下标读写、字段容器写入与 `clear`，字面量下标 `set/add(index, value)`/`get(index)`/`remove(index)` 按元素跟踪，非字面量下标回退到容器聚合；resolved 方法可突变调用方集合/数组参数；聚合 `remove` 采用保守语义（保留容器污点并标记限制），不假装未知下标的元素级精度。响应体 `String`/`CharSequence` 返回按入口 `produces` 判定：`text/html`/`application/xhtml+xml` 静态确认 XSS，明确非 HTML 类型记录为 `refuted`，缺失/未解析仍为 `reflected_return` 边界；普通 `@Controller` 返回视图名不产生 XSS finding。仅常量 `append`、无转换符的 `format`、清洁返回值、常量命令/URL/路径/响应/反序列化流/XML/LDAP 或未触及的类别不产生 sink 证据；计算出的格式串、未知 builder 接收者、多实现分派、无法消解的重载、快照外父类型或未知 sink 接收者输出边界。每个参数始终有一个 SQL finding，其他类别仅在该参数观察到对应 sink/边界时附加 finding，均附 flow、文件 SHA、行号和 `fixture:*` 锚点。**这不是完整污点分析或运行时验证；动态/未解析边界和未观察到路径一律 inconclusive，不冒充安全。**
 
 ```bash
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit dataflow --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH"
@@ -84,9 +94,37 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit findings --snapshot "$T
 
 契约见 [证据模型契约](docs/findings-contract.md)；真实 CLI 验收为 `python scripts/test-findings.py`。
 
+## R2 CI 出口：SARIF 与 import 可达性
+
+`audit sarif` 将同一份统一 evidence 报告导出为确定性 SARIF 2.1.0；`static_confirmed` 映射为 `warning`、`inconclusive` 为 `note`、`refuted` 为 `none`，所有结果保留 `runtime_status=not_run`，不会因导出升级为运行时确认。
+
+`audit reachability` 解析快照内 Java import，并用调用者显式提供的 `--package-map`（`group:artifact` → 包前缀）把声明依赖映射到 import。分类只有 `import_reachable` / `import_not_observed` / `unverified`；**import 存在不等于类或方法被加载，更不等于漏洞可调用**。没有 package map 时所有依赖保持 `unverified`。
+
+```bash
+go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit sarif --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH"
+go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit reachability --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" --package-map '/path/to/package-map.json'
+```
+
+真实 CLI 验收为 `python scripts/test-intel.py`。
+
+## R2 只读 Web 分析控制台
+
+`trident web` 为单个已 pin 的本地快照提供暗色分析控制台，视图包括概览、安全发现（含证据抽屉）、HTTP 入口、依赖与公告、源码浏览/检索和边界说明。它复用既有快照与四个分析包，不新增分析语义，不导入源码、不执行 Java/Maven、不调用模型或访问网络，也不提供 Agent 运行/审批/执行控制 API。控制台仅监听 loopback，使用启动时打印的一次性访问令牌；除登录页外所有 API 都要求令牌与 `X-Trident-Request: console` 头，响应启用 CSP、`nosniff`、`DENY` 与 `no-store`。
+
+以下命令不连接数据库、不调用模型；令牌只打印在终端，不要写入共享日志：
+
+```bash
+# [01] 复用 project import 生成的快照与外部保存的摘要。
+go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident web --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" --advisories 'E:/pentest agent/TRIDENT/tests/fixtures/java-maven/advisories/CVE-2022-42889.json' --addr 127.0.0.1:8787
+
+# [02] 浏览器打开终端打印的地址，粘贴同一终端打印的访问令牌；Ctrl+C 停止，不写入快照。
+```
+
+首次请求任一分析 API 时，SCA、入口清单、有界数据流和统一证据模型各运行一次并缓存；失败会作为终态缓存并返回 `analysis_failed`，不会逐请求重试。页面上的 `runtime_status` 恒为 `not_run`，静态确认、`inconclusive`、`refuted` 与 CLI 含义一致。契约见 [Web 控制台契约](docs/web-console-contract.md)；真实 CLI 验收为 `python scripts/test-web.py`。
+
 ## 统一 Agent Core（R1 本地协议验收）
 
-核心仍为 Go。新增一个有持久检查点的只读决策循环、四工具注册、OpenAI 官方 Go SDK Chat Completions 适配，以及 Run 所有者权限、CAS、驱动互斥、预算和保守恢复。模型/端点显式配置，禁隐式重试、代理和重定向；密钥只从调用者指定环境变量读取，不写入 Run。兼容服务仅承诺通过本片 Chat Completions 契约，不代表支持所有供应商扩展或 Responses。
+核心仍为 Go。新增一个有持久检查点的只读决策循环、九个只读工具、OpenAI 官方 Go SDK Chat Completions 适配，以及 Run 所有者权限、CAS、驱动互斥、预算和保守恢复。九个工具为快照四工具（`inspect_project/list_files/read_source/search_source`）和五个分析工具（`inspect_dependencies/match_advisories/query_endpoints/trace_dataflow/list_findings`）；分析工具只返回有界摘要，并把实际读取的快照行写入证据账本后才能被最终答案引用。`agent run --advisories <file>` 可绑定本地固定公告目录。模型/端点显式配置，禁隐式重试、代理和重定向；密钥只从调用者指定环境变量读取，不写入 Run。兼容服务仅承诺通过本片 Chat Completions 契约，不代表支持所有供应商扩展或 Responses。
 
 **风险提示：`agent run --approve-egress` 是对整份快照、目标和后续对话向精确端点/模型外发的显式授权，可能产生费用；本轮没有授权或执行真实外部模型调用。默认没有该许可会拒绝。** 不要将普通项目读取许可当作外发许可。
 
@@ -101,9 +139,30 @@ python 'E:/pentest agent/TRIDENT/scripts/test-local.py'
 python 'E:/pentest agent/TRIDENT/scripts/test-agent.py'
 ```
 
-`agent run/status/steps/resume` 使用已有 `TRIDENT_DATABASE_URL` 与 `TRIDENT_TOKEN`；调用模型还要求指定的密钥环境变量（默认 `TRIDENT_MODEL_API_KEY`）。本片没有设置真实模型默认值，也不会继承当前 Claude/OpenAI 会话凭据。`status --id` 与 `steps --id --after --limit` 不调用模型；`resume --acknowledge-unknown` 明确承认旧请求可能已计费并确认旧驱动器停止，不退款、不自动重发。拒绝/截断暂停不通过恢复偷偷重试，需重新审查后创建新 Run。
+`agent run/status/steps/resume` 使用已有 `TRIDENT_DATABASE_URL` 与 `TRIDENT_TOKEN`；调用模型还要求指定的密钥环境变量（默认 `TRIDENT_MODEL_API_KEY`）。本片没有设置真实模型默认值，也不会继承当前 Claude/OpenAI 会话凭据。`status --id` 与 `steps --id --after --limit` 不调用模型；`resume --acknowledge-unknown` 明确承认旧请求可能已计费并确认旧驱动器停止，不退款、不自动重发。拒绝/截断暂停不通过恢复偷偷重试，需重新审查后创建新 Run。检查点压缩按工具类型保留不同预览长度，并附带原始 JSON 的 `total/offset/limit/partial/counts` 有界摘要；`agent export --id --out` 只读导出 Run 与全部 Step（默认 30 天保留窗口，超期需 `--include-expired`），不删除 append-only 记录。
 
-参见 [Agent 契约](docs/agent-contract.md) 与 [当前进度记录](docs/development-progress.md)。回答标为未验证推断，引用校验不等于漏洞成立。
+参见 [Agent 契约](docs/agent-contract.md) 与 [当前进度记录](docs/development-progress.md)。回答标为未验证推断，引用校验不等于漏洞成立。本轮将检查点版本升为 v2；v1 检查点不恢复。
+
+## R3 补丁生成、隔离验证、修复循环与沙箱
+
+`trident patch propose` 在显式 `--approve-egress` 下调用模型，基于 finding 证据或指定源码路径生成一个统一 diff；补丁先在只包含被修改文件的临时副本上做精确上下文验证，并受可选 `--policy` remediation policy（文件数、变更行数、禁止新增 API）约束，通过后才写到快照之外的新文件。`trident patch verify` 将已 pin 的快照复制到新的可写工作区，应用调用者或模型生成的 diff，在离线 Maven、javac 或 JUnit profile 下编译并运行，最后重新校验原快照未被修改。JUnit profile 支持多测试类、Surefire 风格 XML 报告和可选 JaCoCo agent/XML 覆盖率，并可在 process、Docker 或 gVisor `runsc` 沙箱中运行。`trident patch repair` 在最多 5 轮内重复 propose→隔离 verify，每轮使用新工作区；模型失败不重试，重复补丁停止。必须显式 `--approve-execution`；Docker 提供固定 digest 镜像、`--network none`、`--cap-drop ALL` 与资源限额，gVisor 提供用户态内核但不是硬件 VM。AI 补丁必须人工复核；Maven 离线模式要求本机或只读挂载的 `.m2` 已缓存插件与依赖。报告附带启发式 `quality` 分数，它不是安全或正确性证明。
+
+```bash
+# [01] AI 生成补丁（仅合成样本；真实项目需逐次外发授权）。
+go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident patch propose \
+  --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" \
+  --path 'src/main/java/demo/Vulnerable.java' --goal 'Use a parameter placeholder instead of string concatenation.' \
+  --out "$TRIDENT_PARENT/ai.patch" \
+  --endpoint 'https://api.deepseek.com/v1' --model 'deepseek-flash' --approve-egress
+
+# [02] process 或 Docker 沙箱验证。
+go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident patch verify \
+  --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" \
+  --workspace "$TRIDENT_PARENT/workspace" --patch "$TRIDENT_PARENT/ai.patch" \
+  --profile maven --main-class demo.Main --approve-execution
+```
+
+报告以 `validation_passed`/`validation_failed`/`patch_failed` 等状态区分结果，`runtime_status=isolated_validation_only`，不把隔离副本结果升级为生产可利用性或修复上线证明。契约见 [R3 补丁契约](docs/patch-contract.md)；真实 Java/Maven 验收为 `python scripts/test-patch.py`，AI 补丁 + Docker 验收为 `python scripts/test-patch-ai.py`。
 
 ## 已实现的历史基础（P0.1 / P0.2）
 
@@ -118,7 +177,7 @@ python 'E:/pentest agent/TRIDENT/scripts/test-agent.py'
 - Scope 新版本提交、证明绑定、摘要/旧基线校验、合同级原子切换；旧租约及未消费审批失效，资产重新待审核。
 - 不可变离线工具请求、规范参数/URL/摘要、人工审批和原子一次消费；准入、步骤记账与 Outbox 同事务。
 - 启动 Schema 只读门禁；已有 P0.1 数据可前向升级，旧 Worker 默认拒绝，历史预算和快照保留。
-- CLI 离线审批闭环和真实 PostgreSQL 集成测试；不提供 HTTP 控制 API，不访问测试目标。
+- CLI 离线审批闭环和真实 PostgreSQL 集成测试；不提供 HTTP 执行控制 API（R2 只读分析控制台不是执行平面），不访问测试目标。
 
 ## 本机复测（Git Bash）
 
@@ -149,6 +208,18 @@ python 'E:/pentest agent/TRIDENT/scripts/test-dataflow.py'
 # [02e] 无数据库的统一 Finding/Hypothesis 证据关联验收；不执行 Java/模型。
 python 'E:/pentest agent/TRIDENT/scripts/test-findings.py'
 
+# [02f] 无数据库的只读 Web 控制台验收；loopback 服务、不执行 Java/模型。
+python 'E:/pentest agent/TRIDENT/scripts/test-web.py'
+
+# [02g] SBOM 确定性与官方 CycloneDX 1.5 Schema 校验。
+python 'E:/pentest agent/TRIDENT/scripts/test-sbom.py'
+
+# [02h] R3 隔离副本、统一 diff、离线 Maven/javac/JUnit 基线失败/补丁通过验收。
+python 'E:/pentest agent/TRIDENT/scripts/test-patch.py'
+
+# [02i] AI 补丁生成 + process/Docker 沙箱验证；loopback 模型，不调用真实 LLM。
+python 'E:/pentest agent/TRIDENT/scripts/test-patch-ai.py'
+
 # [03] 显式迁移、真实数据库测试、离线演示、只读迁移检查。
 python 'E:/pentest agent/TRIDENT/scripts/test-local.py'
 
@@ -173,12 +244,15 @@ docker compose --project-directory 'E:/pentest agent/TRIDENT' -f 'E:/pentest age
 
 | 路径 | 内容 |
 |---|---|
-| `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`dataflow.go`、`findings.go`、`agent.go` | version / project / sca / audit / agent / migrate / check / bootstrap / demo-offline |
-| `internal/sca/` | 离线 Maven 声明解析、属性/父 POM/依赖管理解析与固定公告精确匹配 |
-| `internal/audit/`、`internal/dataflow/` | Spring MVC 注解级入口清单；JDBC SQL 与非 SQL 注入类别 Source/Sink 有界数据流 |
-| `internal/findings/` | 统一 finding/假设/证据模型，关联 SCA、入口清单与数据流 |
-| `docs/sca-contract.md`、`docs/audit-contract.md`、`docs/dataflow-contract.md`、`docs/findings-contract.md` | SCA、入口清单、数据流与证据模型语义/限制 |
-| `scripts/test-sca.py`、`scripts/test-audit.py`、`scripts/test-dataflow.py`、`scripts/test-findings.py` | 真实 CLI SCA/入口/数据流/证据模型验收 |
+| `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`dataflow.go`、`findings.go`、`reach.go`、`web.go`、`patch.go`、`agent.go` | version / project / sca / audit / web / patch / agent / migrate / check / bootstrap / demo-offline |
+| `internal/sca/` | 离线 Maven/Gradle 声明解析、属性/父 POM/依赖管理、公告精确/区间/别名匹配与模块树 |
+| `internal/audit/`、`internal/dataflow/` | Spring MVC/JAX-RS/Servlet 注解级入口清单；10 类 Source/Sink 有界数据流 |
+| `internal/findings/`、`internal/sarif/`、`internal/reach/` | 统一 finding/假设/证据模型；SARIF 2.1.0；有界 import 可达性 |
+| `internal/webui/` | 只读 Web 控制台：令牌鉴权、JSON API、嵌入的暗色前端资源 |
+| `internal/sbom/` | 确定性 CycloneDX 1.5 序列化与 metadata/component/vulnerability 映射 |
+| `internal/r3/` | 快照工作区复制、统一 diff 应用、策略约束、离线 Maven/javac/JUnit（XML/JaCoCo）验证、质量评分、多轮修复与 Docker/gVisor |
+| `docs/sca-contract.md`、`docs/audit-contract.md`、`docs/dataflow-contract.md`、`docs/findings-contract.md`、`docs/web-console-contract.md`、`docs/sbom-contract.md`、`docs/patch-contract.md`、`docs/release-checklist.md` | SCA、入口清单、数据流、证据模型、Web、SBOM、R3 与发布检查表 |
+| `scripts/test-sca.py`、`test-audit.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-intel.py`、`test-patch.py`、`benchmark.py` | 真实 CLI 与官方 Schema/真实 Java/Maven 验收和可复现基准 |
 | `internal/agent/`、`internal/tools/` | 只读主循环、受控工具与检查点/证据 |
 | `internal/model/openai/` | 官方 Go SDK Chat Completions 薄适配，无隐式外发 |
 | `internal/store/agent_runs*.go` | Run 所有者权限、CAS、预算与恢复 |
@@ -204,7 +278,7 @@ docker compose --project-directory 'E:/pentest agent/TRIDENT' -f 'E:/pentest age
 6. 失效结果隔离归档、账务不确定结果与崩溃/断连的完整故障矩阵。
 7. Outbox 消费端持久幂等、失败迁移审计、完整备份恢复验收。
 
-以上保留为历史缺口清单，不再要求按旧 P0 阶段全部建设后才实现新 Agent。安全边界在相应能力开放前完成：只读分析先落实路径与外发控制，修复先落实独立副本，测试执行先落实隔离和审批。**当前仍没有可对真实目标执行的工具能力。** 本次已交付项目快照、只读工具和统一 Agent Core 的本地协议闭环；后续先完成经明确许可的真实模型验收，再做供应链/源码分析、验证与补丁闭环，具体以新执行方案和当前进度记录为准。
+以上保留为历史缺口清单，不再要求按旧 P0 阶段全部建设后才实现新 Agent。安全边界在相应能力开放前完成：只读分析先落实路径与外发控制，修复先落实独立副本，测试执行先落实隔离和审批。**当前仍没有可对真实目标执行网络测试的工具能力。** 已交付项目快照、只读/分析工具、统一 Agent Core 的本地协议闭环、只读 Web 控制台、CycloneDX SBOM，以及隔离副本上的补丁编译/运行首片；后续仍需经明确许可的真实模型验收、JUnit/容器沙箱、AI 补丁生成与生产级运行时验证，具体以新执行方案和当前进度记录为准。
 
 ## 上游与许可
 

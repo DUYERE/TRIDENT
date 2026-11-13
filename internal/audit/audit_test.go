@@ -279,6 +279,119 @@ public class E {
 	}
 }
 
+func TestInspectJAXRSAndServletEntries(t *testing.T) {
+	snapshot := snapshotFromFiles(t, map[string]string{
+		"src/main/java/example/JaxrsResource.java": `package example;
+import javax.ws.rs.*;
+import javax.ws.rs.core.MediaType;
+@Path("/api/users")
+public class JaxrsResource {
+  @GET
+  @Path("/{id}")
+  @Produces(MediaType.TEXT_HTML)
+  public String get(@PathParam("id") String id, @QueryParam("q") String q) { return q; }
+  @POST
+  public String create(@QueryParam("name") String name) { return name; }
+}`,
+		"src/main/java/example/HelloServlet.java": `package example;
+import javax.servlet.http.*;
+import javax.servlet.annotation.WebServlet;
+@WebServlet(urlPatterns = {"/hello", "/hi"})
+public class HelloServlet extends HttpServlet {
+  protected void doGet(HttpServletRequest req, HttpServletResponse resp) { resp.getWriter().write("x"); }
+  protected void doPost(HttpServletRequest req, HttpServletResponse resp) { }
+  public void helper() { }
+}`,
+	})
+	report, err := Inspect(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]Endpoint{}
+	for _, item := range report.Endpoints {
+		byPath[item.Path+" "+strings.Join(item.HTTPMethods, ",")] = item
+	}
+	get, ok := byPath["/api/users/{id} GET"]
+	if !ok {
+		t.Fatalf("jax-rs GET missing: %+v", report.Endpoints)
+	}
+	if !get.ResponseBody || len(get.Produces) != 1 || get.Produces[0] != "text/html" || len(get.Parameters) != 2 || get.Parameters[0].Bindings[0] != "PathParam" {
+		t.Fatalf("jax-rs GET shape: %+v", get)
+	}
+	if _, ok := byPath["/api/users POST"]; !ok {
+		t.Fatalf("jax-rs POST missing: %+v", report.Endpoints)
+	}
+	if _, ok := byPath["/hello GET"]; !ok {
+		t.Fatalf("servlet GET missing: %+v", report.Endpoints)
+	}
+	if _, ok := byPath["/hi POST"]; !ok {
+		t.Fatalf("servlet POST missing: %+v", report.Endpoints)
+	}
+	if report.Coverage.ControllersFound != 2 || report.Coverage.EndpointsFound != 6 {
+		t.Fatalf("coverage: %+v", report.Coverage)
+	}
+}
+
+func TestInspectProducesAndResponseBody(t *testing.T) {
+	snapshot := snapshotFromFiles(t, map[string]string{
+		"src/main/java/demo/Rest.java": `package demo;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+@RestController
+public class Rest {
+    @GetMapping(value = "/html", produces = {"text/html", MediaType.APPLICATION_JSON_VALUE})
+    public String html(@RequestParam("q") String q) { return q; }
+    @GetMapping(value = "/constant", produces = MediaType.TEXT_HTML_VALUE)
+    public String constant(@RequestParam("q") String q) { return q; }
+    @GetMapping(value = "/dynamic", produces = CustomMediaTypes.HTML)
+    public String dynamic(@RequestParam("q") String q) { return q; }
+    @GetMapping("/absent")
+    public String absent(@RequestParam("q") String q) { return q; }
+}
+`,
+		"src/main/java/demo/View.java": `package demo;
+import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.*;
+@Controller
+public class View {
+    @GetMapping("/view")
+    public String view(@RequestParam("q") String q) { return q; }
+    @ResponseBody
+    @GetMapping("/body")
+    public String body(@RequestParam("q") String q) { return q; }
+}
+`,
+	})
+	report, err := Inspect(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := endpoint(report, "/html")
+	if html.ProducesStatus != "resolved" || len(html.Produces) != 2 || html.Produces[0] != "text/html" || html.Produces[1] != "application/json" || !html.ResponseBody {
+		t.Fatalf("literal produces: %+v", html)
+	}
+	constant := endpoint(report, "/constant")
+	if constant.ProducesStatus != "resolved" || len(constant.Produces) != 1 || constant.Produces[0] != "text/html" {
+		t.Fatalf("MediaType constant produces: %+v", constant)
+	}
+	dynamic := endpoint(report, "/dynamic")
+	if dynamic.ProducesStatus != "unresolved" || len(dynamic.Produces) != 0 {
+		t.Fatalf("unresolved produces: %+v", dynamic)
+	}
+	absent := endpoint(report, "/absent")
+	if absent.ProducesStatus != "absent" || !absent.ResponseBody {
+		t.Fatalf("absent produces: %+v", absent)
+	}
+	view := endpoint(report, "/view")
+	if view.ResponseBody || view.ProducesStatus != "absent" {
+		t.Fatalf("view endpoint: %+v", view)
+	}
+	body := endpoint(report, "/body")
+	if !body.ResponseBody {
+		t.Fatalf("ResponseBody endpoint: %+v", body)
+	}
+}
+
 func TestInspectNoJavaSource(t *testing.T) {
 	snapshot := snapshotFromFiles(t, map[string]string{"README.md": "synthetic\n"})
 	report, err := Inspect(context.Background(), snapshot)

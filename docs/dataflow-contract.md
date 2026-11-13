@@ -1,6 +1,6 @@
 # R2：Source/Sink 静态证据契约（JDBC SQL 与非 SQL 注入类别）
 
-- 日期：2026-11-13（第三片建立；第五片扩展 `StringBuilder`/`StringBuffer`/`String.format`；第六片增加返回值污点与 builder 跨方法突变；第七片增加接口/继承分派与字段污点；第八片增加重载选择与未解析父类型边界；第九片增加 lambda、泛型方法与可变参数重载；第十片增加命令注入、SSRF、路径遍历与模板注入 sink；第十一片增加 XSS、反序列化、XXE 与 LDAP 注入 sink；第十二片增加集合容器污点传播）
+- 日期：2026-11-13（第三片建立；第五片扩展 `StringBuilder`/`StringBuffer`/`String.format`；第六片增加返回值污点与 builder 跨方法突变；第七片增加接口/继承分派与字段污点；第八片增加重载选择与未解析父类型边界；第九片增加 lambda、泛型方法与可变参数重载；第十片增加命令注入、SSRF、路径遍历与模板注入 sink；第十一片增加 XSS、反序列化、XXE 与 LDAP 注入 sink；第十二片增加集合容器污点传播；第十三片增加集合跨方法突变与 `clear`、反射型返回值边界和 `SAXReader`/`XMLReader` XXE；第十四片增加数组下标、`remove` 保守语义、字段集合 `clear`、`produces` 感知的反射型返回值、链式反序列化与更多 XXE 入口）
 - 状态：已实现并完成本地真实 CLI 验收；**不是 Java AST、完整污点分析或运行时验证**。
 - 入口：`trident audit dataflow`、`internal/dataflow/`、`scripts/test-dataflow.py`。
 
@@ -40,8 +40,15 @@
 ### XSS、反序列化、XXE 与 LDAP 注入（第十一片）
 
 - XSS（`CWE-79`）：接收者类型为 `PrintWriter`/`JspWriter`/`ServletOutputStream`/`Writer` 且方法名为 `write`/`print`/`println`/`append`（含 `resp.getWriter().write(...)` 链式）时，tainted 实参视为响应写出 sink。
-- 反序列化（`CWE-502`）：`new ObjectInputStream(tainted)`、`new XMLDecoder(tainted)` 在构造处确认；已带 taint 的流接收者调用 `readObject()` 时再次确认。
-- XXE（`CWE-611`）：`DocumentBuilder`/`SAXParser` 的 `parse(tainted)`；`XMLInputFactory.createXMLStreamReader(tainted)`；`Unmarshaller.unmarshal(tainted)`；`Transformer.transform(tainted, ...)`。
+- 反序列化（`CWE-502`）：`new ObjectInputStream(tainted)`、`new XMLDecoder(tainted)` 在构造处确认；已带 taint 的流接收者调用 `readObject()` 时再次确认；直接链式 `new ObjectInputStream(...).readObject()`/`new XMLDecoder(...).readObject()` 在 `readObject` 处确认一次（`sink.api=new ObjectInputStream(...).readObject`），构造处不重复确认（第十四片）。
+- XXE（`CWE-611`）：`DocumentBuilder`/`SAXParser`/`SAXReader` 的 `parse(tainted)`；`SAXReader`/`XMLReader` 的 `read(tainted)`（第十三片）；`XMLInputFactory.createXMLStreamReader/createXMLEventReader(tainted)`；`Unmarshaller.unmarshal(tainted)`；`Transformer.transform(tainted, ...)`；`SAXBuilder.build(tainted)`、`Digester.parse(tainted)`、`DocumentHelper.parseText(tainted)`（第十四片）。
+- 响应返回值型 XSS（第十三/十四片）：仅 `response_body=true`（`@RestController` 或 `@ResponseBody`）且方法返回 `String`/`CharSequence` 时检查 `return` 表达式：
+  - `return` 表达式无 taint → 不产生 XSS finding；
+  - `produces` 含 `text/html` 或 `application/xhtml+xml` → `static_confirmed`，`sink.api=return:<media-type>`（Spring 的 String 写出不做 HTML 转义）；
+  - `produces` 为明确的非 HTML 类型（如 `application/json`、`text/plain`）→ `refuted`，`protection.api=return`、`detail` 记录 media type，仅针对该返回，不是全应用安全证明；
+  - `produces` 缺失 → `boundary.kind=reflected_return` 且 `limitation=reflected_return_content_type_unverified`，保持 `inconclusive`；
+  - `produces` 为非字面量/未知常量 → `produces_status=unresolved`，`boundary.kind=reflected_return` 且 `limitation=produces_unresolved`，保持 `inconclusive`；
+  - 普通 `@Controller` 返回 `String` 视为视图名，不产生 XSS finding。
 - LDAP 注入（`CWE-90`）：接收者类型为 `InitialDirContext`/`DirContext`/`LdapContext`/`LdapTemplate`/`LdapOperations` 时的 `search`/`lookup`/`authenticate(tainted, ...)`。
 - 四类仅在对应参数观察到该类 sink 或 sink 边界时附加 finding，ID 为 `<CWE>:<endpoint-path>:<parameter>`；未观察到的类别不出 finding，报告级 limitations 明确“未观察不等于安全”。
 - 构造器对非反序列化类别静默跳过，避免把普通 `new` 当作 sink；常量响应/反序列化流/XML/LDAP 查询不产生该类别 finding。
@@ -52,8 +59,23 @@
 - 写入：接收者类型为 `List`/`ArrayList`/`LinkedList`/`Set`/`HashSet`/`LinkedHashSet`/`TreeSet`/`Map`/`HashMap`/`LinkedHashMap`/`TreeMap`/`Collection`/`Queue`/`Deque`/`ArrayDeque` 时，`add`/`addAll`/`addFirst`/`addLast`/`offer`/`push`/`put`/`putIfAbsent`/`putAll(tainted)` 将容器变量标记为 tainted（`flow.kind=collection_add`）；容器变更本身不是 sink。
 - 读取：同一容器变量的 `get`/`getOrDefault`/`values`/`keySet`/`entrySet`/`toArray`/`iterator`/`peek`/`poll`/`pop`/`first`/`last` 在赋值或 sink 实参中传播 taint（`flow.kind=collection_read`）。
 - 泛型声明按擦除解析类型：`Map<String, String> values` 的接收者类型记为 `Map`，`List<String>` 记为 `List`；泛型内部的逗号不会被当作声明分隔符。
-- 容器污点按「局部变量或字段名」在单个 finding 内 flow-insensitive 传播；`clear`/`remove`、元素下标、跨方法容器内容与其他对象容器不建模。
+- 容器污点按「局部变量或字段名」在单个 finding 内 flow-insensitive 传播；字段容器的 `add`/`put` 会写入字段污点，字段 `clear()` 会删除（第十四片）；其他对象持有的容器不建模。
 - `add(String.format(q))` 等动态实参不猜测容器内容 → `limitation=collection_dynamic` 且 finding 保持 `inconclusive`；接收者类型未知的 `store.add(q)` 仍按 `boundary.kind=unresolved_call` 处理。
+
+### 集合跨方法突变与 `clear`（第十三片）
+
+- resolved 同项目方法收到调用方的集合局部变量，且方法体内对同名集合参数执行 tainted `add`/`put` 等写入（直接或经 resolved 调用传递）时，调用方集合被标记为 tainted（`flow.kind=collection_mutated`）；随后 `get` 等读取可继续传播到 sink。
+- 方法内对集合变量调用 `clear()`：丢弃该局部容器的 taint（`flow.kind=collection_clear`）；`clear` 之后重新写入 tainted 值则重新污染。字段容器的 `clear` 在第十四片补充建模。
+- resolved 方法体内对集合参数 `clear()` 会撤销该位置的突变摘要，调用方集合不再因该参数被标记。
+- 仍不建模：集合内元素的独立别名、其他对象持有的容器、跨线程/实例状态。未观察到路径仍为 `inconclusive`。
+
+### 数组下标、remove 与字段集合（第十四片）
+
+- 数组元素写入：`values[i] = tainted`（含 `this.field[i] = tainted`）标记数组变量/字段为 tainted（`flow.kind=array_write`）；后续 `values[i]` 读取传播 taint（`flow.kind=array_read`），可直接作为 sink 实参或先赋值。
+- 数组参数跨方法突变：resolved 方法内对数组参数元素写入会进入方法效果摘要，调用方数组被标记（与集合共用 `collection_mutated`）。
+- `remove`/`removeAll`/`retainAll`/`removeIf`：flow-insensitive 容器模型无法证明被删除的是 tainted 元素，因此**不清除**容器污点，记录 `flow.kind=collection_remove` 与 `limitation=collection_remove_flow_insensitive`；这是保守过近似，可能保留已移除的 taint。
+- 字段集合：`this.field.add/put(tainted)` 写入字段污点；`this.field.clear()` 删除字段污点（`flow.kind=collection_clear`）；同名局部变量/参数遮蔽字段，不写字段。
+- 数组声明类型保留 `[]`（参数、字段与局部变量）；多维数组按同一变量名整体标记，不区分维度。
 
 ### SQL 构造（第五片）
 
@@ -108,7 +130,7 @@
 
 1. 方法内：简单赋值、字符串 `+` 拼接、builder `append`/`toString`、字面量 `String.format`、构造器与静态工厂结果传播 taint；`String sql = q;`、`String sql = "..." + q`、`String sql = sb.toString();`、`String sql = String.format("...%s", q);`、`URL u = new URL(q);`、`Path p = Paths.get(q);` 可识别。
 2. 跨方法：通过字段类型/局部变量类型解析同项目方法（同包或唯一简单类名），沿继承链解析、按简单实参类型消解重载，并处理唯一接口/抽象实现，最多 8 层，visited 防环；tainted 实参映射到目标方法参数，并汇总目标方法的 tainted 返回值与 builder 参数突变。
-3. 显式不建模：控制流分支敏感、循环、别名/points-to、集合的清空/移除与跨方法容器内容、实例/线程区分、其他对象字段、lambda 方法体、泛型类型实参、显式数组实参、无法用简单类型消解的重载、快照外父类型成员、反射目标、外部库实现、框架 sanitizer、链式构造器（`new ProcessBuilder(q).start()`）、`HttpClient` builder 链、框架封装的命令/HTTP/模板调用。
+3. 显式不建模：控制流分支敏感、循环、别名/points-to、实例/线程区分、其他对象字段与容器、lambda 方法体、泛型类型实参、显式数组实参、无法用简单类型消解的重载、快照外父类型成员、反射目标、外部库实现、框架 sanitizer、链式构造器（`new ProcessBuilder(q).start()`）、`HttpClient` builder 链、框架封装的命令/HTTP/模板调用。
 4. builder 仅当接收者类型解析为 `StringBuilder`/`StringBuffer` 时建模；链式/未知接收者、非字面量 `String.format` 模式、`Locale` 重载均为边界而非猜测。
 5. 返回值/突变摘要只对 resolved 同项目方法成立；重复调用使用同一摘要缓存，递归命中标记 unresolved 而不是假定清洁。
 6. 字段污点按类层级、flow-insensitive 地在单个 finding 内传播；无方法体且实现数不唯一的调用输出 `ambiguous_dispatch` 边界，不猜测实现。
@@ -126,7 +148,7 @@
   - `endpoint`（路径、HTTP 方法、符号、文件、SHA、行号）。
   - `sources[]`（参数、类型、绑定注解、显式绑定名、文件、行号）。
   - `sink` / `protection` / `boundary`（互斥或按状态出现）。
-  - `flow[]`（call/concat/assign/constructor/builder_append/builder_to_string/builder_mutated/command_append/string_format/string_format_dynamic/collection_add/collection_read/return/field_write/field_read/sink/command_sink/ssrf_sink/path_sink/template_sink/xss_sink/deserialization_sink/xxe_sink/ldap_sink/value_binding/dynamic/ambiguous_dispatch/ambiguous_overload/unresolved_parent/unresolved_call/unresolved_sink，文件与行号）。
+  - `flow[]`（call/concat/assign/constructor/builder_append/builder_to_string/builder_mutated/command_append/string_format/string_format_dynamic/collection_add/collection_read/collection_mutated/collection_clear/collection_remove/array_write/array_read/return/field_write/field_read/reflected_return/return_content_type/sink/command_sink/ssrf_sink/path_sink/template_sink/xss_sink/deserialization_sink/xxe_sink/ldap_sink/value_binding/dynamic/ambiguous_dispatch/ambiguous_overload/unresolved_parent/unresolved_call/unresolved_sink，文件与行号）。
   - `evidence[]`（文件、SHA、方法起止行、`fixture:*` 锚点）。
   - `limitations[]`（状态相关限制）。
 - `coverage`：Java 文件扫描/拒绝、方法数、endpoint 清单/分析数、confirmed/refuted/inconclusive、跨方法解析/未解析、动态边界；`java_ast=not_available`、`taint_analysis=bounded_lexical_multi_category`、`runtime_status=not_run`。
@@ -251,3 +273,44 @@
 - 工程仍无 Git 仓库，无 commit。
 
 未验证（第十二片后）：Java AST/类型系统、分支敏感/别名/points-to/实例区分、集合的 `clear`/`remove` 与跨方法容器内容、元素下标与泛型类型实参、反射目标、外部库实现、反序列化 gadget 链与 `new(...).readObject()` 链式构造、XXE 的 `XMLInputFactory`/`Transformer` 更多入口、响应返回值型 XSS（Controller 直接 `return` 用户输入）、运行时利用与补丁验证。未观察到的类别不出 finding，不代表应用安全。
+
+第十三片实际执行（2026-11-13，`ToolVersion=0.2.0-p0.2+r2-source-sink-flow-v10`、`analysis_scope=single_parameter_multi_category_v10`）：
+
+- `go test ./internal/dataflow -count=1`：通过（14 个 dataflow 单测）。`TestAnalyzeCollectionCrossMethodClearAndReflectedReturn` 覆盖 8 个 endpoint / 10 个 finding。
+- 新独立样本 `tests/fixtures/java-container-reflect`：8 个 endpoint / 10 个 finding，confirmed=3、inconclusive=7、refuted=0；其中 SQL finding 固定 8 个（每参数一个）。
+  - 正例：`/container/mutate`（`fill(values, name)` 内 `add` → `collection_mutated` → `get` → `executeQuery`）、`/container/clear-refill`（`add`→`clear`→再 `add` → confirmed）、`/xxe/sax-reader`（`SAXReader.read(xml)` → XXE confirmed）。
+  - 负例：`/container/clear`（`add`→`clear` 后读取，无 sink，SQL 保持 inconclusive）、`/container/constant`（常量入容器不产生 `collection_add`）、`/reflect/clean`（返回常量不产生 XSS finding）。
+  - 边界：`/container/helper-clear`（callee 内 `add`+`clear`，`collection_clear` 撤销突变，SQL inconclusive）、`/reflect/return`（`return q;` → `boundary.kind=reflected_return`，XSS inconclusive）。
+  - 快照与源目录运行前后字节级不变；未执行 Java/Maven、未调用模型。
+- 原九套样本计数不变（3/9/7/8/5/6/21/24/10 finding 的既有记录未回归），回归通过。
+- `python scripts/test-dataflow.py`：通过，新增 `[11]` 块与 8 个检查项。
+- 当前工作区存在 Git 仓库（`main`，HEAD `c44fb1f`），本片改动未提交。
+
+未验证（第十三片后）：Java AST/类型系统、分支敏感/别名/points-to/实例区分、集合的 `remove`/元素下标/字段 `clear`、其他对象持有的容器、反射目标、外部库实现、反序列化 gadget 链、`XMLInputFactory`/`Transformer` 更多 XXE 入口、反射返回值的 `produces`/content-type/转义解析、运行时利用与补丁验证。未观察到的类别不出 finding，不代表应用安全。
+
+第十四片实际执行（2026-11-13，`ToolVersion=0.2.0-p0.2+r2-source-sink-flow-v11`、`analysis_scope=single_parameter_multi_category_v11`，入口清单 `r2-endpoint-inventory-v2`）：
+
+- `go test ./internal/audit ./internal/dataflow -count=1`：通过（audit 新增 `TestInspectProducesAndResponseBody`；dataflow 15 个单测，含 `TestAnalyzeArrayRemoveFieldClearProducesAndChains`）。
+- 新独立样本 `tests/fixtures/java-flow-gaps`（2 个 Java 文件）：16 个 endpoint / 23 个 finding，confirmed=10、refuted=1、inconclusive=12。
+  - 正例：`/array/write`（`array_write`→`array_read`→SQL）、`/array/helper`（数组参数跨方法突变）、`/field/keep`（字段集合 add→read）、`/reflect/html`（`produces=text/html` → `return:text/html` confirmed）、`/deserialize/chain`（`new ObjectInputStream(...).readObject`）、`/xxe/build`、`/xxe/digester`、`/xxe/helper`、`/xxe/event`。
+  - 负例：`/array/constant`、`/reflect/constant-html`、`/reflect/view`（普通 `@Controller` 视图名）、`/deserialize/chain-constant`。
+  - 保守语义：`/remove/keep` 保持 confirmed 并标记 `collection_remove_flow_insensitive`；`/field/clear` 在字段 `clear` 后不确认。
+  - `produces` 判定：`/reflect/json` 为 `refuted`，`protection.detail` 记录 `produces=application/json`。
+  - 快照与源目录运行前后字节级不变；未执行 Java/Maven、未调用模型。
+- 原十套样本计数不变（3/9/7/8/5/6/21/24/10/10 finding 的既有记录未回归），回归通过。
+- `python scripts/test-dataflow.py`：通过，新增 `[12]` 块与 16 个检查项。
+- 当前工作区存在 Git 仓库（`main`，HEAD `c44fb1f`），本片改动未提交。
+
+未验证（第十四片后）：Java AST/类型系统、分支敏感/别名/points-to/实例区分、集合元素级 `remove` 精度、其他对象持有的容器与字段、反射目标、外部库实现、反序列化 gadget 链与绕过、更多框架 XML 入口、`produces` 之外的内容协商/转义、运行时利用与补丁验证。未观察到的类别不出 finding，不代表应用安全。
+
+## 第十五片：框架 sink、上传、字面量元素精度与导入感知解析（2026-11-13）
+
+- `ToolVersion=0.2.0-p0.2+r2-source-sink-flow-v12`、`analysis_scope=single_parameter_multi_category_v12`；入口清单 `r2-endpoint-inventory-v3`，支持 JAX-RS 参数绑定。
+- 新增 `upload` 类别（CWE-434）：`MultipartFile.transferTo(tainted)`、`Part.write(tainted)`；仅构造上传对象或常量目标不确认。
+- SQL 扩展：`JdbcTemplate`/`NamedParameterJdbcTemplate`/`JdbcOperations` 的 `query/queryForObject/queryForList/queryForMap/queryForRowSet/update/batchUpdate/execute` 只把第一个 SQL 参数作为 sink，值绑定实参不误报；JPA `EntityManager` 与 Hibernate `Session/StatelessSession` 的 `createQuery/createNativeQuery` 同样只取 SQL/JPQL 文本。
+- SSRF 扩展：`HttpRequest.newBuilder().uri(tainted)`、`WebClient`/`WebClient.Builder` 的 `uri(tainted)`；通过有界 fluent-chain 回溯识别接收者类型，未知类型仍走 unresolved/不确认。
+- 元素级容器精度：字面量下标 `values[i] = tainted`、`list.set(i, tainted)`、`list.add(i, tainted)` 记录 `name[i]`；`values[i]`/`get(i)` 优先读取该元素，缺失时回退到容器聚合；`remove(i)` 删除该元素污点，若同时存在聚合污点仍保留 `collection_remove_flow_insensitive`；`clear()` 删除容器及其全部元素键。非字面量下标继续使用聚合语义。
+- 导入感知类型解析：解析 `import` 与静态/通配导入；当同一简单名在项目内映射唯一时用于类解析，同一简单名被不同文件导入到不同类时不猜测。该方法用于跨包父类型、接收者与 helper 分派。
+- 新样本 `tests/fixtures/java-advanced-sinks`（3 个 Java 文件、12 endpoint）：11 个分析入口、14 finding，confirmed=7、inconclusive=7、refuted=0。正例覆盖 JdbcTemplate、JPA、HttpClient/WebClient、MultipartFile、字面量元素读、import helper；负例覆盖值绑定、常量上传、未污染元素、`remove(index)` 后读取、清洁 helper。
+- `python scripts/test-dataflow.py` 新增 `[13]` 块；原十套样本计数不变（3/9/7/8/5/6/21/24/10/10/23）。未执行 Java/Maven、未调用模型，快照与源目录字节级不变。
+- 未验证：非字面量元素级精度、其他对象持有的容器/字段、完整 AST/别名、框架封装调用（`HttpClient.send` 链、模板/ORM 二次封装）、`produces` 之外的内容协商、运行时利用。

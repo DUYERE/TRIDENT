@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"trident/internal/project"
+	"trident/internal/sbom"
 	"trident/internal/sca"
 )
 
@@ -16,12 +17,13 @@ import (
 // the snapshot; an advisory catalog must be an explicit local file.
 func runSCA(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: trident sca inspect --snapshot <dir> --snapshot-hash <sha256> [--advisories <file>]")
+		return fmt.Errorf("usage: trident sca <inspect|sbom|tree> --snapshot <dir> --snapshot-hash <sha256> [--advisories <file>]")
 	}
-	if args[0] != "inspect" {
-		return fmt.Errorf("unknown sca command %q", args[0])
+	command := args[0]
+	if command != "inspect" && command != "sbom" && command != "tree" {
+		return fmt.Errorf("unknown sca command %q", command)
 	}
-	flags := flag.NewFlagSet("sca inspect", flag.ContinueOnError)
+	flags := flag.NewFlagSet("sca "+command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var snapshotDir, expectedHash, advisoryPath string
 	flags.StringVar(&snapshotDir, "snapshot", "", "existing trusted snapshot directory")
@@ -31,7 +33,7 @@ func runSCA(ctx context.Context, args []string, out io.Writer) error {
 		return fmt.Errorf("invalid sca arguments: %w", err)
 	}
 	if flags.NArg() != 0 || snapshotDir == "" || expectedHash == "" {
-		return fmt.Errorf("sca inspect requires --snapshot and --snapshot-hash and no positional arguments")
+		return fmt.Errorf("sca %s requires --snapshot and --snapshot-hash and no positional arguments", command)
 	}
 	snapshot, err := project.Open(ctx, snapshotDir, expectedHash)
 	if err != nil {
@@ -42,5 +44,15 @@ func runSCA(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return json.NewEncoder(out).Encode(report)
+	if command == "inspect" {
+		return json.NewEncoder(out).Encode(report)
+	}
+	if command == "tree" {
+		return json.NewEncoder(out).Encode(sca.Tree(report))
+	}
+	document, err := sbom.Build(report, sbom.Options{SnapshotHash: snapshot.Hash(), ToolVersion: sbom.ToolVersion, Partial: report.Partial})
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(document)
 }

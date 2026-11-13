@@ -91,7 +91,7 @@ def main():
         common = ["--snapshot", str(snapshot), "--snapshot-hash", snapshot_hash]
 
         report = invoke("sca", "inspect", *common, "--advisories", str(ADVISORY), retries=3)
-        require(report["schema_version"] == 1 and report["analysis_kind"] == "maven_declaration_only",
+        require(report["schema_version"] == 1 and report["analysis_kind"] == "maven_declaration_inventory",
                 "Unexpected SCA report identity")
         require(report["partial"] is False and report["snapshot_hash"] == snapshot_hash,
                 "Snapshot binding or partial coverage mismatch")

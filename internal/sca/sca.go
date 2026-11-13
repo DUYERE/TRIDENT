@@ -19,7 +19,7 @@ import (
 
 const (
 	SchemaVersion = 1
-	ToolVersion   = "0.2.0-p0.2+r2-sca-declarations"
+	ToolVersion   = "0.2.0-p0.2+r2-sca-declarations-v2"
 
 	MaxPOMBytes             = 512 << 10
 	MaxPOMCount             = 512
@@ -62,10 +62,12 @@ type Report struct {
 }
 
 type Project struct {
-	BuildSystem string   `json:"build_system"`
-	RootPOMs    []string `json:"root_poms"`
-	ModuleCount int      `json:"module_count"`
-	POMCount    int      `json:"pom_count"`
+	BuildSystem     string   `json:"build_system"`
+	RootPOMs        []string `json:"root_poms"`
+	RootGradleFiles []string `json:"root_gradle_files,omitempty"`
+	GradleFileCount int      `json:"gradle_file_count"`
+	ModuleCount     int      `json:"module_count"`
+	POMCount        int      `json:"pom_count"`
 }
 
 type Module struct {
@@ -78,6 +80,7 @@ type Module struct {
 	Parent      string   `json:"parent,omitempty"`
 	Aggregator  bool     `json:"aggregator"`
 	ModuleDirs  []string `json:"module_directories,omitempty"`
+	ProjectDeps []string `json:"project_dependencies,omitempty"`
 	VersionNote string   `json:"version_note,omitempty"`
 }
 
@@ -100,35 +103,42 @@ type Dependency struct {
 }
 
 type AdvisoryInfo struct {
-	AdvisoryID                       string `json:"advisory_id"`
-	Package                          string `json:"package"`
-	SourceID                         string `json:"source_id,omitempty"`
-	Policy                           string `json:"policy,omitempty"`
-	RetrievedDate                    string `json:"retrieved_date,omitempty"`
-	VersionCaseCount                 int    `json:"version_case_count"`
-	AllCVEsChecked                   bool   `json:"all_cves_checked"`
-	ArtifactHashesAvailable          bool   `json:"artifact_hashes_available"`
-	EffectiveDependencyTreeAvailable bool   `json:"effective_dependency_tree_available"`
-	RuntimeExploitTestAvailable      bool   `json:"runtime_exploit_test_available"`
+	AdvisoryID                       string   `json:"advisory_id"`
+	Aliases                          []string `json:"aliases,omitempty"`
+	AliasesComplete                  bool     `json:"aliases_complete"`
+	Package                          string   `json:"package"`
+	SourceID                         string   `json:"source_id,omitempty"`
+	Policy                           string   `json:"policy,omitempty"`
+	RetrievedDate                    string   `json:"retrieved_date,omitempty"`
+	VersionCaseCount                 int      `json:"version_case_count"`
+	RangeCaseCount                   int      `json:"range_case_count"`
+	AllCVEsChecked                   bool     `json:"all_cves_checked"`
+	ArtifactHashesAvailable          bool     `json:"artifact_hashes_available"`
+	EffectiveDependencyTreeAvailable bool     `json:"effective_dependency_tree_available"`
+	RuntimeExploitTestAvailable      bool     `json:"runtime_exploit_test_available"`
 }
 
 type AdvisoryMatch struct {
-	AdvisoryID        string `json:"advisory_id"`
-	Module            string `json:"module"`
-	Dependency        string `json:"dependency"`
-	DeclaredVersion   string `json:"declared_version,omitempty"`
-	VersionStatus     string `json:"version_status"`
-	SupplyChainStatus string `json:"supply_chain_status"`
-	FindingStatus     string `json:"finding_status"`
-	AssessmentScope   string `json:"assessment_scope,omitempty"`
-	Reason            string `json:"reason,omitempty"`
-	RuntimeStatus     string `json:"runtime_status"`
-	InputReachability string `json:"input_reachability"`
+	AdvisoryID        string   `json:"advisory_id"`
+	Aliases           []string `json:"aliases,omitempty"`
+	Module            string   `json:"module"`
+	Dependency        string   `json:"dependency"`
+	DeclaredVersion   string   `json:"declared_version,omitempty"`
+	VersionStatus     string   `json:"version_status"`
+	SupplyChainStatus string   `json:"supply_chain_status"`
+	FindingStatus     string   `json:"finding_status"`
+	MatchedBy         string   `json:"matched_by,omitempty"`
+	AssessmentScope   string   `json:"assessment_scope,omitempty"`
+	Reason            string   `json:"reason,omitempty"`
+	RuntimeStatus     string   `json:"runtime_status"`
+	InputReachability string   `json:"input_reachability"`
 }
 
 type Coverage struct {
 	POMsScanned            int    `json:"poms_scanned"`
 	POMsRejected           int    `json:"poms_rejected"`
+	GradleFilesScanned     int    `json:"gradle_files_scanned"`
+	GradleFilesRejected    int    `json:"gradle_files_rejected"`
 	AdvisoriesLoaded       int    `json:"advisories_loaded"`
 	DependenciesDeclared   int    `json:"dependencies_declared"`
 	DependenciesResolved   int    `json:"dependencies_resolved"`
@@ -151,8 +161,8 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 		SchemaVersion: SchemaVersion,
 		ToolVersion:   ToolVersion,
 		SnapshotHash:  snapshot.Hash(),
-		AnalysisKind:  "maven_declaration_only",
-		Project:       Project{BuildSystem: "unknown", RootPOMs: []string{}, ModuleCount: 0},
+		AnalysisKind:  "declaration_inventory",
+		Project:       Project{BuildSystem: "unknown", RootPOMs: []string{}, RootGradleFiles: []string{}, ModuleCount: 0},
 		Modules:       []Module{},
 		Dependencies:  []Dependency{},
 		Advisories:    []AdvisoryInfo{},
@@ -163,7 +173,7 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 			RuntimeStatus:  "not_run",
 		},
 		Limitations: []string{
-			"maven_not_executed: declarations only; no effective dependency tree, profiles, BOM imports, version ranges, conflict mediation or repository resolution",
+			"build_tools_not_executed: declarations only; no effective dependency tree, profiles, BOM imports, conflict mediation or repository resolution",
 			"transitive_dependencies_unavailable: only direct declarations are reported",
 			"artifact_hashes_unavailable",
 			"runtime_status_not_run: declared versions do not prove classpath, reachability or exploitability",
@@ -171,59 +181,124 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 		},
 	}
 
-	var pomPaths []string
+	var pomPaths, gradlePaths []string
 	for _, entry := range snapshot.Manifest().Entries {
-		if path.Base(entry.Path) == "pom.xml" {
+		base := path.Base(entry.Path)
+		switch base {
+		case "pom.xml":
 			pomPaths = append(pomPaths, entry.Path)
+		case "build.gradle", "build.gradle.kts":
+			gradlePaths = append(gradlePaths, entry.Path)
 		}
 	}
 	sort.Strings(pomPaths)
+	sort.Strings(gradlePaths)
 	report.Project.POMCount = len(pomPaths)
-	if len(pomPaths) == 0 {
-		report.Limitations = append(report.Limitations, "no_maven_pom_found")
+	report.Project.GradleFileCount = len(gradlePaths)
+	if len(pomPaths) == 0 && len(gradlePaths) == 0 {
+		report.Limitations = append(report.Limitations, "no_maven_pom_found", "no_gradle_build_file_found")
+		sort.Strings(report.Limitations)
+		report.Limitations = dedupe(report.Limitations)
 		return report, nil
 	}
 	if len(pomPaths) > MaxPOMCount {
 		return Report{}, fmt.Errorf("%w: POM count exceeds %d", ErrLimit, MaxPOMCount)
 	}
-	report.Project.BuildSystem = "Maven"
 
-	models := make(map[string]*pomModel, len(pomPaths))
-	for _, pomPath := range pomPaths {
-		if err := ctx.Err(); err != nil {
-			return Report{}, err
+	dependencies := []Dependency{}
+	if len(pomPaths) > 0 {
+		models := make(map[string]*pomModel, len(pomPaths))
+		for _, pomPath := range pomPaths {
+			if err := ctx.Err(); err != nil {
+				return Report{}, err
+			}
+			data, err := snapshot.ReadFile(ctx, pomPath)
+			if err != nil {
+				return Report{}, err
+			}
+			model, err := parsePOM(pomPath, data)
+			if err != nil {
+				report.Partial = true
+				report.Coverage.POMsRejected++
+				report.Limitations = append(report.Limitations, "rejected_pom:"+pomPath+":"+pomErrorReason(err))
+				continue
+			}
+			models[pomPath] = model
 		}
-		data, err := snapshot.ReadFile(ctx, pomPath)
-		if err != nil {
-			return Report{}, err
+		report.Coverage.POMsScanned = len(models)
+
+		r := newResolution(models)
+		for _, pomPath := range sortedKeys(models) {
+			r.resolve(models[pomPath])
 		}
-		model, err := parsePOM(pomPath, data)
-		if err != nil {
+		r.applyModuleEdges()
+		if len(r.problems) > 0 {
 			report.Partial = true
-			report.Coverage.POMsRejected++
-			report.Limitations = append(report.Limitations, "rejected_pom:"+pomPath+":"+pomErrorReason(err))
-			continue
+			report.Limitations = append(report.Limitations, r.problems...)
 		}
-		models[pomPath] = model
-	}
-	report.Coverage.POMsScanned = len(models)
 
-	r := newResolution(models)
-	for _, pomPath := range sortedKeys(models) {
-		r.resolve(models[pomPath])
-	}
-	r.applyModuleEdges()
-	if len(r.problems) > 0 {
-		report.Partial = true
-		report.Limitations = append(report.Limitations, r.problems...)
+		modules, rootPOMs, moduleCount := buildModules(models, r)
+		report.Modules = modules
+		report.Project.RootPOMs = rootPOMs
+		report.Project.ModuleCount = moduleCount
+		dependencies = append(dependencies, buildDependencies(models, r)...)
 	}
 
-	modules, rootPOMs, moduleCount := buildModules(models, r)
-	report.Modules = modules
-	report.Project.RootPOMs = rootPOMs
-	report.Project.ModuleCount = moduleCount
+	if len(gradlePaths) > 0 {
+		gradleFiles, gradleDependencies, rejected, problems, err := inspectGradle(ctx, snapshot)
+		if err != nil {
+			return Report{}, err
+		}
+		report.Coverage.GradleFilesScanned = len(gradleFiles)
+		report.Coverage.GradleFilesRejected = rejected
+		report.Partial = report.Partial || rejected > 0 || len(problems) > 0
+		report.Limitations = append(report.Limitations, problems...)
+		report.Modules = append(report.Modules, gradleModules(gradleFiles)...)
+		report.Project.ModuleCount += len(gradleFiles)
+		for _, file := range gradleFiles {
+			root := true
+			for _, other := range gradleFiles {
+				if other.Path != file.Path && gradleDirAncestor(file.Directory, other.Directory) {
+					root = false
+					break
+				}
+			}
+			if root {
+				report.Project.RootGradleFiles = append(report.Project.RootGradleFiles, file.Path)
+			}
+		}
+		sort.Strings(report.Project.RootGradleFiles)
+		for _, dependency := range gradleDependencies {
+			dependencies = append(dependencies, Dependency{
+				Module:         dependency.Directory,
+				GroupID:        dependency.GroupID,
+				ArtifactID:     dependency.ArtifactID,
+				Version:        dependency.Version,
+				Scope:          dependency.Configuration,
+				Type:           "jar",
+				Direct:         true,
+				DeclarationPOM: dependency.File,
+				VersionStatus:  dependency.VersionStatus,
+				VersionReason:  dependency.VersionReason,
+			})
+		}
+		sortDependencies(dependencies)
+	}
 
-	dependencies := buildDependencies(models, r)
+	switch {
+	case len(pomPaths) > 0 && len(gradlePaths) > 0:
+		report.Project.BuildSystem = "Maven+Gradle"
+		report.AnalysisKind = "maven_gradle_declaration_inventory"
+	case len(pomPaths) > 0:
+		report.Project.BuildSystem = "Maven"
+		report.AnalysisKind = "maven_declaration_inventory"
+	default:
+		report.Project.BuildSystem = "Gradle"
+		report.AnalysisKind = "gradle_declaration_inventory"
+	}
+	if len(gradlePaths) > 0 {
+		report.Limitations = append(report.Limitations, "gradle_not_executed: common Groovy/Kotlin dependency notations only; no plugins, settings evaluation, version catalogs, BOM/platform resolution or transitive configurations")
+	}
 	report.Dependencies = dependencies
 	report.Coverage.DependenciesDeclared = len(dependencies)
 	for _, dep := range dependencies {
@@ -243,13 +318,69 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 	if len(advisories) == 0 {
 		report.Limitations = append(report.Limitations, "advisory_matching_disabled: no explicit advisory catalog supplied")
 	} else {
-		report.Limitations = append(report.Limitations, "advisory_matching_exact_versions_only: no range, alias, transitive or runtime inference")
+		report.Limitations = append(report.Limitations, "advisory_matching_declared_cases: exact versions and caller-declared ranges only; no transitive or runtime inference")
 	}
 	report.AdvisoryMatches = matchAdvisories(dependencies, advisories)
 
 	sort.Strings(report.Limitations)
 	report.Limitations = dedupe(report.Limitations)
 	return report, nil
+}
+
+func gradleModules(files []gradleFile) []Module {
+	modules := make([]Module, 0, len(files))
+	for _, file := range files {
+		parent := ""
+		for _, other := range files {
+			if other.Path == file.Path || !gradleDirAncestor(file.Directory, other.Directory) {
+				continue
+			}
+			if parent == "" || len(other.Directory) > len(path.Dir(parent)) {
+				parent = other.Path
+			}
+		}
+		modules = append(modules, Module{
+			POM:         file.Path,
+			Directory:   file.Directory,
+			GroupID:     file.GroupID,
+			ArtifactID:  file.Name,
+			Version:     file.Version,
+			Packaging:   "jar",
+			Parent:      parent,
+			Aggregator:  false,
+			ProjectDeps: file.ProjectDeps,
+		})
+	}
+	return modules
+}
+
+func gradleDirAncestor(fileDir, candidate string) bool {
+	if fileDir == candidate {
+		return false
+	}
+	if candidate == "." {
+		return fileDir != "."
+	}
+	return strings.HasPrefix(fileDir, candidate+"/")
+}
+
+func sortDependencies(dependencies []Dependency) {
+	sort.Slice(dependencies, func(i, j int) bool {
+		a, b := dependencies[i], dependencies[j]
+		if a.Module != b.Module {
+			return a.Module < b.Module
+		}
+		if a.GroupID != b.GroupID {
+			return a.GroupID < b.GroupID
+		}
+		if a.ArtifactID != b.ArtifactID {
+			return a.ArtifactID < b.ArtifactID
+		}
+		if a.DeclarationPOM != b.DeclarationPOM {
+			return a.DeclarationPOM < b.DeclarationPOM
+		}
+		return a.Version < b.Version
+	})
 }
 
 // ---------------------------------------------------------------------------

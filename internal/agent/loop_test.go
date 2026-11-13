@@ -182,7 +182,7 @@ func withConfig(t *testing.T, m *memoryRunner, change func(*Config)) {
 func TestLoopEvidenceBackedCompletionAndTerminalReplay(t *testing.T) {
 	m, r, _ := loopFixture(t)
 	client := &scriptedClient{t: t, complete: func(n int, request model.Request) (model.Response, error) {
-		if len(request.Tools) != 4 || request.Messages[0].Role != "system" {
+		if len(request.Tools) != 9 || request.Messages[0].Role != "system" {
 			t.Fatal("unbounded or missing protocol tools")
 		}
 		if n == 1 {

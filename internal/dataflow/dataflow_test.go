@@ -1270,6 +1270,207 @@ func TestAnalyzeCollectionTaint(t *testing.T) {
 	}
 }
 
+func TestAnalyzeCollectionCrossMethodClearAndReflectedReturn(t *testing.T) {
+	snapshot := namedFixtureSnapshot(t, "java-container-reflect")
+	report, err := Analyze(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Partial || report.Coverage.EndpointsAnalyzed != 8 || len(report.Findings) != 10 {
+		t.Fatalf("coverage: %+v findings=%d", report.Coverage, len(report.Findings))
+	}
+	if report.Coverage.FindingsConfirmed != 3 || report.Coverage.FindingsInconclusive != 7 || report.Coverage.FindingsRefuted != 0 {
+		t.Fatalf("status counts: %+v", report.Coverage)
+	}
+	sqlFindings := 0
+	for _, finding := range report.Findings {
+		if finding.CWE == "CWE-89" {
+			sqlFindings++
+		}
+		if finding.RuntimeStatus != "not_run" {
+			t.Fatalf("runtime overclaim: %+v", finding)
+		}
+	}
+	if sqlFindings != 8 {
+		t.Fatalf("sql findings: %d", sqlFindings)
+	}
+
+	mutated := findingForCWE(report, "/container/mutate", "CWE-89")
+	if mutated == nil || mutated.Status != "static_confirmed" || mutated.Sink == nil || mutated.Sink.API != "statement.executeQuery" {
+		t.Fatalf("cross-method collection mutation: %+v", mutated)
+	}
+	if !hasFlowKind(mutated.Flow, "collection_mutated") || !hasFlowKind(mutated.Flow, "collection_add") {
+		t.Fatalf("collection mutation flow: %+v", mutated.Flow)
+	}
+	if !hasAnchor(*mutated, "fixture:container-helper-add") {
+		t.Fatalf("collection mutation evidence: %+v", mutated.Evidence)
+	}
+
+	cleared := findingForCWE(report, "/container/clear", "CWE-89")
+	if cleared == nil || cleared.Status != "inconclusive" || cleared.Sink != nil {
+		t.Fatalf("collection clear: %+v", cleared)
+	}
+	if !hasFlowKind(cleared.Flow, "collection_clear") || hasFlowKind(cleared.Flow, "sink") {
+		t.Fatalf("collection clear flow: %+v", cleared.Flow)
+	}
+
+	refilled := findingForCWE(report, "/container/clear-refill", "CWE-89")
+	if refilled == nil || refilled.Status != "static_confirmed" || refilled.Sink == nil || !hasFlowKind(refilled.Flow, "collection_clear") {
+		t.Fatalf("collection clear refill: %+v", refilled)
+	}
+
+	helperCleared := findingForCWE(report, "/container/helper-clear", "CWE-89")
+	if helperCleared == nil || helperCleared.Status != "inconclusive" || helperCleared.Sink != nil {
+		t.Fatalf("callee collection clear: %+v", helperCleared)
+	}
+	if !hasFlowKind(helperCleared.Flow, "collection_clear") {
+		t.Fatalf("callee collection clear flow: %+v", helperCleared.Flow)
+	}
+
+	constant := findingForCWE(report, "/container/constant", "CWE-89")
+	if constant == nil || constant.Status != "inconclusive" || constant.Sink != nil || hasFlowKind(constant.Flow, "collection_add") {
+		t.Fatalf("constant collection negative control: %+v", constant)
+	}
+
+	reflected := findingForCWE(report, "/reflect/return", "CWE-79")
+	if reflected == nil || reflected.Status != "inconclusive" || reflected.Sink != nil {
+		t.Fatalf("reflected return boundary: %+v", reflected)
+	}
+	if reflected.Boundary == nil || reflected.Boundary.Kind != "reflected_return" {
+		t.Fatalf("reflected return boundary kind: %+v", reflected.Boundary)
+	}
+	if !hasFlowKind(reflected.Flow, "reflected_return") || !containsString(reflected.Limitations, "reflected_return_content_type_unverified") {
+		t.Fatalf("reflected return flow/limitations: %+v", reflected)
+	}
+
+	if clean := findingForCWE(report, "/reflect/clean", "CWE-79"); clean != nil {
+		t.Fatalf("clean return must not produce an XSS finding: %+v", clean)
+	}
+
+	xxe := findingForCWE(report, "/xxe/sax-reader", "CWE-611")
+	if xxe == nil || xxe.Status != "static_confirmed" || xxe.Sink == nil || xxe.Sink.API != "SAXReader.read" {
+		t.Fatalf("SAXReader XXE: %+v", xxe)
+	}
+	if !hasFlowKind(xxe.Flow, "xxe_sink") {
+		t.Fatalf("SAXReader XXE flow: %+v", xxe.Flow)
+	}
+}
+
+func TestAnalyzeArrayRemoveFieldClearProducesAndChains(t *testing.T) {
+	snapshot := namedFixtureSnapshot(t, "java-flow-gaps")
+	report, err := Analyze(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Partial || report.Coverage.EndpointsAnalyzed != 16 || len(report.Findings) != 23 {
+		t.Fatalf("coverage: %+v findings=%d", report.Coverage, len(report.Findings))
+	}
+	if report.Coverage.FindingsConfirmed != 10 || report.Coverage.FindingsRefuted != 1 || report.Coverage.FindingsInconclusive != 12 {
+		t.Fatalf("status counts: %+v", report.Coverage)
+	}
+	sqlFindings := 0
+	for _, finding := range report.Findings {
+		if finding.CWE == "CWE-89" {
+			sqlFindings++
+		}
+		if finding.RuntimeStatus != "not_run" {
+			t.Fatalf("runtime overclaim: %+v", finding)
+		}
+	}
+	if sqlFindings != 16 {
+		t.Fatalf("sql findings: %d", sqlFindings)
+	}
+
+	arrayWrite := findingForCWE(report, "/array/write", "CWE-89")
+	if arrayWrite == nil || arrayWrite.Status != "static_confirmed" || arrayWrite.Sink == nil {
+		t.Fatalf("array write: %+v", arrayWrite)
+	}
+	if !hasFlowKind(arrayWrite.Flow, "array_write") || !hasFlowKind(arrayWrite.Flow, "array_read") {
+		t.Fatalf("array write flow: %+v", arrayWrite.Flow)
+	}
+
+	arrayConstant := findingForCWE(report, "/array/constant", "CWE-89")
+	if arrayConstant == nil || arrayConstant.Status != "inconclusive" || hasFlowKind(arrayConstant.Flow, "array_write") {
+		t.Fatalf("array constant: %+v", arrayConstant)
+	}
+
+	arrayHelper := findingForCWE(report, "/array/helper", "CWE-89")
+	if arrayHelper == nil || arrayHelper.Status != "static_confirmed" || arrayHelper.Sink == nil {
+		t.Fatalf("array helper: %+v", arrayHelper)
+	}
+	if !hasFlowKind(arrayHelper.Flow, "collection_mutated") || !hasFlowKind(arrayHelper.Flow, "array_write") || !hasAnchor(*arrayHelper, "fixture:array-helper-write") {
+		t.Fatalf("array helper flow/evidence: %+v", arrayHelper)
+	}
+
+	removed := findingForCWE(report, "/remove/keep", "CWE-89")
+	if removed == nil || removed.Status != "static_confirmed" || !hasFlowKind(removed.Flow, "collection_remove") {
+		t.Fatalf("collection remove: %+v", removed)
+	}
+	if !containsString(removed.Limitations, "collection_remove_flow_insensitive") {
+		t.Fatalf("collection remove limitation: %+v", removed.Limitations)
+	}
+
+	fieldKeep := findingForCWE(report, "/field/keep", "CWE-89")
+	if fieldKeep == nil || fieldKeep.Status != "static_confirmed" || !hasFlowKind(fieldKeep.Flow, "collection_add") {
+		t.Fatalf("field collection: %+v", fieldKeep)
+	}
+
+	fieldClear := findingForCWE(report, "/field/clear", "CWE-89")
+	if fieldClear == nil || fieldClear.Status != "inconclusive" || fieldClear.Sink != nil || !hasFlowKind(fieldClear.Flow, "collection_clear") {
+		t.Fatalf("field collection clear: %+v", fieldClear)
+	}
+
+	html := findingForCWE(report, "/reflect/html", "CWE-79")
+	if html == nil || html.Status != "static_confirmed" || html.Sink == nil || html.Sink.API != "return:text/html" {
+		t.Fatalf("html reflected return: %+v", html)
+	}
+	if !hasFlowKind(html.Flow, "reflected_return") || !hasFlowKind(html.Flow, "xss_sink") {
+		t.Fatalf("html reflected return flow: %+v", html.Flow)
+	}
+
+	json := findingForCWE(report, "/reflect/json", "CWE-79")
+	if json == nil || json.Status != "refuted" || json.Sink != nil || json.Protection == nil || !strings.Contains(json.Protection.Detail, "application/json") {
+		t.Fatalf("json reflected return: %+v", json)
+	}
+	if !hasFlowKind(json.Flow, "return_content_type") {
+		t.Fatalf("json reflected return flow: %+v", json.Flow)
+	}
+
+	if constant := findingForCWE(report, "/reflect/constant-html", "CWE-79"); constant != nil {
+		t.Fatalf("constant html return must not be reported: %+v", constant)
+	}
+	if view := findingForCWE(report, "/reflect/view", "CWE-79"); view != nil {
+		t.Fatalf("view-name return must not be reported as XSS: %+v", view)
+	}
+
+	chain := findingForCWE(report, "/deserialize/chain", "CWE-502")
+	if chain == nil || chain.Status != "static_confirmed" || chain.Sink == nil || chain.Sink.API != "new ObjectInputStream(...).readObject" {
+		t.Fatalf("chained deserialization: %+v", chain)
+	}
+	if !hasFlowKind(chain.Flow, "deserialization_sink") {
+		t.Fatalf("chained deserialization flow: %+v", chain.Flow)
+	}
+	if constant := findingForCWE(report, "/deserialize/chain-constant", "CWE-502"); constant != nil {
+		t.Fatalf("constant chained deserialization must not be reported: %+v", constant)
+	}
+
+	xxeSinks := map[string]string{
+		"/xxe/build":    "SAXBuilder.build",
+		"/xxe/digester": "Digester.parse",
+		"/xxe/helper":   "DocumentHelper.parseText",
+		"/xxe/event":    "XMLInputFactory.createXMLEventReader",
+	}
+	for path, api := range xxeSinks {
+		finding := findingForCWE(report, path, "CWE-611")
+		if finding == nil || finding.Status != "static_confirmed" || finding.Sink == nil || finding.Sink.API != api {
+			t.Fatalf("%s xxe: %+v", path, finding)
+		}
+		if !hasFlowKind(finding.Flow, "xxe_sink") {
+			t.Fatalf("%s xxe flow: %+v", path, finding.Flow)
+		}
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -1356,5 +1557,71 @@ public class App {
 	}
 	if !report.Partial || report.Coverage.JavaFilesRejected != 1 || len(report.Findings) != 0 {
 		t.Fatalf("text block handling: %+v", report)
+	}
+}
+
+func TestAnalyzeAdvancedSinksElementPrecisionAndImports(t *testing.T) {
+	snapshot := namedFixtureSnapshot(t, "java-advanced-sinks")
+	report, err := Analyze(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Coverage.EndpointsInventoried != 12 || report.Coverage.EndpointsAnalyzed != 11 {
+		t.Fatalf("endpoint coverage: %+v", report.Coverage)
+	}
+	if report.Coverage.FindingsConfirmed != 7 || report.Coverage.FindingsInconclusive != 7 || report.Coverage.FindingsRefuted != 0 {
+		t.Fatalf("finding coverage: %+v", report.Coverage)
+	}
+
+	template := findingForCWE(report, "/sql/template", "CWE-89")
+	if template == nil || template.Status != "static_confirmed" || template.Sink == nil || template.Sink.API != "jdbcTemplate.update" {
+		t.Fatalf("jdbc template sink: %+v", template)
+	}
+	templateSafe := findingForCWE(report, "/sql/template-safe", "CWE-89")
+	if templateSafe == nil || templateSafe.Status != "inconclusive" || templateSafe.Sink != nil {
+		t.Fatalf("jdbc template value binding was treated as SQL text: %+v", templateSafe)
+	}
+	jpa := findingForCWE(report, "/sql/jpa", "CWE-89")
+	if jpa == nil || jpa.Status != "static_confirmed" || jpa.Sink == nil || jpa.Sink.API != "entityManager.createQuery" {
+		t.Fatalf("jpa query sink: %+v", jpa)
+	}
+
+	httpClient := findingForCWE(report, "/ssrf/httpclient", "CWE-918")
+	if httpClient == nil || httpClient.Status != "static_confirmed" || httpClient.Sink == nil || httpClient.Sink.API != "HttpRequest.uri" {
+		t.Fatalf("http client ssrf: %+v", httpClient)
+	}
+	webClient := findingForCWE(report, "/ssrf/webclient", "CWE-918")
+	if webClient == nil || webClient.Status != "static_confirmed" || webClient.Sink == nil || webClient.Sink.API != "WebClient.uri" {
+		t.Fatalf("web client ssrf: %+v", webClient)
+	}
+
+	upload := findingForCWE(report, "/upload/transfer", "CWE-434")
+	if upload == nil || upload.Status != "static_confirmed" || upload.Sink == nil || upload.Sink.API != "MultipartFile.transferTo" {
+		t.Fatalf("upload sink: %+v", upload)
+	}
+	if findingForCWE(report, "/upload/constant", "CWE-434") != nil {
+		t.Fatal("constant upload produced an upload finding")
+	}
+
+	precise := findingForCWE(report, "/array/precise", "CWE-89")
+	if precise == nil || precise.Status != "inconclusive" || precise.Sink != nil {
+		t.Fatalf("literal element precision failed: %+v", precise)
+	}
+	preciseTainted := findingForCWE(report, "/array/precise-tainted", "CWE-89")
+	if preciseTainted == nil || preciseTainted.Status != "static_confirmed" {
+		t.Fatalf("literal tainted element was lost: %+v", preciseTainted)
+	}
+	removed := findingForCWE(report, "/array/remove-index", "CWE-89")
+	if removed == nil || removed.Status != "inconclusive" || removed.Sink != nil {
+		t.Fatalf("literal-index remove did not clear element taint: %+v", removed)
+	}
+
+	imported := findingForCWE(report, "/import/helper", "CWE-89")
+	if imported == nil || imported.Status != "static_confirmed" {
+		t.Fatalf("import-aware helper resolution: %+v", imported)
+	}
+	clean := findingForCWE(report, "/import/clean", "CWE-89")
+	if clean == nil || clean.Status != "inconclusive" {
+		t.Fatalf("clean helper call tainted: %+v", clean)
 	}
 }

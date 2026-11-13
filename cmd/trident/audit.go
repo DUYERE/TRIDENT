@@ -16,13 +16,19 @@ import (
 // or vulnerability claim.
 func runAudit(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: trident audit <endpoints|dataflow|findings> --snapshot <dir> --snapshot-hash <sha256>")
+		return fmt.Errorf("usage: trident audit <endpoints|dataflow|findings|sarif|reachability> --snapshot <dir> --snapshot-hash <sha256>")
 	}
 	if args[0] == "dataflow" {
 		return runDataflow(ctx, args[1:], out)
 	}
 	if args[0] == "findings" {
 		return runFindings(ctx, args[1:], out)
+	}
+	if args[0] == "sarif" {
+		return runSARIF(ctx, args[1:], out)
+	}
+	if args[0] == "reachability" {
+		return runReachability(ctx, args[1:], out)
 	}
 	if args[0] != "endpoints" {
 		return fmt.Errorf("unknown audit command %q", args[0])

@@ -489,6 +489,8 @@ func flowKind(flow dataflow.Finding) string {
 		return "xxe"
 	case "CWE-90":
 		return "ldap_injection"
+	case "CWE-434":
+		return "unrestricted_upload"
 	}
 	return "sql_injection"
 }
@@ -511,6 +513,8 @@ func flowStatement(flow dataflow.Finding) string {
 		return "an HTTP request parameter reaches an XML parser sink through the observed static flow"
 	case "ldap_injection":
 		return "an HTTP request parameter reaches an LDAP query sink through the observed static flow"
+	case "unrestricted_upload":
+		return "an HTTP request parameter reaches a file upload write sink through the observed static flow"
 	}
 	return "an HTTP request parameter reaches a JDBC SQL sink through the observed static flow"
 }

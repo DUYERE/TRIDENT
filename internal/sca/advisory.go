@@ -11,9 +11,9 @@ import (
 	"strings"
 )
 
-// advisoryCatalog is the fixed-intelligence fixture format. It is deliberately
-// exact-version only: ranges, aliases and repository resolution stay outside
-// this slice and must not be inferred from missing cases.
+// advisoryCatalog is the fixed-intelligence fixture format. Version matching
+// supports exact cases and caller-declared ranges; transitive resolution,
+// repository metadata and runtime inference still stay outside this slice.
 type advisoryCatalog struct {
 	SchemaVersion   string   `json:"schema_version"`
 	FixtureID       string   `json:"fixture_id"`
@@ -46,6 +46,7 @@ type advisoryCatalog struct {
 	} `json:"matching_scope"`
 	VersionCases []struct {
 		Version           string `json:"version"`
+		VersionRange      string `json:"version_range,omitempty"`
 		VersionMatched    bool   `json:"version_matched"`
 		SupplyChainStatus string `json:"supply_chain_status"`
 		FindingStatus     string `json:"finding_status"`
@@ -133,10 +134,23 @@ func validateAdvisory(catalog *advisoryCatalog) error {
 	}
 	seen := make(map[string]bool, len(catalog.VersionCases))
 	for _, versionCase := range catalog.VersionCases {
-		if versionCase.Version == "" || len(versionCase.Version) > 128 || seen[versionCase.Version] {
+		version := strings.TrimSpace(versionCase.Version)
+		versionRange := strings.TrimSpace(versionCase.VersionRange)
+		if (version == "" && versionRange == "") || (version != "" && versionRange != "") ||
+			len(version) > 128 || len(versionRange) > 256 {
 			return fmt.Errorf("%w: advisory version case", ErrAdvisory)
 		}
-		seen[versionCase.Version] = true
+		key := version
+		if key == "" {
+			key = "range:" + versionRange
+			if _, err := parseVersionRange(versionRange); err != nil {
+				return fmt.Errorf("%w: advisory version range", ErrAdvisory)
+			}
+		}
+		if seen[key] {
+			return fmt.Errorf("%w: advisory version case", ErrAdvisory)
+		}
+		seen[key] = true
 		switch {
 		case versionCase.VersionMatched && versionCase.SupplyChainStatus != "version_matched":
 			return fmt.Errorf("%w: matched case status", ErrAdvisory)
@@ -158,13 +172,22 @@ func validSHA256(value string) bool {
 func advisoryInfo(advisories []*advisoryCatalog) []AdvisoryInfo {
 	info := make([]AdvisoryInfo, 0, len(advisories))
 	for _, advisory := range advisories {
+		rangeCases := 0
+		for _, versionCase := range advisory.VersionCases {
+			if strings.TrimSpace(versionCase.VersionRange) != "" {
+				rangeCases++
+			}
+		}
 		info = append(info, AdvisoryInfo{
 			AdvisoryID:                       advisory.AdvisoryID,
+			Aliases:                          append([]string{}, advisory.Aliases...),
+			AliasesComplete:                  advisory.AliasesComplete,
 			Package:                          advisory.Package.GroupID + ":" + advisory.Package.ArtifactID,
 			SourceID:                         advisory.MatchingScope.SourceID,
 			Policy:                           advisory.MatchingScope.Policy,
 			RetrievedDate:                    advisory.RetrievedDate,
 			VersionCaseCount:                 len(advisory.VersionCases),
+			RangeCaseCount:                   rangeCases,
 			AllCVEsChecked:                   advisory.Coverage.AllCVEsChecked,
 			ArtifactHashesAvailable:          advisory.Coverage.ArtifactHashesAvailable,
 			EffectiveDependencyTreeAvailable: advisory.Coverage.EffectiveDependencyTreeAvailable,
@@ -181,7 +204,9 @@ func matchAdvisories(dependencies []Dependency, advisories []*advisoryCatalog) [
 	for _, advisory := range advisories {
 		caseByVersion := make(map[string]int, len(advisory.VersionCases))
 		for index, versionCase := range advisory.VersionCases {
-			caseByVersion[versionCase.Version] = index
+			if versionCase.Version != "" {
+				caseByVersion[versionCase.Version] = index
+			}
 		}
 		for _, dependency := range dependencies {
 			if dependency.GroupID != advisory.Package.GroupID || dependency.ArtifactID != advisory.Package.ArtifactID {
@@ -194,6 +219,7 @@ func matchAdvisories(dependencies []Dependency, advisories []*advisoryCatalog) [
 			seen[key] = true
 			match := AdvisoryMatch{
 				AdvisoryID:        advisory.AdvisoryID,
+				Aliases:           append([]string{}, advisory.Aliases...),
 				Module:            dependency.Module,
 				Dependency:        dependency.GroupID + ":" + dependency.ArtifactID,
 				DeclaredVersion:   dependency.Version,
@@ -208,27 +234,61 @@ func matchAdvisories(dependencies []Dependency, advisories []*advisoryCatalog) [
 				matches = append(matches, match)
 				continue
 			}
-			index, ok := caseByVersion[dependency.Version]
-			if !ok {
-				match.VersionStatus = "unknown"
-				match.SupplyChainStatus = "unknown"
-				match.Reason = "no_exact_version_case"
-				matches = append(matches, match)
-				continue
-			}
-			versionCase := advisory.VersionCases[index]
-			match.AssessmentScope = versionCase.AssessmentScope
-			if versionCase.VersionMatched {
-				match.VersionStatus = "version_matched"
-				match.SupplyChainStatus = "version_matched"
-				match.FindingStatus = "candidate"
-			} else {
+			apply := func(versionMatched bool, assessmentScope, matchedBy string) {
+				match.AssessmentScope = assessmentScope
+				match.MatchedBy = matchedBy
+				if versionMatched {
+					match.VersionStatus = "version_matched"
+					match.SupplyChainStatus = "version_matched"
+					match.FindingStatus = "candidate"
+					return
+				}
 				match.VersionStatus = "not_affected"
 				match.SupplyChainStatus = "not_affected"
 				match.FindingStatus = "none"
 				if match.AssessmentScope == "" {
 					match.AssessmentScope = "version criterion only"
 				}
+			}
+			if index, ok := caseByVersion[dependency.Version]; ok {
+				versionCase := advisory.VersionCases[index]
+				apply(versionCase.VersionMatched, versionCase.AssessmentScope, "exact")
+				matches = append(matches, match)
+				continue
+			}
+			version, versionOK := parseSemver(dependency.Version)
+			rangeCount, vulnerabilityRanges := 0, 0
+			matchedScope := ""
+			matchedVersion := false
+			matchedRange := false
+			for _, versionCase := range advisory.VersionCases {
+				if strings.TrimSpace(versionCase.VersionRange) == "" {
+					continue
+				}
+				rangeCount++
+				if versionCase.VersionMatched {
+					vulnerabilityRanges++
+				}
+				if !versionOK || matchedRange {
+					continue
+				}
+				parsed, err := parseVersionRange(versionCase.VersionRange)
+				if err != nil || !parsed.contains(version) {
+					continue
+				}
+				matchedRange = true
+				matchedVersion = versionCase.VersionMatched
+				matchedScope = versionCase.AssessmentScope
+			}
+			switch {
+			case matchedRange:
+				apply(matchedVersion, matchedScope, "range")
+			case rangeCount > 0 && vulnerabilityRanges > 0:
+				apply(false, "outside declared vulnerability version ranges", "range_excluded")
+			default:
+				match.VersionStatus = "unknown"
+				match.SupplyChainStatus = "unknown"
+				match.Reason = "no_exact_version_case"
 			}
 			matches = append(matches, match)
 		}

@@ -88,6 +88,25 @@ func ExtractEvidence(toolName string, result json.RawMessage) ([]Evidence, error
 					SHA256: match.SHA256, StartLine: match.Line, EndLine: match.Line})
 			}
 		}
+	case "inspect_dependencies", "match_advisories", "query_endpoints", "trace_dataflow", "list_findings":
+		// Analysis tools seed the registry ledger by reading each cited line from
+		// the pinned snapshot. Their result carries only those observed citations.
+		var envelope struct {
+			Citations []Evidence `json:"citations"`
+		}
+		if len(result) > project.MaxToolResponseBytes || !utf8.Valid(result) || json.Unmarshal(result, &envelope) != nil {
+			return nil, fmt.Errorf("%w: invalid analysis citations", ErrEvidence)
+		}
+		if len(envelope.Citations) > analysisMaxCitations*2 {
+			return nil, fmt.Errorf("%w: too many analysis citations", ErrEvidence)
+		}
+		for _, citation := range envelope.Citations {
+			if !validDigest(citation.SnapshotHash) || !validEvidencePath(citation.Path) || !validDigest(citation.SHA256) ||
+				citation.StartLine < 1 || citation.EndLine < citation.StartLine {
+				return nil, fmt.Errorf("%w: invalid analysis citation", ErrEvidence)
+			}
+			evidence = append(evidence, citation)
+		}
 	default:
 		return nil, ErrUnknownTool
 	}

@@ -9,10 +9,13 @@
 | P0.1/P0.2 离线治理 | 已实现，历史验收记录保留 | `p0-contracts.md`、`p0-acceptance.md` |
 | R0 合成 Java/Maven 样本与断言 | 已交付；未执行 Java/Maven/JUnit | `java-fixture-acceptance.md`、`tests/fixtures/java-maven/` |
 | R1 快照与四项只读工具 | 已实现并完成本地验收 | `snapshot-contract.md`、`internal/project/` |
-| R1 Core、Run、OpenAI 适配 | 已实现并完成本地协议验收；真实模型自主闭环仍待外发许可 | `agent-contract.md`；下方 2026-11-12 收尾记录 |
-| R1 真实模型自主工具闭环 | 待明确端点、模型、数据外发和调用许可 | 不得用 Fake/本机协议测试替代 |
-| R2 供应链/AST/漏洞分析 | 声明级 Maven/公告、Spring MVC 入口清单、JDBC SQL 与非 SQL 注入类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP 注入）Source/Sink（含 `+`/builder/`String.format`/返回值与 builder 跨方法突变/接口继承分派/字段污点/重载选择与未解析父类型边界/lambda、泛型方法与可变参数重载/集合容器传播）、统一 Finding/Hypothesis 证据模型已实现并验收；完整 AST/污点/传递树/依赖可达性未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/` |
-| R3 隔离验证/补丁闭环 | 未实现 | 不执行项目构建、不改原源码 |
+| R1 Core、Run、OpenAI 适配 | 已实现并完成本地协议验收与两次真实模型只读闭环；DeepSeek `reasoning_content`/Schema 数值兼容、48 KiB 检查点确定性压缩、按工具类型的保留策略与有界结果摘要已实现 | `agent-contract.md`；下方 2026-11-12 与 2026-11-13 记录 |
+| R1 真实模型自主工具闭环 | 已完成获准验收：DeepSeek `deepseek-flash` Run 43、`deepseek-v4-pro` Run 46，均仅合成样本且 `completed`；其他模型/快照需逐次授权 | `agent-contract.md` §6.1；下方 2026-11-13 记录 |
+| R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0 与 import 可达性已实现并验收；完整 AST/污点/传递树/依赖可达性未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/` |
+| R2 只读 Web 分析控制台 | 已实现并完成本地验收；单快照、loopback、令牌鉴权、只读 JSON API 与嵌入前端；不改变分析语义，不提供 Agent 控制 API | `web-console-contract.md`、`internal/webui/`、`cmd/trident/web.go` |
+| R2 Agent 分析工具 | 已实现并完成本地验收与真实模型/真实项目使用；5 个分析工具、分析缓存、Run 公告配置、实际读取行引用与证据账本桥接 | `agent-contract.md`、`internal/tools/analysis.go`、`internal/agent/` |
+| R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射；无传递树/制品哈希/可达性 | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
+| R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、 remediation policy、隔离副本、离线 Maven/javac/JUnit（含多测试类、JUnit XML、可选 JaCoCo 覆盖率）、Docker 沙箱（network none/cap-drop/固定 digest）与 gVisor `runsc`、补丁质量评分、最多 5 轮 propose→verify 修复、原快照复验；真实 Java/Maven/JUnit 与真实模型补丁均已验收；VM 级隔离（硬件 VM）、真实项目 AI 补丁与补丁质量实证未实现 | `patch-contract.md`、`internal/r3/`、`cmd/trident/patch.go` |
 
 ## 2026-11-12：已完成快照切片（上轮基线）
 
@@ -526,6 +529,329 @@
 1. 继续有界建模未覆盖项：集合的 `clear`/`remove` 与跨方法容器内容、元素下标、可控 XSS 反射返回值（Controller 直接 `return` 用户输入）、反序列化链式 `new(...).readObject()`、XXE 的 `XMLInputFactory`/`Transformer` 更多入口。
 2. 固定 SBOM 导出格式并用官方 Schema 校验；评估依赖 import graph 与入口可达性。
 3. 评估将 `inspect_dependencies`/`match_advisories`/`query_endpoints`/`trace_dataflow`/`list_findings` 接入 Agent 工具注册与 Run 配置。
+
+## 2026-11-13：R2 第十三片（只读 Web 分析控制台）
+
+### 范围与决定
+
+- 新增 `internal/webui` 与 `trident web`；为一个已 pin 的本地快照提供只读分析控制台，复用 `sca`/`audit`/`dataflow`/`findings`，不新增分析语义。
+- 控制台不导入源码、不执行 Java/Maven、不调用模型、不访问目标网络、不连接数据库，也不提供 Run/审批/工具执行 API。它不是 HTTP 执行平面。
+- 仅监听 loopback；启动生成或显式指定访问令牌，浏览器通过 `POST /api/session` 换取 `HttpOnly; SameSite=Strict` Cookie，脚本使用 `X-Trident-Token`；所有 API 还要求 `X-Trident-Request: console`。CSP 无 `unsafe-inline`，响应启用 `nosniff`、`DENY`、`no-referrer` 与 API `no-store`。
+- 前端为无构建步骤的原生 HTML/CSS/JS，经 `go:embed` 打入单一二进制；无 npm、CDN、外部字体或图片。视觉参考 ARTEX/CodeScan 的暗色控制台布局：侧边导航、紧凑统计卡、状态徽章、证据抽屉与源码工作区。
+- 分析在首次 API 请求时运行一次并缓存；失败终态缓存，不逐请求重试。`--advisories` 仍为调用者显式配置，不与快照摘要绑定。
+- `runtime_status` 恒为 `not_run`；静态确认、`inconclusive`、`refuted` 与 CLI 一致，未观察路径不冒充安全。
+
+### 交付
+
+- [x] `internal/webui`：快照打开、令牌/会话鉴权、CSRF 头校验、安全响应头、分析互斥缓存、10 条只读查询与 1 条会话交换、嵌入资产与错误映射。
+- [x] `cmd/trident/web.go`：`--snapshot`/`--snapshot-hash`/`--advisories`/`--addr`/`--token`，强制 loopback 并打印一次性地址与令牌。
+- [x] 六个前端视图：概览、安全发现（筛选/分页/证据抽屉）、HTTP 入口、依赖与公告、源码浏览与检索、边界与关于；统一证据 JSON 下载。
+- [x] `internal/webui/webui_test.go` 7 项测试与 `cmd/trident/web_test.go` 监听地址/参数负例。
+- [x] `scripts/test-web.py` 真实 CLI 验收；`docs/web-console-contract.md`、README、版本字符串同步。
+- [x] 版本标识新增 `r2-readonly-web-console`；未修改迁移、快照格式或既有分析模型。
+
+### 验证记录
+
+- Windows / Go 1.27.1：`go build ./...`、`go test ./... -count=1`、`go vet ./...` 通过（含 `internal/webui` 7 项与 `cmd/trident` 2 项新测试）。
+- `python scripts/test-web.py`：通过。真实 CLI 导入 14 个合成文件，在随机 loopback 端口启动控制台；验证登录/会话 Cookie、401/403/400/404 负例、概览/发现/详情/入口/依赖/文件/检索/报告、路径遍历拒绝；快照与 fixture 前后字节级一致，未连接数据库、未调用模型、未执行 Java/Maven。
+- `python scripts/test-project.py`、`test-sca.py`、`test-audit.py`、`test-dataflow.py`、`test-findings.py`：全部通过，既有分析计数不变。
+- `python scripts/test-local.py`：通过（真实 PostgreSQL、迁移、历史 P0 集成回归、Agent Run、`demo-offline`、只读 Schema）。`python scripts/test-agent.py`：通过（loopback 脚本化协议，非真实 LLM；happy Run=28、corrupt=29）。
+- `python scripts/test-linux.py`：通过（固定 Linux 容器 `-race -tags=integration -p 1 ./...`，含 `internal/webui` 与 `tests/integration`）。
+- 浏览器人工检查：1440×900 下登录、概览、发现与证据抽屉、入口、依赖、源码阅读/检索无控制台错误；820px 下侧栏转离屏、统计卡两列、双栏转单栏。390px 移动截图因浏览器工具超时未采集，不据此声称移动端已验证。
+- 未运行：真实外部模型、Java/Maven/JUnit、运行时漏洞验证、多用户压力测试、TLS 终止、OS 级快照隔离。
+- 当前工作区存在 Git 仓库（`main`，HEAD `c44fb1f`），本片改动未提交；不以文档虚构提交。
+
+### 下一次接续入口（R2/R3）
+
+1. Agent 工具注册仍未接入 `inspect_dependencies`/`match_advisories`/`query_endpoints`/`trace_dataflow`/`list_findings`；需先设计分析证据如何进入工具证据账本，避免模型引用未读行。
+2. 固定 SBOM 导出格式与官方 Schema 校验仍未实现；当前控制台只下载统一证据 JSON。
+3. R3 隔离验证/补丁闭环未实现；控制台不提供执行或修复入口。
+4. 如继续扩展分析：集合 `clear`/`remove`、跨方法容器内容、元素下标、XSS 反射返回值、链式反序列化与更多 XXE 入口。
+
+## 2026-11-13：R2 第十四片（Agent 分析工具接入）
+
+### 范围与决定
+
+- 工具注册从 4 个扩展为 9 个：新增 `inspect_dependencies`、`match_advisories`、`query_endpoints`、`trace_dataflow`、`list_findings`。
+- 分析工具复用既有 `sca/audit/findings`，首次调用运行一次并缓存；分页不重复分析。
+- 分析结果只返回有界摘要（默认 10、最大 20 条），每条最多 2 个源码引用；引用在返回前通过 `Snapshot.Read` 实际读取并写入证据账本。最终答案只能引用这些已读取行或后续 `read_source` 行。
+- `agent run --advisories <absolute-file>` 将本地公告目录写入 Run 配置；resume 复用该配置。`match_advisories` 未配置时明确返回 `configured=false`。
+- 检查点版本升至 v2；v1 检查点不可恢复，不静默重放旧对话。
+- 分析工具不执行 Java/Maven/Shell，不改变外发许可；真实模型仍未授权。
+
+### 交付
+
+- [x] `internal/tools/analysis.go`：分析缓存、五个工具、参数校验、分页、引用登记与去重。
+- [x] `internal/tools/registry.go`、`evidence.go`：工具定义、分发、分析引用解析。
+- [x] `internal/agent/config.go`、`loop.go`、`cmd/trident/agent.go`：公告配置、九工具提示、checkpoint v2。
+- [x] 分析工具单测 3 项、配置单测、注册表/循环测试更新；`scripts/test-agent.py` 更新为九工具白名单。
+- [x] `agent-contract.md`、README、版本标识同步。
+
+### 验证记录
+
+- `go test ./internal/tools ./internal/agent ./cmd/trident -count=1`：通过。
+- 分析工具测试覆盖：依赖摘要、未配置公告、入口引用、SQL finding 引用、`ExtractEvidence` 与 `ValidateEvidence` 一致、偏移空页、非法分类/状态/限额、配置公告后的精确匹配。
+- `python scripts/test-agent.py`：通过（loopback 脚本化协议，非真实 LLM；happy Run=31、corrupt=32，仍为 3 次模型请求/2 次工具调用）。
+- 未运行：真实模型、分析工具在真实模型自主选择下的闭环。
+
+## 2026-11-13：R2 第十五片（CycloneDX 1.5 SBOM）
+
+### 范围与决定
+
+- 新增 `internal/sbom` 与 `trident sca sbom`；只消费声明级 SCA 报告，不执行 Maven、不解析传递依赖。
+- 输出确定性 CycloneDX 1.5 JSON：序列号由快照 SHA-256 派生，不写时间戳；组件按唯一 GAV 去重，根组件声明全部直接依赖。
+- 公告候选映射为 `analysis.state=in_triage`、`severity=unknown`、`affects` 指向组件；metadata properties 固定写入 `runtime_status=not_run`、`dependency_reachability=unverified`、`transitive_tree=not_available` 与限制。
+- 官方 Schema（CycloneDX 1.5，Apache-2.0）固定副本加入 `tests/schemas/`，由 Python `jsonschema` Draft 7 校验；运行时不访问网络。
+- Web 控制台新增 `GET /api/sbom` 与依赖页“导出 SBOM”。
+
+### 交付
+
+- [x] `internal/sbom/sbom.go`、单测；`cmd/trident/sca.go` 的 `sbom` 子命令。
+- [x] Web `/api/sbom`、依赖页导出按钮、Go/Python 验收。
+- [x] `docs/sbom-contract.md`、README、版本标识同步。
+
+### 验证记录
+
+- `go test ./internal/sbom ./internal/webui ./cmd/trident -count=1`：通过。
+- `python scripts/test-sbom.py`：通过。5 个唯一组件、1 个 candidate vulnerability；两次输出字节级一致；官方 Schema 校验通过；无公告目录时无 vulnerability；错误快照摘要失败关闭；快照与 fixture 前后 SHA-256 一致。
+- `python scripts/test-web.py`：通过，包含 `/api/sbom` 下载与 `bomFormat=CycloneDX` 检查。
+- 未运行：传递依赖解析、制品哈希、依赖可达性、Maven 实测 classpath。
+
+## 2026-11-13：R3 首片（隔离补丁验证）
+
+### 范围与决定
+
+- 首片只做“调用者提供统一 diff → 独立可写副本 → 固定 profile 编译运行 → 原快照复验”，不生成补丁、不调用模型。
+- 工作区必须新建、位于快照之外；逐文件经 `Snapshot.ReadFile` 校验后复制；不复制 manifest。
+- 统一 diff 仅支持已存在 UTF-8 文本文件；拒绝创建/删除/重命名/二进制、绝对路径、`..`、盘符、反斜杠和引号；上下文逐行精确匹配，无 fuzz。
+- `--profile maven` 执行 `mvn -o -B -q -DskipTests compile` 后运行 main class；`--profile javac` 编译 `src/main/java` 后运行；`--profile junit` 用调用者 `--test-classpath` 提供的 JUnit jar 编译 main/test 并运行 JUnitCore 单个测试类，不依赖 Surefire/网络。必须显式 `--approve-execution`。
+- 验证环境使用白名单，不传递 `TRIDENT_*`、数据库 URL 或模型密钥；输出各限 64 KiB，超时终止。
+- 报告状态区分 `validation_passed/failed/timeout/error/patch_failed/snapshot_integrity_failed/setup_failed`；`runtime_status=isolated_validation_only`。
+- 明确：不是 OS 级沙箱、无网络命名空间、无 Surefire/JUnit XML 解析、无 AI 补丁生成，不证明生产可利用性或修复上线。
+
+### 交付
+
+- [x] `internal/r3`：工作区复制、统一 diff 解析/应用、Maven/javac/JUnit 验证、环境白名单、报告。
+- [x] `cmd/trident/patch.go`：`trident patch verify`。
+- [x] 合成 fixture `tests/fixtures/java-patch`（基线不安全代码、`baseline.patch`、`safe.patch`、Main 检测宿主密钥泄漏）。
+- [x] Go 单测、`scripts/test-patch.py`、`docs/patch-contract.md`、README、版本标识同步。
+
+### 验证记录
+
+- 环境：Windows 11、Temurin Java 17.0.16、Maven 3.9.9、Go 1.27.1。
+- `go test ./internal/r3 -count=1`：通过（工作区复制、补丁应用、穿越/上下文不匹配/创建文件拒绝、审批/profile/main class 校验）。
+- `python scripts/test-patch.py`：通过。
+  - 基线补丁 + Maven：`validation_failed`，Java 退出 1，`injection guard missing`。
+  - 安全补丁 + Maven：`validation_passed`，输出 `safe`；原快照未修改。
+  - 安全补丁 + javac：`validation_passed`。
+  - 基线补丁 + JUnit 4.12：`validation_failed`（`Tests run: 1, Failures: 1`）。
+  - 安全补丁 + JUnit 4.12：`validation_passed`（`OK (1 test)`）。
+  - 未审批、错误哈希、路径穿越、上下文不匹配、已存在 workspace、workspace 位于快照内均拒绝。
+  - 宿主注入的 `TRIDENT_MODEL_API_KEY`/`TRIDENT_DATABASE_URL` 未传入验证进程；快照与 fixture 前后字节级一致。
+- 未运行：容器/VM 沙箱、网络隔离、AI 补丁生成、真实模型、目标网络执行。
+
+## 2026-11-13：R2 第十六片（集合跨方法突变/clear、反射型返回值与 SAXReader XXE）
+
+### 范围与决定
+
+- 在第十二片集合容器传播之上补齐三个有界缺口，仍不执行 Java/Maven、不调用模型、快照只读。
+- 集合跨方法突变：resolved 同项目方法收到调用方集合局部变量，方法体内对同名参数执行 tainted `add`/`put` 时，调用方集合被标记（`flow.kind=collection_mutated`）；方法内 `clear()` 丢弃该容器污点（`collection_clear`），clear 后再写入可重新污染；callee 内 `clear` 会撤销该参数的突变摘要。
+- 反射型返回值：endpoint 返回 `String`/`CharSequence` 且 `return` 表达式带 taint 时，仅记录 `boundary.kind=reflected_return` 与 `limitation=reflected_return_content_type_unverified`，保持 `inconclusive`；不解析 `produces`/content-type/框架转义，返回常量不产生 XSS finding。
+- XXE 入口扩展：`SAXReader.parse/read`、`XMLReader.parse/read` 纳入既有 `xxe` 类别，接收者类型必须可解析。
+- 字段容器 `clear` 仍不建模并记录 `collection_clear_field_unmodeled`；`remove`/元素下标/其他对象容器不变。
+
+### 交付
+
+- [x] `internal/dataflow/flow.go`：`analyzeMethod` 的 `clear` 分支与 endpoint `return` 检测、`collectionArguments`、`methodEffects` 的集合写入/clear 摘要、`observeReflectedReturn`、`isXMLParserType`/XXE `read`、`returnsTextual`。
+- [x] `internal/dataflow/model.go`：`ToolVersion=0.2.0-p0.2+r2-source-sink-flow-v10`、`analysis_scope=single_parameter_multi_category_v10`、`collection_taint_bounds`/`deserialization_and_xss_bounds`/`multi_category_sinks` 更新。
+- [x] 新增样本 `tests/fixtures/java-container-reflect/src/main/java/example/container/ContainerReflectController.java`（8 个 endpoint）与 `TestAnalyzeCollectionCrossMethodClearAndReflectedReturn`。
+- [x] `scripts/test-dataflow.py` 新增 `CONTAINER_REFLECT_FIXTURE`、`[11]` 块、输出字段与 8 个检查项；`dataflow-contract.md`、README 同步。
+
+### 验证记录
+
+- `go test ./internal/dataflow -count=1`：通过（14 个 dataflow 单测）。
+- `python scripts/test-dataflow.py`：通过。原九套样本计数不变（3/9/7/8/5/6/21/24/10）；新样本 8 endpoint/10 finding（container_reflect_confirmed=3、inconclusive=7、refuted=0），SQL finding 8 个。
+  - 正例：`/container/mutate`（`collection_mutated`→`collection_add`→`sink`）、`/container/clear-refill`、`/xxe/sax-reader`（`SAXReader.read`）。
+  - 负例：`/container/clear`（`collection_clear` 后无 sink）、`/container/constant`、`/reflect/clean`。
+  - 边界：`/container/helper-clear`（callee `clear` 撤销突变）、`/reflect/return`（`reflected_return`，XSS inconclusive）。
+  - 源目录与快照运行前后字节级不变；未执行 Java/Maven、未调用模型。
+- 未运行：Java 编译/运行、Maven/Gradle、真实外部模型、完整 AST/别名分析、集合 `remove`/元素下标/字段 `clear`、`produces`/content-type 解析、运行时验证。
+- 当前工作区存在 Git 仓库（`main`，HEAD `c44fb1f`），本片改动未提交。
+
+## 2026-11-13：R2 第十七片（数组下标、remove 保守语义、字段集合、produces 与链式反序列化/XXE）
+
+### 范围与决定
+
+- 在第十六片基础上补齐用户点名的剩余分析缺口，仍不执行 Java/Maven、不调用模型、快照只读。
+- 数组元素：`values[i] = tainted` 标记数组（`array_write`），`values[i]` 读取传播（`array_read`）；声明类型保留 `[]`（参数/字段/局部变量），resolved 方法内数组参数写入进入效果摘要，调用方数组标记为 `collection_mutated`。
+- `remove`/`removeAll`/`retainAll`/`removeIf`：flow-insensitive 容器无法证明元素级删除，因此不清除污点，记录 `collection_remove` 与 `limitation=collection_remove_flow_insensitive`；这是保守过近似，可能保留已移除的 taint。
+- 字段集合：`this.field.add/put(tainted)` 写入字段污点；`this.field.clear()` 删除字段污点（`collection_clear`）；同名局部/参数遮蔽字段。
+- 入口清单新增 `produces`/`produces_status`/`response_body`：解析字符串字面量与已知 `MediaType.*_VALUE` 常量，未知表达式为 `unresolved`；`@RestController` 或 `@ResponseBody` 标记 `response_body=true`。
+- 反射型返回值：只处理 `response_body=true` 的 `String`/`CharSequence` 返回；`produces` 为 HTML → 确认 XSS（`sink.api=return:<media-type>`）；明确非 HTML → `refuted` 并记录 protection；缺失/未解析 → `reflected_return` 边界保持 `inconclusive`；普通 `@Controller` 视图名不产生 XSS finding。
+- 链式反序列化：`new ObjectInputStream(...).readObject()`/`new XMLDecoder(...).readObject()` 在 `readObject` 处确认一次，构造处不重复确认。
+- 更多 XXE 入口：`SAXBuilder.build`、`Digester.parse`、`DocumentHelper.parseText`、`XMLInputFactory.createXMLEventReader`。
+
+### 交付
+
+- [x] `internal/audit/audit.go`、`java.go`：`Produces`/`ProducesStatus`/`ResponseBody`、`annotationProduces`/`mediaTypeValues`/`knownMediaType`、`ToolVersion=...endpoint-inventory-v2`。
+- [x] `internal/dataflow/flow.go`、`parse.go`、`model.go`：数组下标读写、`remove` 保守分支、字段集合写/清、`produces` 判定、链式反序列化、新 XXE 入口；`ToolVersion=...source-sink-flow-v11`、`analysis_scope=...v11`。
+- [x] 新增样本 `tests/fixtures/java-flow-gaps`（`GapController.java` 16 endpoint、`ViewController.java` 视图名负例）。
+- [x] Go 单测：`TestInspectProducesAndResponseBody`、`TestAnalyzeArrayRemoveFieldClearProducesAndChains`。
+- [x] `scripts/test-dataflow.py` 新增 `GAPS_FIXTURE`、`[12]` 块与 16 个检查项；`dataflow-contract.md`、`audit-contract.md`、README 同步。
+
+### 验证记录
+
+- `go test ./internal/audit ./internal/dataflow -count=1`：通过（audit 新增 1 项；dataflow 15 项）。
+- `python scripts/test-dataflow.py`：通过。原十套样本计数不变（3/9/7/8/5/6/21/24/10/10）；新样本 16 endpoint/23 finding（confirmed=10、refuted=1、inconclusive=12）。
+  - 正例：数组下标读写、数组跨方法突变、字段集合、`produces=text/html` 反射返回、链式反序列化、四个新增 XXE 入口。
+  - 负例：常量数组、常量 HTML 返回、普通 `@Controller` 视图名、常量链式反序列化。
+  - 保守语义：`remove` 保留污点并标记限制；字段 `clear` 后不确认。
+  - 源目录与快照运行前后字节级不变；未执行 Java/Maven、未调用模型。
+- 未运行：Java 编译/运行、Maven/Gradle、真实外部模型、完整 AST/别名分析、集合元素级 `remove`、其他对象容器、`produces` 之外的内容协商、运行时验证。
+- 当前工作区存在 Git 仓库（`main`，HEAD `c44fb1f`），本片改动未提交。
+
+## 2026-11-13：R1 真实模型只读闭环（DeepSeek deepseek-flash）
+
+### 范围与决定
+
+- 用户提供 DeepSeek 官方 API key，明确要求用 `deepseek-flash` 测试并节省成本；沿用此前约束：仅外发 `tests/fixtures/java-maven` 合成样本、单次 Run 最多 10 次模型调用。
+- 端点 `https://api.deepseek.com/v1`，`--output-parameter max_tokens`，`--approve-egress`；密钥仅从 `TRIDENT_MODEL_API_KEY` 读取，不写入 Run、日志或仓库文件。
+- 未执行 Java/Maven/Shell，未访问目标网络；Agent 仍只有九个只读工具。
+
+### 兼容性修复（真实调用暴露）
+
+- [x] 响应含 `reasoning_content` 时被旧解码器整体拒绝：改为接受该不透明字段（不进入最终答案），`reasoning_details`/`reasoning` 仍拒绝。
+- [x] 工具 Schema 数值关键字被 SDK 编码为字符串（`"maxLength":"2048"`），DeepSeek 以 `Invalid schema ... is not of type "integer"` 拒绝：`objectJSON` 改用标准 JSON 解码，数值保持 JSON number。
+- [x] 新增 `TestToolSchemaNumbersStayNumeric` 与 `reasoning-content` 正例；`reasoning_content` 非字符串仍拒绝。
+- [x] 未提高 48 KiB 检查点或 64 KiB 工具结果上限；通过收紧模型工具预算完成闭环。
+
+### 验证记录
+
+- Run 43：`completed`，3 次模型调用、4 次工具调用、18,394 tokens；模型自主选择 `inspect_project` → `trace_dataflow` → `query_endpoints` → `read_source`。
+- 最终 envelope：2 条 `UNVERIFIED INFERENCE` 假设；引用 `CustomerController.java:22-26/34-38/35` 与 `CustomerRepository.java:24/27-28`，全部通过证据账本校验；显式声明 `runtime_status=not_run`、无 AST、未执行代码、未做依赖公告匹配。
+- 早期失败保留：Run 37 响应被协议拒绝（可能已计费、未记账，以 DeepSeek 控制台为准）；Run 38/39/40 被 400 Schema 拒绝；Run 41 在 60k token 预留处停止（3 次模型调用/9 次工具调用/15,484 tokens）；Run 42 在 48 KiB 检查点上限停止（5 次模型调用/10 次工具调用/33,620 tokens）。这些记录不删除、不覆盖。
+- Run 46（`deepseek-v4-pro`，同一快照/工具，最多 10 次模型调用）：`completed`，3 次模型调用、4 次工具调用、21,956 tokens；模型自主选择 `trace_dataflow` → `query_endpoints` → `list_files` → `read_source`，输出 2 条 `UNVERIFIED INFERENCE` 假设，引用 `CustomerController.java:22-26/34-37` 与 `CustomerRepository.java:28`，全部通过证据账本校验。另有 105 tokens 的 v4-pro 响应形状探测。
+- 该验收覆盖 DeepSeek flash 与 v4-pro 的只读分析，不证明漏洞可利用、覆盖完整或生产部署；不构成对其他端点或真实项目快照的验收。
+
+## 2026-11-13：R2/R3 第十八片（上下文压缩、真实快照验收、AI 补丁与 Docker 沙箱）
+
+### 范围与决定
+
+- 用户要求完成三项：长上下文预算策略、真实项目快照验收、R3 AI 补丁生成 + 沙箱。
+- 上下文压缩不提高 48 KiB 硬上限：40 KiB 软目标触发确定性工具结果截断，保留消息与 tool_call/result 配对、证据账本和最新两条结果；`compactions`/`compacted_bytes` 写入检查点，最终答案追加固定限制。
+- 真实快照选用 `CodeScan-Artex-main`（667 文件、15 MB、Go 安全工具），用户以“按推荐”明确授权本次外发；模型 `deepseek-flash`，最多 10 次调用。
+- AI 补丁：新增 `trident patch propose`，只生成并验证 diff，不执行、不写快照；生成后仍需 `patch verify --approve-execution`。
+- Docker 沙箱：新增 `--sandbox docker`，固定 digest 镜像、`--network none`、`--cap-drop ALL`、内存/CPU/PID 限额、可选只读 `.m2`；junit profile 暂不支持 docker。
+
+### 交付
+
+- [x] `internal/agent/loop.go`、`compaction_test.go`：检查点压缩、审计字段、最终限制。
+- [x] `internal/r3/propose.go`、`propose_test.go`：finding/路径上下文、严格 JSON、临时副本精确应用验证。
+- [x] `cmd/trident/patch.go`：`patch propose` 与 verify 的 `--sandbox` 参数。
+- [x] `internal/r3/sandbox.go`、`sandbox_test.go`、`run.go`、`verify.go`：Docker 命令、隔离参数、容器清理、报告/限制。
+- [x] `scripts/test-patch-ai.py`：loopback 模型 + process Maven + Docker 验收。
+- [x] `docs/agent-contract.md`、`docs/patch-contract.md`、README 同步。
+
+### 验证记录
+
+- `go test ./internal/agent ./internal/r3 -count=1`：通过（压缩边界/幂等/配对、AI 补丁正负例、sandbox 参数与 docker 命令）。
+- 真实快照 Run 48：`completed`，4 次模型调用、5 次工具调用、37,153 tokens；`compactions=2`、`compacted_bytes=19,994`；模型自主选择 `inspect_project` → `read_source` → `search_source` → `search_source` → `read_source`，输出 2 条关于 `server/customtool.go` 的未验证推断（命令模板注入、HTTP SSRF），引用 331-347/494-503/427-456/461-486 行，全部通过证据账本校验。首轮 Run 47 因 16 次工具预算耗尽（10 次模型调用/119,318 tokens），保留记录。
+- AI 补丁真实模型：`deepseek-flash` 对 `tests/fixtures/java-patch` 生成参数化 SQL 补丁；process Maven `validation_passed`，Docker sandbox（`maven:3.9.9-eclipse-temurin-17@sha256:f58d…`）`validation_passed`，原快照未修改。
+- `python scripts/test-patch-ai.py`：通过（loopback，非真实 LLM；process + Docker；network none/cap-drop/快照不变）。
+- 未验证：真实项目 AI 补丁、多文件/复杂修复、补丁质量评分、VM 级隔离、docker junit、目标网络执行。
+- 当前工作区存在 Git 仓库（`main`，HEAD `c44fb1f`），本片改动未提交。
+
+## 全量回归（2026-11-13，第十八片后）
+
+- `go build ./...`、`go test ./... -count=1`、`go vet ./...`：通过（`internal/agent` 新增压缩测试；`internal/r3` 新增 Propose/sandbox 测试）。
+- `python scripts/test-project.py`、`test-sca.py`、`test-audit.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-patch.py`、`test-patch-ai.py`：全部通过；`test-dataflow.py` 计数不变（flow_gaps 23/10/1/12）；`test-patch-ai.py` 的 process 与 Docker 均为 `validation_passed`。
+- `python scripts/test-local.py`：通过（真实 PostgreSQL、迁移、历史 P0 集成回归、Agent Run、`demo-offline`、只读 Schema）。
+- `python scripts/test-agent.py`：通过（loopback 脚本化协议，非真实 LLM；happy Run=49 `completed`、corrupt=50 `failed`）。
+- `python scripts/test-linux.py`：首轮通过（固定 `golang:1.26.3-bookworm` 容器，`-race -tags=integration -p 1 ./...`）。
+- 真实模型：Run 43（flash）、Run 46（v4-pro）、Run 48（flash + 真实 `CodeScan-Artex-main` 快照，压缩 2 次）；AI 补丁真实生成并通过 process/Docker 验证。
+- 未运行：VM 级隔离、docker junit、真实项目 AI 补丁、补丁质量评分、其他模型/快照、生产运行时验证。
+- 当前工作区存在 Git 仓库（`main`，HEAD `c44fb1f`），本片改动未提交。
+
+## 全量回归（2026-11-13，真实模型闭环后）
+
+- `go build ./...`、`go test ./... -count=1`、`go vet ./...`：通过（`internal/model/openai` 新增 `reasoning_content` 与 Schema 数值测试）。
+- `python scripts/test-project.py`、`test-sca.py`、`test-audit.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-patch.py`：全部通过；`test-dataflow.py` 计数不变（flow_gaps 23/10/1/12）。
+- `python scripts/test-local.py`：通过（真实 PostgreSQL、迁移、历史 P0 集成回归、Agent Run、`demo-offline`、只读 Schema）。
+- `python scripts/test-agent.py`：通过（loopback 脚本化协议，非真实 LLM；happy Run=44 `completed`、corrupt=45 `failed`）。
+- `python scripts/test-linux.py`：首轮通过（固定 `golang:1.26.3-bookworm` 容器，`-race -tags=integration -p 1 ./...`）。
+- 真实模型：Run 43 `completed`（`deepseek-flash`，3 次模型调用/4 次工具调用/18,394 tokens）；Run 46 `completed`（`deepseek-v4-pro`，3 次模型调用/4 次工具调用/21,956 tokens）；均仅合成样本。
+- 未运行：其他模型/端点、真实项目快照外发、生产运行时验证。
+- 当前工作区存在 Git 仓库（`main`，HEAD `c44fb1f`），本片改动未提交。
+
+## 全量回归（2026-11-13，第十七片后）
+
+- `go build ./...`、`go test ./... -count=1`、`go vet ./...`：通过（`internal/audit` 新增 produces/response_body 测试；`internal/dataflow` 15 个单测）。
+- `python scripts/test-project.py`、`test-sca.py`、`test-audit.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-patch.py`：全部通过；`test-dataflow.py` 新增 `[12]` 块（flow_gaps 23 finding / confirmed=10 / refuted=1 / inconclusive=12）。
+- `python scripts/test-local.py`：首轮在既有治理计时测试 `TestOutboxAckRechecksExpiryAfterLock` 失败（`ack after lease expiry=<nil>`），该测试与本片无关且未修改；同命令重跑通过。首轮失败保留记录，不用重跑覆盖。
+- `python scripts/test-agent.py`：通过（loopback 脚本化协议，非真实 LLM；happy Run=35 `completed`、corrupt=36 `failed`）。
+- `python scripts/test-linux.py`：首轮通过（固定 `golang:1.26.3-bookworm` 容器，`-race -tags=integration -p 1 ./...`，含 `internal/audit`、`internal/dataflow` 与 `tests/integration`）。
+- 未运行：真实外部模型（需端点/模型/数据外发/费用许可）、Java 编译/运行（本片）、容器/VM 沙箱、生产运行时验证。
+- 当前工作区存在 Git 仓库（`main`，HEAD `c44fb1f`），本片改动未提交。
+
+## 全量回归（2026-11-13）
+
+- `go build ./...`、`go test ./... -count=1`、`go vet ./...`：通过（含 `internal/r3`、`internal/sbom`、`internal/tools` 与 `internal/agent` 新测试）。
+- `python scripts/test-project.py`、`test-sca.py`、`test-audit.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-patch.py`：全部通过。
+- `python scripts/test-local.py`：通过（真实 PostgreSQL、迁移、历史 P0 集成回归、Agent Run、`demo-offline`、只读 Schema）。
+- `python scripts/test-agent.py`：通过（loopback，非真实 LLM；happy Run=31、corrupt=32）。
+- `python scripts/test-linux.py`：首轮既有治理计时测试 `TestClaimRechecksDeadlineAfterPoolLock` 失败（`deadline passed during pool wait but claim succeeded`），该测试与本片无关且未修改；原命令重跑通过（`-race -tags=integration -p 1 ./...`，含 `internal/r3`/`internal/sbom`）。首轮失败保留记录，不用重跑覆盖。
+- 未运行：真实外部模型、容器沙箱、网络隔离、生产运行时验证；Linux 容器只执行 Go 测试，不执行 Java/Maven/JUnit。
+- 当前工作区存在 Git 仓库（`main`，HEAD `c44fb1f`），本片改动未提交。
+
+## 全量回归（2026-11-13，第十六片后）
+
+- `go build ./...`、`go test ./... -count=1`、`go vet ./...`：通过（`internal/dataflow` 14 个单测，含新增 `TestAnalyzeCollectionCrossMethodClearAndReflectedReturn`）。
+- `python scripts/test-project.py`、`test-sca.py`、`test-audit.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`：全部通过；既有样本计数不变，`test-dataflow.py` 新增 `[11]` 块（container_reflect 10 finding / confirmed=3 / inconclusive=7）。
+- `python scripts/test-patch.py`：通过（真实 Java 17/Maven 3.9.9/JUnit 4.12；基线失败、补丁通过、原快照不变）。
+- `python scripts/test-local.py`：通过（真实 PostgreSQL、迁移、历史 P0 集成回归、Agent Run、`demo-offline`、只读 Schema）。
+- `python scripts/test-agent.py`：通过（loopback 脚本化协议，非真实 LLM；happy Run=33 `completed`、corrupt=34 `failed`）。
+- `python scripts/test-linux.py`：首轮通过（固定 `golang:1.26.3-bookworm` 容器，`-race -tags=integration -p 1 ./...`，含 `internal/dataflow` 与 `tests/integration`）。
+- 未运行：真实外部模型、Java 编译/运行（本片）、容器/VM 沙箱、生产运行时验证。
+- 当前工作区存在 Git 仓库（`main`，HEAD `c44fb1f`），本片改动未提交。
+
+## 下一次接续入口（R2/R3）
+
+1. 真实模型闭环：已完成 DeepSeek `deepseek-flash`（Run 43）、`deepseek-v4-pro`（Run 46）合成样本验收，以及真实 `CodeScan-Artex-main` 快照 Run 48。其他模型、其他真实项目快照或更高调用额度仍需逐次批准，并按 `agent-contract.md` 绑定快照 hash、端点、模型、有效期与费用上限。
+2. R3 后续：VM 级隔离与系统调用过滤、docker junit profile、Surefire/JUnit XML 报告解析、多测试类/覆盖率、补丁质量评分与多轮修复、真实项目 AI 补丁。
+3. Agent 预算：当前压缩是确定性截断，后续可评估不调用模型的有界摘要或按工具类型差异化保留策略。
+4. 分析深度：集合元素级 `remove` 精度、其他对象持有的容器/字段、`produces` 之外的内容协商与转义、更多框架 sink、完整 AST/别名与跨模块类型。
+5. 供应链：有效依赖树、制品哈希、公告区间/别名、import graph 与入口可达性。
+
+## 2026-11-13：R2/R3/R5/R6 第十九片（供应链扩展、SARIF/可达性、R3 修复闭环强化）
+
+### 范围与决定
+
+- 一次性补齐上一轮列出的可实现待办：公告区间/别名、Gradle 声明、模块依赖树、JAX-RS/Servlet 入口、上传 sink、框架 SQL/SSRF sink、字面量元素精度、导入感知类型解析、SARIF、import 可达性、R3 多测试类/JUnit XML/JaCoCo/补丁质量/多轮修复/gVisor、Agent 按工具压缩与证据导出、基准与发布检查表。
+- 仍不执行 Java/Maven、不访问目标网络、不调用真实模型；所有新增验收使用合成样本、loopback 或本地固定容器。
+- 真实项目 AI 补丁、硬件 VM 隔离和其他模型/快照外发仍需逐次授权，未在本片执行。
+
+### 交付
+
+- [x] `internal/sca`：Gradle 常见 Groovy/Kotlin 声明、公告区间与别名、模块依赖树 `sca tree`；ToolVersion `0.2.0-p0.2+r2-sca-declarations-v2`。
+- [x] `internal/audit`：JAX-RS `@Path/@GET` 家族与 `@WebServlet` doGet/doPost 入口、JAX-RS 参数绑定与 `@Produces`；ToolVersion `...endpoint-inventory-v3`。
+- [x] `internal/dataflow`：JdbcTemplate/JPA/Hibernate SQL sink、HttpClient/WebClient SSRF、MultipartFile/Part 上传、字面量元素级集合/数组污点、`remove(index)` 精度、导入感知类型解析；10 类 sink；ToolVersion `...source-sink-flow-v12`。
+- [x] `internal/sarif`、`internal/reach` 与 `audit sarif`、`audit reachability`；import 可达性必须显式 `--package-map`，否则 `unverified`。
+- [x] `internal/r3`：Docker/gVisor JUnit、多测试类、Surefire XML 解析、可选 JaCoCo、补丁质量评分、remediation policy、`patch repair` 最多 5 轮 propose→verify；gVisor 使用 `--runtime=runsc` 并在未注册时失败关闭。
+- [x] `internal/agent`：按工具类型的确定性压缩保留策略与有界 JSON 摘要；`agent export` 只读导出 Run/Step 证据并执行保留窗口检查（agent 表保持 append-only，不做数据库删除）。
+- [x] 新样本 `tests/fixtures/java-advanced-sinks`、`tests/fixtures/gradle-basic`；新验收 `scripts/test-intel.py`、`scripts/benchmark.py`；README 与契约同步。
+
+### 验证记录
+
+- Windows / Go 1.27.1：`go build ./...`、`go test ./... -count=1`、`go vet ./...` 通过。
+- `python scripts/test-sca.py`、`test-audit.py`、`test-dataflow.py`、`test-findings.py`、`test-sbom.py`、`test-web.py`、`test-patch.py`、`test-patch-ai.py`、`test-intel.py` 全部通过。
+  - 新 `java-advanced-sinks`：11 个分析入口、14 finding（confirmed=7、inconclusive=7、refuted=0）；框架 SQL、SSRF、上传、字面量元素精度与导入感知 helper 均按预期。
+  - `test-intel.py`：SARIF 2.1.0 结果 3 条且 `runtime_status=not_run`；commons-text import 可达 2 条；Maven 树 2 模块；Gradle 5 条直接声明（4 resolved/1 dynamic unresolved）；区间/别名命中与区间外 not_affected 均正确；错误哈希与不安全 package map 拒绝。
+- `python scripts/test-patch.py`：真实 Java 17/Maven 3.9.9/JUnit 4.12 通过。
+- `python scripts/test-patch-ai.py`：loopback 非真实 LLM；process Maven 与 Docker 沙箱均 `validation_passed`，快照不变。
+- `python scripts/test-local.py`：通过（真实 PostgreSQL、迁移、历史 P0 集成回归、Agent Run、`demo-offline`、只读 Schema）。`python scripts/test-agent.py`：通过（loopback，happy Run=51 `completed`、corrupt=52 `failed`）。`python scripts/test-linux.py`：通过（固定 `golang:1.26.3-bookworm`，`-race -tags=integration -p 1 ./...`，含 `internal/reach`、`internal/sarif` 与 `tests/integration`）。
+- `python scripts/benchmark.py 2`：4 个合成样本 × 7 条只读命令全部成功；Maven 样本 `audit findings` 中位约 151 ms，`audit dataflow` 约 229 ms；仅 wall-clock，不包含数据库/模型/Java/Maven。
+- 未运行：真实项目 AI 补丁、硬件 VM/系统调用沙箱、Maven 在线解析、传递依赖与制品哈希、其他真实模型/快照外发。
+- 工作区当前有未提交改动；本片记录的测试结果对应当前工作区内容，提交后在 Git 历史中复核。
 
 ## 维护规则
 

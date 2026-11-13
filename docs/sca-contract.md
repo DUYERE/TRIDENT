@@ -40,13 +40,13 @@
 
 `trident sca inspect --snapshot <dir> --snapshot-hash <sha256> [--advisories <file>]` 输出单个 JSON 对象：
 
-- 身份与绑定：`schema_version`、`tool_version`、`snapshot_hash`、`analysis_kind=maven_declaration_only`、`partial`。
-- 项目：`project.build_system/root_poms/module_count/pom_count`。
+- 身份与绑定：`schema_version`、`tool_version`、`snapshot_hash`、`analysis_kind`（`maven_declaration_inventory`、`gradle_declaration_inventory` 或 `maven_gradle_declaration_inventory`）、`partial`。
+- 项目：`project.build_system/root_poms/root_gradle_files/gradle_file_count/module_count/pom_count`。
 - 模块：`modules[]`（POM、目录、坐标、packaging、父 POM、aggregator、声明模块目录）。
 - 依赖：`dependencies[]`（模块、坐标、版本、scope/type/optional、直接声明、声明/管理/属性来源、`version_status`/`version_reason`、duplicate）。
 - 公告：`advisories[]` 与 `advisory_matches[]`。
 - 覆盖：`coverage` 明确 `poms_scanned/poms_rejected/dependencies_*`、`transitive_tree=not_available`、`artifact_hashes=not_available`、`maven_executed=false`、`runtime_status=not_run`。
-- `limitations[]` 固定说明未执行、无传递树、无制品 Hash、无 AST/污点、公告仅精确版本。
+- `limitations[]` 固定说明未执行、无传递树、无制品 Hash、无 AST/污点、公告仅调用者声明判据。
 
 输出排序固定（POM 路径、依赖坐标、公告 ID/模块），便于差异比较。CLI 参数错误、快照不可信、公告非法或完整性失败返回非零且不输出成功 JSON。
 
@@ -59,4 +59,12 @@
 - 负例：DTD POM 被拒绝并标记 partial；父 POM 环终止并标记 partial；管理项不被误报为实际依赖；重复声明标记 duplicate；无公告目录时不虚构匹配；非法公告、错误摘要、快照内容篡改均失败关闭。
 - `python scripts/test-linux.py`：通过（固定 Linux 镜像，`-race -tags=integration -p 1 ./...`；SCA 包与历史数据库回归均通过）。并行包执行时遗留 `TestToolApprovalExpiryAfterLedgerLock` 出现 wall-clock/DB-lock 时序抖动；单独与串行包均通过，脚本改为串行包调度，未放宽断言。
 
-未验证：Maven 有效依赖树、传递依赖、BOM/profiles/版本范围、制品 Hash、Java AST/入口/Source-Sink、调用点与输入可达性、运行时利用、补丁与隔离验证。
+未验证：Maven/Gradle 在线有效依赖树、外部传递依赖、BOM/profiles、制品 Hash、Java AST/入口/Source-Sink、调用点与输入可达性、运行时利用、补丁与隔离验证。
+
+## 6. 2026-11-13 扩展（Gradle、区间/别名、模块树）
+
+1. `sca inspect` 在不执行 Gradle 的前提下解析 `build.gradle`/`build.gradle.kts` 的常见字符串与 map 依赖声明、`group`/`version` 和 `project(':x')` 边；插件、settings 求值、version catalog、BOM/platform 与传递 configuration 仍不可用，遇到时记录 limitation。
+2. 公告 `version_cases[]` 每项二选一：`version`（精确）或 `version_range`；区间支持 `>=1.9,<1.10`、`[1.9,1.10)` 和单版本 `[1.9]`。匹配结果新增 `matched_by=exact|range|range_excluded`；区间外但存在漏洞区间时为 `not_affected`，没有任何可用判据时仍为 `unknown/no_exact_version_case`。
+3. `advisories[]`/`advisory_matches[]` 输出 `aliases`、`aliases_complete` 与 `range_case_count`；别名不改变版本判据。
+4. `trident sca tree` 只输出快照内模块边、Gradle `project()` 边和同快照 GAV 匹配；外部依赖是叶子，`coverage.transitive_tree=module_edges_only`，不是 Maven 有效依赖树，也不证明 classpath 或可达性。
+5. 新增验收 `python scripts/test-intel.py`：区间/别名、区间外负例、Gradle 5 条声明（4 resolved/1 dynamic unresolved）、Maven/Gradle 模块树、错误哈希与不安全 package map 均按预期。

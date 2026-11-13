@@ -53,18 +53,57 @@ var specifications = []toolSpec{
 		schema:      `{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":256,"description":"Nonempty single-line literal, at most 256 UTF-8 bytes; no NUL, CR or LF."},"prefix":{"type":"string","description":"Snapshot-relative file or directory prefix; empty selects all files."},"limit":{"type":"integer","minimum":0,"maximum":200,"description":"Page size; omitted or zero uses 50."},"cursor":{"type":"string","maxLength":2048,"description":"Opaque next_cursor from a previous page with the same query, prefix and limit."}},"required":["query"],"additionalProperties":false}`,
 		fields:      map[string]argumentSpec{"query": {kind: stringArgument, required: true}, "prefix": {kind: stringArgument}, "limit": {kind: integerArgument}, "cursor": {kind: stringArgument}},
 	},
+	{
+		name:        "inspect_dependencies",
+		description: "Inspect declaration-level Maven dependencies and modules on the pinned snapshot. This is not an effective dependency tree, classpath, SBOM or reachability result. Paginate with offset; citations are lines actually read from this snapshot.",
+		schema:      `{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
+		fields:      map[string]argumentSpec{"limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
+	},
+	{
+		name:        "match_advisories",
+		description: "Match declared Maven versions against the Run's explicit local advisory catalog using exact version cases only. No range, alias, transitive, reachability or runtime inference. Returns configured=false when no catalog is bound.",
+		schema:      `{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
+		fields:      map[string]argumentSpec{"limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
+	},
+	{
+		name:        "query_endpoints",
+		description: "List annotation-level Spring MVC endpoints with parameter bindings and path status. Routes are not deployed routes. Each returned endpoint includes citations read from this snapshot; use read_source for surrounding context.",
+		schema:      `{"type":"object","properties":{"q":{"type":"string","maxLength":256,"description":"Case-insensitive filter over path, symbol, file and HTTP methods."},"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
+		fields:      map[string]argumentSpec{"q": {kind: stringArgument}, "limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
+	},
+	{
+		name:        "trace_dataflow",
+		description: "Return bounded static source-to-sink findings (SQL and eight other injection categories) with status static_confirmed, inconclusive or refuted. Runtime status is always not_run. Citations are actual snapshot lines; absence of a finding is not a safety proof.",
+		schema:      `{"type":"object","properties":{"category":{"type":"string","maxLength":32,"description":"sql, command, ssrf, path, template, xss, deserialization, xxe, ldap or all."},"status":{"type":"string","maxLength":32,"description":"static_confirmed, inconclusive, refuted or all."},"q":{"type":"string","maxLength":256,"description":"Case-insensitive filter over finding, endpoint, file and parameter fields."},"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
+		fields:      map[string]argumentSpec{"category": {kind: stringArgument}, "status": {kind: stringArgument}, "q": {kind: stringArgument}, "limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
+	},
+	{
+		name:        "list_findings",
+		description: "List unified Finding/Hypothesis evidence, including dependency-advisory candidates and dataflow findings. Static status is separate from runtime_status=not_run. Citations are actual snapshot lines; use read_source before citing additional context.",
+		schema:      `{"type":"object","properties":{"category":{"type":"string","maxLength":32,"description":"sql, command, ssrf, path, template, xss, deserialization, xxe, ldap, dependency or all."},"status":{"type":"string","maxLength":32,"description":"static_confirmed, inconclusive, refuted or all."},"q":{"type":"string","maxLength":256,"description":"Case-insensitive filter over finding, endpoint, component and file fields."},"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
+		fields:      map[string]argumentSpec{"category": {kind: stringArgument}, "status": {kind: stringArgument}, "q": {kind: stringArgument}, "limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
+	},
 }
 
 // Registry borrows its snapshot: the caller owns Close. A registry must not be
 // copied after use. Its evidence ledger is safe for concurrent tool executions.
 type Registry struct {
-	snapshot *project.Snapshot
-	mu       sync.RWMutex
-	observed map[evidenceFile][]lineRange
+	snapshot        *project.Snapshot
+	analysisOptions AnalysisOptions
+	mu              sync.RWMutex
+	observed        map[evidenceFile][]lineRange
+	analysisMu      sync.Mutex
+	analysis        *analysisCache
 }
 
 func New(snapshot *project.Snapshot) *Registry {
-	return &Registry{snapshot: snapshot, observed: make(map[evidenceFile][]lineRange)}
+	return NewWithAnalysis(snapshot, AnalysisOptions{})
+}
+
+// NewWithAnalysis pins the snapshot and local advisory configuration. The
+// caller owns the snapshot and must not mutate it while the registry is used.
+func NewWithAnalysis(snapshot *project.Snapshot, opts AnalysisOptions) *Registry {
+	return &Registry{snapshot: snapshot, analysisOptions: opts, observed: make(map[evidenceFile][]lineRange)}
 }
 
 func (r *Registry) SnapshotHash() string {
@@ -139,6 +178,16 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 			Query: stringValue(values, "query"), Prefix: stringValue(values, "prefix"),
 			Limit: integerValue(values, "limit"), Cursor: stringValue(values, "cursor"),
 		})
+	case "inspect_dependencies":
+		result, err = r.inspectDependencies(ctx, values)
+	case "match_advisories":
+		result, err = r.matchAdvisories(ctx, values)
+	case "query_endpoints":
+		result, err = r.queryEndpoints(ctx, values)
+	case "trace_dataflow":
+		result, err = r.traceDataflow(ctx, values)
+	case "list_findings":
+		result, err = r.listFindings(ctx, values)
 	}
 	if err != nil {
 		// [03] Only project option/cursor errors are caller mistakes. In particular,

@@ -15,7 +15,7 @@ import (
 
 const (
 	SchemaVersion      = 1
-	ToolVersion        = "0.2.0-p0.2+r2-endpoint-inventory"
+	ToolVersion        = "0.2.0-p0.2+r2-endpoint-inventory-v3"
 	MaxJavaFileBytes   = 2 << 20
 	MaxJavaFiles       = 2000
 	MaxJavaTokens      = 500_000
@@ -56,27 +56,30 @@ type Controller struct {
 }
 
 type Endpoint struct {
-	Path         string      `json:"path"`
-	BasePath     string      `json:"base_path"`
-	RelativePath string      `json:"relative_path"`
-	HTTPMethods  []string    `json:"http_methods"`
-	MethodStatus string      `json:"method_status"`
-	File         string      `json:"file"`
-	Package      string      `json:"package"`
-	Class        string      `json:"class"`
-	Method       string      `json:"method"`
-	Symbol       string      `json:"symbol"`
-	SHA256       string      `json:"sha256"`
-	Annotation   string      `json:"annotation"`
-	StartLine    int         `json:"start_line"`
-	EndLine      int         `json:"end_line"`
-	MethodLine   int         `json:"method_line"`
-	Parameters   []Parameter `json:"parameters"`
-	PathStatus   string      `json:"path_status"`
-	PathReason   string      `json:"path_reason,omitempty"`
-	Anchor       string      `json:"anchor,omitempty"`
-	AnchorLine   int         `json:"anchor_line,omitempty"`
-	Duplicate    bool        `json:"duplicate,omitempty"`
+	Path           string      `json:"path"`
+	BasePath       string      `json:"base_path"`
+	RelativePath   string      `json:"relative_path"`
+	HTTPMethods    []string    `json:"http_methods"`
+	MethodStatus   string      `json:"method_status"`
+	Produces       []string    `json:"produces"`
+	ProducesStatus string      `json:"produces_status"`
+	ResponseBody   bool        `json:"response_body"`
+	File           string      `json:"file"`
+	Package        string      `json:"package"`
+	Class          string      `json:"class"`
+	Method         string      `json:"method"`
+	Symbol         string      `json:"symbol"`
+	SHA256         string      `json:"sha256"`
+	Annotation     string      `json:"annotation"`
+	StartLine      int         `json:"start_line"`
+	EndLine        int         `json:"end_line"`
+	MethodLine     int         `json:"method_line"`
+	Parameters     []Parameter `json:"parameters"`
+	PathStatus     string      `json:"path_status"`
+	PathReason     string      `json:"path_reason,omitempty"`
+	Anchor         string      `json:"anchor,omitempty"`
+	AnchorLine     int         `json:"anchor_line,omitempty"`
+	Duplicate      bool        `json:"duplicate,omitempty"`
 }
 
 type Parameter struct {
@@ -112,17 +115,18 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 		SchemaVersion: SchemaVersion,
 		ToolVersion:   ToolVersion,
 		SnapshotHash:  snapshot.Hash(),
-		AnalysisKind:  "spring_mvc_annotation_inventory",
+		AnalysisKind:  "http_annotation_inventory",
 		Controllers:   []Controller{},
 		Endpoints:     []Endpoint{},
 		Coverage:      Coverage{JavaAST: "not_available", TaintAnalysis: "not_run", RuntimeStatus: "not_run"},
 		Limitations: []string{
 			"lexical_annotation_inventory_not_ast: no JavaParser, type resolution, meta-annotations, interface inheritance or framework configuration analysis",
-			"spring_mvc_only: only Controller/RestController and RequestMapping/Get/Post/Put/Delete/Patch annotations are recognized",
-			"annotation_name_only_no_import_resolution: a custom annotation sharing a Spring short name could be misidentified",
+			"http_framework_annotations_only: Spring MVC, JAX-RS (@Path/@GET family) and @WebServlet doGet/doPost-style methods are recognized; web.xml, Servlet 3 registration APIs, WebFlux and custom routers are not",
+			"annotation_name_only_no_import_resolution: a custom annotation sharing a known short name could be misidentified",
 			"no_source_sink_or_taint: parameters are inventoried only; no call graph, sanitizer or dataflow analysis",
 			"path_joining_approximation: simple base+method concatenation; no PathPattern, placeholder, regex or configured context-path semantics",
 			"constant_folding_unsupported: non-literal annotation values are unresolved, never guessed",
+			"servlet_parameters_unbound: HttpServletRequest.getParameter extraction is not modeled, so servlet entries carry no request source",
 			"runtime_status_not_run: a route declaration does not prove deployment, reachability or exploitability",
 		},
 	}

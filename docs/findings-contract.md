@@ -119,3 +119,9 @@ Finding ID：
 - 未执行 Java/编译器/Maven、未调用真实模型、未做运行时验证或补丁。
 
 未验证：依赖 import graph/有效依赖树/classpath、依赖到入口的可达性、跨分析去重与证据图谱、运行时复现、补丁验证。
+
+## 2026-11-13 扩展：SARIF 与 import 可达性
+
+- `audit sarif` 将同一份 findings 报告转换为确定性 SARIF 2.1.0；rule ID 为 `trident/<kind>`，`static_confirmed`→`warning`、`inconclusive`→`note`、`refuted`→`none`；结果和 run 属性都保留 `runtime_status=not_run`。SARIF 不是新的分析结论。
+- `audit reachability` 使用显式 `--package-map` 将声明依赖映射到 Java import；`import_reachable` 仅表示观察到匹配 import，`import_not_observed` 仅表示本快照未见 import，`unverified` 表示缺少映射。三者都不证明类加载、调用路径或运行时利用。
+- 数据流新增 `upload` 类别（CWE-434）与框架 SQL/SSRF sink；finding kind 为 `unrestricted_upload`，仍遵守 `runtime_status=not_run` 与 `inconclusive` 不等于安全的规则。

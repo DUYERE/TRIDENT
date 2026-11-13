@@ -23,6 +23,8 @@ type fileModel struct {
 	Path     string
 	SHA256   string
 	Package  string
+	Imports  map[string]string
+	Wildcard []string
 	Tokens   []javaToken
 	Comments []javaToken
 	Classes  []*classModel
@@ -68,6 +70,7 @@ type projectModel struct {
 	classes     map[string]*classModel
 	methods     map[string][]*methodModel
 	simple      map[string][]*classModel
+	imported    map[string]*classModel
 	order       []*classModel
 	methodCount int
 }
@@ -139,8 +142,9 @@ func parseJavaFile(file, sha256 string, data []byte) (*fileModel, error) {
 	if err != nil {
 		return nil, err
 	}
-	model := &fileModel{Path: file, SHA256: sha256, Tokens: code, Comments: comments}
+	model := &fileModel{Path: file, SHA256: sha256, Tokens: code, Comments: comments, Imports: map[string]string{}}
 	model.parsePackage()
+	model.parseImports()
 	model.parseClasses()
 	return model, nil
 }
@@ -193,6 +197,40 @@ func (f *fileModel) parsePackage() {
 		}
 		f.Package = name.String()
 		return
+	}
+}
+
+func (f *fileModel) parseImports() {
+	for i := 0; i < len(f.Tokens); i++ {
+		if f.Tokens[i].Text == "{" {
+			return
+		}
+		if f.Tokens[i].Text != "import" {
+			continue
+		}
+		j := i + 1
+		if j < len(f.Tokens) && f.Tokens[j].Text == "static" {
+			continue
+		}
+		var name strings.Builder
+		wildcard := false
+		for ; j < len(f.Tokens) && f.Tokens[j].Text != ";"; j++ {
+			if f.Tokens[j].Text == "*" {
+				wildcard = true
+				continue
+			}
+			name.WriteString(f.Tokens[j].Text)
+		}
+		importName := name.String()
+		if importName == "" {
+			continue
+		}
+		if wildcard {
+			f.Wildcard = append(f.Wildcard, importName)
+			continue
+		}
+		parts := strings.Split(importName, ".")
+		f.Imports[parts[len(parts)-1]] = importName
 	}
 }
 
@@ -489,14 +527,24 @@ func parseParams(tokens []javaToken) []paramModel {
 			continue
 		}
 		typeName := ""
+		typeIndex := -1
 		for i := 0; i < nameIndex; i++ {
 			if clean[i].Tok == scanner.Ident && !isModifier(clean[i].Text) {
 				typeName = clean[i].Text
+				typeIndex = i
 				break
 			}
 		}
 		if typeName == "" {
 			continue
+		}
+		for i := typeIndex + 1; i < nameIndex; i++ {
+			if clean[i].Text == "<" || clean[i].Text == "," {
+				break
+			}
+			if clean[i].Text == "[" {
+				typeName += "[]"
+			}
 		}
 		params = append(params, paramModel{
 			Name:    clean[nameIndex].Text,
@@ -531,24 +579,35 @@ func fieldNameType(tokens []javaToken) (string, string) {
 		return "", ""
 	}
 	fieldType := ""
+	typeIndex := -1
 	for i := 0; i < nameIndex; i++ {
 		if clean[i].Tok == scanner.Ident && !isModifier(clean[i].Text) {
 			fieldType = clean[i].Text
+			typeIndex = i
 			break
 		}
 	}
 	if fieldType == "" {
 		return "", ""
 	}
+	for i := typeIndex + 1; i < nameIndex; i++ {
+		if clean[i].Text == "<" || clean[i].Text == "," {
+			break
+		}
+		if clean[i].Text == "[" {
+			fieldType += "[]"
+		}
+	}
 	return clean[nameIndex].Text, fieldType
 }
 
 func newProjectModel(files []*fileModel) *projectModel {
 	p := &projectModel{
-		files:   map[string]*fileModel{},
-		classes: map[string]*classModel{},
-		methods: map[string][]*methodModel{},
-		simple:  map[string][]*classModel{},
+		files:    map[string]*fileModel{},
+		classes:  map[string]*classModel{},
+		methods:  map[string][]*methodModel{},
+		simple:   map[string][]*classModel{},
+		imported: map[string]*classModel{},
 	}
 	for _, file := range files {
 		p.files[file.Path] = file
@@ -558,6 +617,29 @@ func newProjectModel(files []*fileModel) *projectModel {
 			p.simple[class.Name] = append(p.simple[class.Name], class)
 			p.order = append(p.order, class)
 			p.methodCount += len(class.Methods)
+		}
+	}
+	imported := map[string][]*classModel{}
+	for _, file := range files {
+		for _, qualified := range file.Imports {
+			if class := p.classes[qualified]; class != nil {
+				imported[file.Path+"\x00"+class.Name] = append(imported[file.Path+"\x00"+class.Name], class)
+			}
+		}
+	}
+	for _, file := range files {
+		for simple := range file.Imports {
+			candidates := imported[file.Path+"\x00"+simple]
+			if len(candidates) != 1 {
+				continue
+			}
+			if existing, ok := p.imported[simple]; ok && existing != candidates[0] {
+				// Two files import different classes with the same simple name;
+				// a file-agnostic fallback would guess, so drop it.
+				delete(p.imported, simple)
+				continue
+			}
+			p.imported[simple] = candidates[0]
 		}
 	}
 	sort.Slice(p.order, func(i, j int) bool { return p.order[i].Symbol < p.order[j].Symbol })
@@ -940,6 +1022,9 @@ func (p *projectModel) resolveClass(typeName, currentPackage string) *classModel
 		if class := p.classes[currentPackage+"."+typeName]; class != nil {
 			return class
 		}
+	}
+	if class := p.imported[typeName]; class != nil {
+		return class
 	}
 	candidates := p.simple[typeName]
 	if len(candidates) == 1 {

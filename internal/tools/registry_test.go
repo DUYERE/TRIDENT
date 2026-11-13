@@ -72,7 +72,10 @@ func execute(t *testing.T, r *Registry, name string, args any) json.RawMessage {
 func TestDefinitionsFixedReadOnlyAndIndependent(t *testing.T) {
 	r := New(nil)
 	definitions := r.Definitions()
-	want := []string{"inspect_project", "list_files", "read_source", "search_source"}
+	want := []string{
+		"inspect_project", "list_files", "read_source", "search_source",
+		"inspect_dependencies", "match_advisories", "query_endpoints", "trace_dataflow", "list_findings",
+	}
 	if len(definitions) != len(want) {
 		t.Fatalf("unexpected tools: %+v", definitions)
 	}

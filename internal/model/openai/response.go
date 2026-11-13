@@ -25,16 +25,18 @@ type wireChoice struct {
 }
 
 type wireMessage struct {
-	Role             string            `json:"role"`
-	Content          *string           `json:"content"`
-	Refusal          *string           `json:"refusal"`
-	Calls            []wireCall        `json:"tool_calls"`
-	FunctionCall     json.RawMessage   `json:"function_call"`
-	Audio            json.RawMessage   `json:"audio"`
-	Annotations      []json.RawMessage `json:"annotations"`
-	ReasoningContent json.RawMessage   `json:"reasoning_content"`
-	ReasoningDetails json.RawMessage   `json:"reasoning_details"`
-	Reasoning        json.RawMessage   `json:"reasoning"`
+	Role         string            `json:"role"`
+	Content      *string           `json:"content"`
+	Refusal      *string           `json:"refusal"`
+	Calls        []wireCall        `json:"tool_calls"`
+	FunctionCall json.RawMessage   `json:"function_call"`
+	Audio        json.RawMessage   `json:"audio"`
+	Annotations  []json.RawMessage `json:"annotations"`
+	// DeepSeek and other compatible providers return reasoning_content next to
+	// the final answer. It is opaque continuation data, not user-visible output.
+	ReasoningContent *string         `json:"reasoning_content"`
+	ReasoningDetails json.RawMessage `json:"reasoning_details"`
+	Reasoning        json.RawMessage `json:"reasoning"`
 }
 
 type wireCall struct {
@@ -64,7 +66,10 @@ func decodeResponse(raw []byte, req model.Request) (model.Response, error) {
 		return fail()
 	}
 	msg := choice.Message
-	if nonNull(msg.FunctionCall) || nonNull(msg.Audio) || len(msg.Annotations) != 0 || nonNull(msg.ReasoningContent) || nonNull(msg.ReasoningDetails) || nonNull(msg.Reasoning) {
+	if nonNull(msg.FunctionCall) || nonNull(msg.Audio) || len(msg.Annotations) != 0 || nonNull(msg.ReasoningDetails) || nonNull(msg.Reasoning) {
+		return fail()
+	}
+	if msg.ReasoningContent != nil && !validText(*msg.ReasoningContent) {
 		return fail()
 	}
 	result := model.Response{Message: model.Message{Role: "assistant"}}
@@ -166,9 +171,10 @@ func objectJSON(raw []byte) (map[string]any, error) {
 		return nil, err
 	}
 	var object map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber() // Preserve large numeric schema/argument values exactly.
-	if err := decoder.Decode(&object); err != nil || object == nil {
+	// Standard decoding keeps numeric schema keywords as JSON numbers. The SDK
+	// parameter encoder serializes json.Number as a string, which strict
+	// OpenAI-compatible providers reject (e.g. maxLength/minimum/maximum).
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
 		return nil, safeError(model.ErrProtocol, "expected JSON object")
 	}
 	return object, nil

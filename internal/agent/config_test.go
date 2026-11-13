@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -55,5 +57,26 @@ func TestConfigEndpointAndLimits(t *testing.T) {
 	}
 	if _, e := DecodeConfig([]byte(`{"version":"trident-agent-v1","api_key":"do-not-store"}`)); e == nil {
 		t.Fatal("secret config field accepted")
+	}
+}
+
+func TestConfigAnalysisAdvisoryPath(t *testing.T) {
+	c := configFixture()
+	c.AnalysisAdvisoryPath = "relative/advisory.json"
+	if c.Validate() == nil {
+		t.Fatal("relative advisory path accepted")
+	}
+	c.AnalysisAdvisoryPath = t.TempDir() + string(os.PathSeparator) + "advisory.json"
+	if e := c.Validate(); e != nil {
+		t.Fatal(e)
+	}
+	encoded, _ := json.Marshal(c)
+	decoded, e := DecodeConfig(encoded)
+	if e != nil || decoded.AnalysisAdvisoryPath != c.AnalysisAdvisoryPath {
+		t.Fatalf("advisory config round trip: %+v %v", decoded, e)
+	}
+	c.AnalysisAdvisoryPath = "/tmp/advisory.json\nnext"
+	if c.Validate() == nil {
+		t.Fatal("control characters accepted")
 	}
 }

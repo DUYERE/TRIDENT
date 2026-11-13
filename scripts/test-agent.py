@@ -121,8 +121,10 @@ class ProtocolServer(ThreadingHTTPServer):
         require(request.get("max_completion_tokens") == 2048 and "max_tokens" not in request,
                 "Explicit output token profile not respected")
         names = [entry.get("function", {}).get("name") for entry in request.get("tools", [])]
-        require(set(names) == {"inspect_project", "list_files", "read_source", "search_source"}
-                and len(names) == 4, "Read-only tool allowlist changed")
+        require(set(names) == {"inspect_project", "list_files", "read_source", "search_source",
+                               "inspect_dependencies", "match_advisories", "query_endpoints",
+                               "trace_dataflow", "list_findings"}
+                and len(names) == 9, "Read-only tool allowlist changed")
         messages = request.get("messages")
         require(isinstance(messages, list) and messages, "Missing model history")
         tools = [entry for entry in messages if entry.get("role") == "tool"]

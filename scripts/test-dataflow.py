@@ -21,6 +21,9 @@ ADVANCED_FIXTURE = ROOT / "tests" / "fixtures" / "java-lambda-generic-varargs"
 INJECTION_FIXTURE = ROOT / "tests" / "fixtures" / "java-injection-sinks"
 EXTRA_FIXTURE = ROOT / "tests" / "fixtures" / "java-extra-sinks"
 COLLECTION_FIXTURE = ROOT / "tests" / "fixtures" / "java-collections"
+CONTAINER_REFLECT_FIXTURE = ROOT / "tests" / "fixtures" / "java-container-reflect"
+GAPS_FIXTURE = ROOT / "tests" / "fixtures" / "java-flow-gaps"
+ADVANCED_SINKS_FIXTURE = ROOT / "tests" / "fixtures" / "java-advanced-sinks"
 
 
 def tree_hashes(root):
@@ -71,7 +74,7 @@ def finding_cwe(report, path, cwe):
 
 
 def flow_kinds_of(entry):
-    return {step["kind"] for step in entry["flow"]}
+    return {step["kind"] for step in (entry.get("flow") or [])}
 
 
 def main():
@@ -728,6 +731,243 @@ def main():
         require(tree_hashes(COLLECTION_FIXTURE) == collection_before,
                 "Original collection fixture was changed")
 
+        # [11] Collection mutation across methods, clear, reflected returns and
+        # SAXReader XXE use a separate fixture.
+        container_before = tree_hashes(CONTAINER_REFLECT_FIXTURE)
+        require(container_before, "Missing container/reflect fixture")
+        container_snapshot = parent / "container-reflect-snapshot"
+        container_imported = invoke("project", "import", "--source", str(CONTAINER_REFLECT_FIXTURE),
+                                    "--snapshot", str(container_snapshot), retries=3)
+        container_hash = container_imported["snapshot_hash"]
+        container_common = ["--snapshot", str(container_snapshot), "--snapshot-hash", container_hash]
+        container_snapshot_before = tree_hashes(container_snapshot)
+        container_report = invoke("audit", "dataflow", *container_common, retries=3)
+        require(container_report["partial"] is False
+                and container_report["coverage"]["endpoints_analyzed"] == 8
+                and len(container_report["findings"]) == 10,
+                "Container/reflect coverage mismatch")
+        require(container_report["coverage"]["findings_confirmed"] == 3
+                and container_report["coverage"]["findings_inconclusive"] == 7
+                and container_report["coverage"]["findings_refuted"] == 0,
+                "Container/reflect status counts mismatch")
+
+        container_mutated = finding_cwe(container_report, "/container/mutate", "CWE-89")
+        require(container_mutated is not None and container_mutated["status"] == "static_confirmed"
+                and container_mutated["sink"]["api"] == "statement.executeQuery"
+                and {"collection_mutated", "collection_add", "sink"} <= flow_kinds_of(container_mutated),
+                "Cross-method collection mutation mismatch")
+        require("fixture:container-helper-add" in {item.get("anchor") for item in container_mutated["evidence"]},
+                "Collection mutation evidence anchor missing")
+
+        container_clear = finding_cwe(container_report, "/container/clear", "CWE-89")
+        require(container_clear is not None and container_clear["status"] == "inconclusive"
+                and "sink" not in container_clear
+                and "collection_clear" in flow_kinds_of(container_clear),
+                "Collection clear negative control mismatch")
+
+        container_refill = finding_cwe(container_report, "/container/clear-refill", "CWE-89")
+        require(container_refill is not None and container_refill["status"] == "static_confirmed"
+                and "collection_clear" in flow_kinds_of(container_refill),
+                "Collection clear/refill mismatch")
+
+        container_helper_clear = finding_cwe(container_report, "/container/helper-clear", "CWE-89")
+        require(container_helper_clear is not None and container_helper_clear["status"] == "inconclusive"
+                and "sink" not in container_helper_clear
+                and "collection_clear" in flow_kinds_of(container_helper_clear),
+                "Callee collection clear mismatch")
+
+        container_constant = finding_cwe(container_report, "/container/constant", "CWE-89")
+        require(container_constant is not None and container_constant["status"] == "inconclusive"
+                and "collection_add" not in flow_kinds_of(container_constant),
+                "Constant collection negative control mismatch")
+
+        reflected_return = finding_cwe(container_report, "/reflect/return", "CWE-79")
+        require(reflected_return is not None and reflected_return["status"] == "inconclusive"
+                and "sink" not in reflected_return
+                and reflected_return["boundary"]["kind"] == "reflected_return"
+                and "reflected_return" in flow_kinds_of(reflected_return),
+                "Reflected return boundary mismatch")
+        require("reflected_return_content_type_unverified" in reflected_return["limitations"],
+                "Reflected return limitation missing")
+
+        reflected_clean = finding_cwe(container_report, "/reflect/clean", "CWE-79")
+        require(reflected_clean is None, "Clean return must not produce an XSS finding")
+
+        sax_reader = finding_cwe(container_report, "/xxe/sax-reader", "CWE-611")
+        require(sax_reader is not None and sax_reader["status"] == "static_confirmed"
+                and sax_reader["sink"]["api"] == "SAXReader.read"
+                and "xxe_sink" in flow_kinds_of(sax_reader),
+                "SAXReader XXE mismatch")
+        require(tree_hashes(container_snapshot) == container_snapshot_before,
+                "Dataflow changed its container/reflect snapshot")
+        require(tree_hashes(CONTAINER_REFLECT_FIXTURE) == container_before,
+                "Original container/reflect fixture was changed")
+
+        # [12] Array subscripts, remove, field collections, produces-aware
+        # reflected returns, chained deserialization and extra XXE entries.
+        gaps_before = tree_hashes(GAPS_FIXTURE)
+        require(gaps_before, "Missing flow-gaps fixture")
+        gaps_snapshot = parent / "flow-gaps-snapshot"
+        gaps_imported = invoke("project", "import", "--source", str(GAPS_FIXTURE),
+                               "--snapshot", str(gaps_snapshot), retries=3)
+        gaps_hash = gaps_imported["snapshot_hash"]
+        gaps_common = ["--snapshot", str(gaps_snapshot), "--snapshot-hash", gaps_hash]
+        gaps_snapshot_before = tree_hashes(gaps_snapshot)
+        gaps_report = invoke("audit", "dataflow", *gaps_common, retries=3)
+        require(gaps_report["partial"] is False
+                and gaps_report["coverage"]["endpoints_analyzed"] == 16
+                and len(gaps_report["findings"]) == 23,
+                "Flow-gaps coverage mismatch")
+        require(gaps_report["coverage"]["findings_confirmed"] == 10
+                and gaps_report["coverage"]["findings_refuted"] == 1
+                and gaps_report["coverage"]["findings_inconclusive"] == 12,
+                "Flow-gaps status counts mismatch")
+
+        array_write = finding_cwe(gaps_report, "/array/write", "CWE-89")
+        require(array_write is not None and array_write["status"] == "static_confirmed"
+                and {"array_write", "array_read", "sink"} <= flow_kinds_of(array_write),
+                "Array subscript flow mismatch")
+
+        array_constant = finding_cwe(gaps_report, "/array/constant", "CWE-89")
+        require(array_constant is not None and array_constant["status"] == "inconclusive"
+                and "array_write" not in flow_kinds_of(array_constant),
+                "Constant array negative control mismatch")
+
+        array_helper = finding_cwe(gaps_report, "/array/helper", "CWE-89")
+        require(array_helper is not None and array_helper["status"] == "static_confirmed"
+                and {"collection_mutated", "array_write", "sink"} <= flow_kinds_of(array_helper),
+                "Cross-method array mutation mismatch")
+        require("fixture:array-helper-write" in {item.get("anchor") for item in array_helper["evidence"]},
+                "Array helper evidence anchor missing")
+
+        removed = finding_cwe(gaps_report, "/remove/keep", "CWE-89")
+        require(removed is not None and removed["status"] == "static_confirmed"
+                and "collection_remove" in flow_kinds_of(removed)
+                and "collection_remove_flow_insensitive" in removed["limitations"],
+                "Collection remove conservative semantics mismatch")
+
+        field_keep = finding_cwe(gaps_report, "/field/keep", "CWE-89")
+        require(field_keep is not None and field_keep["status"] == "static_confirmed"
+                and "collection_add" in flow_kinds_of(field_keep),
+                "Field collection taint mismatch")
+
+        field_clear = finding_cwe(gaps_report, "/field/clear", "CWE-89")
+        require(field_clear is not None and field_clear["status"] == "inconclusive"
+                and "sink" not in field_clear
+                and "collection_clear" in flow_kinds_of(field_clear),
+                "Field collection clear mismatch")
+
+        html_return = finding_cwe(gaps_report, "/reflect/html", "CWE-79")
+        require(html_return is not None and html_return["status"] == "static_confirmed"
+                and html_return["sink"]["api"] == "return:text/html"
+                and {"reflected_return", "xss_sink"} <= flow_kinds_of(html_return),
+                "HTML produces reflected return mismatch")
+
+        json_return = finding_cwe(gaps_report, "/reflect/json", "CWE-79")
+        require(json_return is not None and json_return["status"] == "refuted"
+                and "sink" not in json_return
+                and "application/json" in json_return["protection"]["detail"],
+                "JSON produces reflected return mismatch")
+
+        constant_html = finding_cwe(gaps_report, "/reflect/constant-html", "CWE-79")
+        require(constant_html is None, "Constant HTML return must not be reported")
+        view_return = finding_cwe(gaps_report, "/reflect/view", "CWE-79")
+        require(view_return is None, "View-name return must not be reported as XSS")
+
+        chain = finding_cwe(gaps_report, "/deserialize/chain", "CWE-502")
+        require(chain is not None and chain["status"] == "static_confirmed"
+                and chain["sink"]["api"] == "new ObjectInputStream(...).readObject"
+                and "deserialization_sink" in flow_kinds_of(chain),
+                "Chained deserialization mismatch")
+        chain_constant = finding_cwe(gaps_report, "/deserialize/chain-constant", "CWE-502")
+        require(chain_constant is None, "Constant chained deserialization must not be reported")
+
+        for path, api in (("/xxe/build", "SAXBuilder.build"),
+                          ("/xxe/digester", "Digester.parse"),
+                          ("/xxe/helper", "DocumentHelper.parseText"),
+                          ("/xxe/event", "XMLInputFactory.createXMLEventReader")):
+            xxe = finding_cwe(gaps_report, path, "CWE-611")
+            require(xxe is not None and xxe["status"] == "static_confirmed"
+                    and xxe["sink"]["api"] == api
+                    and "xxe_sink" in flow_kinds_of(xxe),
+                    f"{path} XXE entry mismatch")
+        require(tree_hashes(gaps_snapshot) == gaps_snapshot_before,
+                "Dataflow changed its flow-gaps snapshot")
+        require(tree_hashes(GAPS_FIXTURE) == gaps_before,
+                "Original flow-gaps fixture was changed")
+
+        # [13] Framework SQL/SSRF sinks, upload writes, literal element
+        # precision, literal-index remove and import-aware type resolution.
+        advanced_before = tree_hashes(ADVANCED_SINKS_FIXTURE)
+        require(advanced_before, "Missing advanced-sinks fixture")
+        advanced_snapshot = parent / "advanced-sinks-snapshot"
+        advanced_imported = invoke("project", "import", "--source", str(ADVANCED_SINKS_FIXTURE),
+                                   "--snapshot", str(advanced_snapshot), retries=3)
+        advanced_hash = advanced_imported["snapshot_hash"]
+        advanced_common = ["--snapshot", str(advanced_snapshot), "--snapshot-hash", advanced_hash]
+        advanced_snapshot_before = tree_hashes(advanced_snapshot)
+        advanced_report = invoke("audit", "dataflow", *advanced_common, retries=3)
+        require(advanced_report["partial"] is False
+                and advanced_report["coverage"]["endpoints_analyzed"] == 11
+                and len(advanced_report["findings"]) == 14,
+                "Advanced-sink coverage mismatch")
+        require(advanced_report["coverage"]["findings_confirmed"] == 7
+                and advanced_report["coverage"]["findings_refuted"] == 0
+                and advanced_report["coverage"]["findings_inconclusive"] == 7,
+                "Advanced-sink status counts mismatch")
+
+        template = finding_cwe(advanced_report, "/sql/template", "CWE-89")
+        require(template is not None and template["status"] == "static_confirmed"
+                and template["sink"]["api"] == "jdbcTemplate.update",
+                "JdbcTemplate SQL sink mismatch")
+        template_safe = finding_cwe(advanced_report, "/sql/template-safe", "CWE-89")
+        require(template_safe is not None and template_safe["status"] == "inconclusive"
+                and "sink" not in template_safe,
+                "JdbcTemplate value binding was treated as SQL text")
+        jpa = finding_cwe(advanced_report, "/sql/jpa", "CWE-89")
+        require(jpa is not None and jpa["status"] == "static_confirmed"
+                and jpa["sink"]["api"] == "entityManager.createQuery",
+                "JPA query sink mismatch")
+
+        http_client = finding_cwe(advanced_report, "/ssrf/httpclient", "CWE-918")
+        require(http_client is not None and http_client["status"] == "static_confirmed"
+                and http_client["sink"]["api"] == "HttpRequest.uri",
+                "HttpClient SSRF sink mismatch")
+        web_client = finding_cwe(advanced_report, "/ssrf/webclient", "CWE-918")
+        require(web_client is not None and web_client["status"] == "static_confirmed"
+                and web_client["sink"]["api"] == "WebClient.uri",
+                "WebClient SSRF sink mismatch")
+
+        upload = finding_cwe(advanced_report, "/upload/transfer", "CWE-434")
+        require(upload is not None and upload["status"] == "static_confirmed"
+                and upload["sink"]["api"] == "MultipartFile.transferTo",
+                "MultipartFile upload sink mismatch")
+        require(finding_cwe(advanced_report, "/upload/constant", "CWE-434") is None,
+                "Constant upload must not be reported")
+
+        precise = finding_cwe(advanced_report, "/array/precise", "CWE-89")
+        require(precise is not None and precise["status"] == "inconclusive"
+                and "sink" not in precise,
+                "Literal element precision negative control mismatch")
+        precise_tainted = finding_cwe(advanced_report, "/array/precise-tainted", "CWE-89")
+        require(precise_tainted is not None and precise_tainted["status"] == "static_confirmed",
+                "Literal tainted element was lost")
+        removed_index = finding_cwe(advanced_report, "/array/remove-index", "CWE-89")
+        require(removed_index is not None and removed_index["status"] == "inconclusive"
+                and "sink" not in removed_index,
+                "Literal-index remove did not clear element taint")
+
+        imported_helper = finding_cwe(advanced_report, "/import/helper", "CWE-89")
+        require(imported_helper is not None and imported_helper["status"] == "static_confirmed",
+                "Import-aware helper resolution mismatch")
+        clean_helper = finding_cwe(advanced_report, "/import/clean", "CWE-89")
+        require(clean_helper is not None and clean_helper["status"] == "inconclusive",
+                "Clean helper call was tainted")
+        require(tree_hashes(advanced_snapshot) == advanced_snapshot_before,
+                "Dataflow changed its advanced-sink snapshot")
+        require(tree_hashes(ADVANCED_SINKS_FIXTURE) == advanced_before,
+                "Original advanced-sink fixture was changed")
+
         invoke("audit", "dataflow", "--snapshot", str(snapshot), failure=True)
         invoke("audit", "dataflow", *common[:-1], "0" * 64, failure=True)
         require(tree_hashes(snapshot) == snapshot_before, "Dataflow changed its read-only snapshot")
@@ -765,6 +1005,13 @@ def main():
                           "collection_findings": len(collection_report["findings"]),
                           "collection_confirmed": collection_report["coverage"]["findings_confirmed"],
                           "collection_inconclusive": collection_report["coverage"]["findings_inconclusive"],
+                          "container_reflect_findings": len(container_report["findings"]),
+                          "container_reflect_confirmed": container_report["coverage"]["findings_confirmed"],
+                          "container_reflect_inconclusive": container_report["coverage"]["findings_inconclusive"],
+                          "flow_gaps_findings": len(gaps_report["findings"]),
+                          "flow_gaps_confirmed": gaps_report["coverage"]["findings_confirmed"],
+                          "flow_gaps_refuted": gaps_report["coverage"]["findings_refuted"],
+                          "flow_gaps_inconclusive": gaps_report["coverage"]["findings_inconclusive"],
                           "checks": ["real_cli", "no_database", "no_java_execution",
                                      "cross_method_taint", "string_concat_sink",
                                      "prepared_statement_negative", "dynamic_boundary",
@@ -802,7 +1049,20 @@ def main():
                                      "constant_collection_negative",
                                      "collection_command_sink", "constant_collection_command_negative",
                                      "collection_xss_sink", "collection_dynamic_boundary",
-                                     "unknown_collection_receiver_boundary"],
+                                     "unknown_collection_receiver_boundary",
+                                     "collection_cross_method_mutation", "collection_clear_reset",
+                                     "collection_clear_refill", "callee_collection_clear",
+                                     "constant_collection_negative",
+                                     "reflected_return_boundary", "clean_reflected_return_negative",
+                                     "sax_reader_xxe",
+                                     "array_subscript_flow", "constant_array_negative",
+                                     "cross_method_array_mutation", "collection_remove_conservative",
+                                     "field_collection_taint", "field_collection_clear",
+                                     "produces_html_reflected_return", "produces_json_refuted_return",
+                                     "constant_html_return_negative", "view_name_return_negative",
+                                     "chained_deserialization", "constant_chained_deserialization_negative",
+                                     "sax_builder_xxe", "digester_xxe", "document_helper_xxe",
+                                     "xml_event_reader_xxe"],
                           "java_executed": False, "model_called": False}, ensure_ascii=False))
 
 

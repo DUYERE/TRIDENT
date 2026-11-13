@@ -291,6 +291,149 @@ func TestInspectManagementAloneAndDuplicateDeclaration(t *testing.T) {
 	}
 }
 
+func TestAdvisoryRangeAliasesAndOutsideRange(t *testing.T) {
+	snapshot := snapshotFromFiles(t, map[string]string{
+		"pom.xml": `<project><modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId><artifactId>app</artifactId><version>1</version>
+  <dependencies>
+    <dependency><groupId>org.apache.commons</groupId><artifactId>commons-text</artifactId><version>1.9.5</version></dependency>
+  </dependencies>
+</project>`,
+	})
+	advisoryPath := filepath.Join(t.TempDir(), "range.json")
+	advisory := `{"schema_version":"1.0.0","fixture_id":"range","kind":"curated_advisory_fixture","advisory_id":"CVE-RANGE","aliases":["GHSA-xxxx"],"aliases_complete":true,"published_date":"2026-01-01","retrieved_date":"2026-01-01","ecosystem":"Maven","package":{"group_id":"org.apache.commons","artifact_id":"commons-text"},"sources":[],"matching_scope":{"source_id":"","policy":"range","fixed_default_configuration_release":""},"version_cases":[{"version_range":">=1.9,<1.10","version_matched":true,"supply_chain_status":"version_matched","finding_status":"candidate","assessment_scope":"declared range","runtime_status":"not_run"}],"exploitability_prerequisites":[],"forbidden_inferences":[],"coverage":{"advisories":[],"all_cves_checked":false,"artifact_hashes_available":false,"effective_dependency_tree_available":false,"runtime_exploit_test_available":false}}`
+	if err := os.WriteFile(advisoryPath, []byte(advisory), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Inspect(context.Background(), snapshot, Options{AdvisoryPath: advisoryPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.AdvisoryMatches) != 1 {
+		t.Fatalf("range match missing: %+v", report.AdvisoryMatches)
+	}
+	match := report.AdvisoryMatches[0]
+	if match.FindingStatus != "candidate" || match.MatchedBy != "range" || len(match.Aliases) != 1 || match.Aliases[0] != "GHSA-xxxx" {
+		t.Fatalf("unexpected range match: %+v", match)
+	}
+	if report.Advisories[0].RangeCaseCount != 1 || !report.Advisories[0].AliasesComplete {
+		t.Fatalf("advisory info: %+v", report.Advisories[0])
+	}
+
+	outside := snapshotFromFiles(t, map[string]string{
+		"pom.xml": `<project><modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId><artifactId>app</artifactId><version>1</version>
+  <dependencies>
+    <dependency><groupId>org.apache.commons</groupId><artifactId>commons-text</artifactId><version>1.10.0</version></dependency>
+  </dependencies>
+</project>`,
+	})
+	report, err = Inspect(context.Background(), outside, Options{AdvisoryPath: advisoryPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.AdvisoryMatches) != 1 || report.AdvisoryMatches[0].VersionStatus != "not_affected" || report.AdvisoryMatches[0].MatchedBy != "range_excluded" {
+		t.Fatalf("outside-range result: %+v", report.AdvisoryMatches)
+	}
+}
+
+func TestGradleDeclarationsAndModules(t *testing.T) {
+	snapshot := snapshotFromFiles(t, map[string]string{
+		"settings.gradle": `rootProject.name = 'demo'`,
+		"build.gradle": `group = 'com.example'
+version = '1.0.0'
+dependencies {
+  implementation "org.apache.commons:commons-text:1.9"
+  implementation group: 'com.google.guava', name: 'guava', version: '33.0.0-jre'
+  testImplementation 'junit:junit:4.12'
+  implementation platform('org.springframework.boot:spring-boot-dependencies:3.2.0')
+  implementation libs.commons.lang
+  implementation project(':app')
+}`,
+		"app/build.gradle.kts": `dependencies {
+  implementation("org.apache.commons:commons-text:1.10.0")
+  implementation("com.example:dynamic:1.+")
+}`,
+	})
+	report, err := Inspect(context.Background(), snapshot, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Project.BuildSystem != "Gradle" || report.Project.GradleFileCount != 2 || report.Coverage.GradleFilesScanned != 2 {
+		t.Fatalf("gradle project: %+v %+v", report.Project, report.Coverage)
+	}
+	if report.Coverage.DependenciesDeclared != 5 || report.Coverage.DependenciesResolved != 4 || report.Coverage.DependenciesUnresolved != 1 {
+		t.Fatalf("gradle dependency coverage: %+v %+v", report.Coverage, report.Dependencies)
+	}
+	if report.Project.ModuleCount != 2 || len(report.Project.RootGradleFiles) != 1 || report.Project.RootGradleFiles[0] != "build.gradle" {
+		t.Fatalf("gradle modules: %+v", report.Project)
+	}
+	var text, guava, dynamic Dependency
+	for _, dependency := range report.Dependencies {
+		switch dependency.ArtifactID {
+		case "commons-text":
+			if dependency.DeclarationPOM == "build.gradle" {
+				text = dependency
+			}
+		case "guava":
+			guava = dependency
+		case "dynamic":
+			dynamic = dependency
+		}
+	}
+	if text.GroupID != "org.apache.commons" || text.Version != "1.9" || text.DeclarationPOM != "build.gradle" {
+		t.Fatalf("string notation: %+v", text)
+	}
+	if guava.GroupID != "com.google.guava" || guava.Version != "33.0.0-jre" {
+		t.Fatalf("map notation: %+v", guava)
+	}
+	if dynamic.VersionStatus != "unresolved" || dynamic.VersionReason != "gradle_dynamic_or_missing_version" {
+		t.Fatalf("dynamic version: %+v", dynamic)
+	}
+	tree := Tree(report)
+	if len(tree.Roots) != 1 || tree.Roots[0].POM != "build.gradle" {
+		t.Fatalf("gradle tree roots: %+v", tree.Roots)
+	}
+	var appChild bool
+	for _, child := range tree.Roots[0].Children {
+		if child.POM == "app/build.gradle.kts" {
+			appChild = true
+		}
+	}
+	if !appChild || tree.Coverage.ExternalLeaves == 0 {
+		t.Fatalf("gradle tree children: %+v", tree.Roots[0].Children)
+	}
+}
+
+func TestModuleDeclarationTree(t *testing.T) {
+	snapshot, advisoryPath := fixtureSnapshot(t)
+	report, err := Inspect(context.Background(), snapshot, Options{AdvisoryPath: advisoryPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := Tree(report)
+	if len(tree.Roots) != 1 || tree.Roots[0].POM != "pom.xml" {
+		t.Fatalf("tree roots: %+v", tree.Roots)
+	}
+	if tree.Coverage.Modules != 2 || tree.Coverage.ExternalLeaves == 0 || tree.Coverage.Cycles != 0 {
+		t.Fatalf("tree coverage: %+v", tree.Coverage)
+	}
+	var modules int
+	var walk func(TreeNode)
+	walk = func(node TreeNode) {
+		if !node.External {
+			modules++
+		}
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+	walk(tree.Roots[0])
+	if modules != 3 {
+		t.Fatalf("module nodes: %d", modules)
+	}
+}
+
 func TestLoadAdvisoriesRejectsUnsafeOrUnknownFormats(t *testing.T) {
 	valid := `{"schema_version":"1.0.0","fixture_id":"x","kind":"curated_advisory_fixture","advisory_id":"CVE-X","aliases":[],"aliases_complete":false,"published_date":"2026-01-01","retrieved_date":"2026-01-01","ecosystem":"Maven","package":{"group_id":"g","artifact_id":"a"},"sources":[],"matching_scope":{"source_id":"","policy":"exact","fixed_default_configuration_release":""},"version_cases":[{"version":"1","version_matched":true,"supply_chain_status":"version_matched","finding_status":"candidate","assessment_scope":"","runtime_status":"not_run"}],"exploitability_prerequisites":[],"forbidden_inferences":[],"coverage":{"advisories":[],"all_cves_checked":false,"artifact_hashes_available":false,"effective_dependency_tree_available":false,"runtime_exploit_test_available":false}}`
 	dir := t.TempDir()

@@ -16,7 +16,7 @@ import (
 
 const (
 	SchemaVersion = 1
-	ToolVersion   = "0.2.0-p0.2+r2-source-sink-flow-v9"
+	ToolVersion   = "0.2.0-p0.2+r2-source-sink-flow-v12"
 
 	MaxJavaFiles  = 2000
 	MaxJavaBytes  = 2 << 20
@@ -159,8 +159,9 @@ var (
 	deserializationCategory = categorySpec{Key: "deserialization", Label: "Unsafe deserialization", CWE: "CWE-502", SinkKind: "deserialization_sink", Noun: "deserialization read sink"}
 	xxeCategory             = categorySpec{Key: "xxe", Label: "XML external entity", CWE: "CWE-611", SinkKind: "xxe_sink", Noun: "XML parser sink"}
 	ldapCategory            = categorySpec{Key: "ldap", Label: "LDAP injection", CWE: "CWE-90", SinkKind: "ldap_sink", Noun: "LDAP query sink"}
+	uploadCategory          = categorySpec{Key: "upload", Label: "Unrestricted file upload", CWE: "CWE-434", SinkKind: "upload_sink", Noun: "file upload sink"}
 
-	allCategories = []categorySpec{sqlCategory, commandCategory, ssrfCategory, pathCategory, templateCategory, xssCategory, deserializationCategory, xxeCategory, ldapCategory}
+	allCategories = []categorySpec{sqlCategory, commandCategory, ssrfCategory, pathCategory, templateCategory, xssCategory, deserializationCategory, xxeCategory, ldapCategory, uploadCategory}
 )
 
 var requestBindings = map[string]bool{
@@ -172,6 +173,13 @@ var requestBindings = map[string]bool{
 	"ModelAttribute":   true,
 	"RequestPart":      true,
 	"SessionAttribute": true,
+	"QueryParam":       true,
+	"PathParam":        true,
+	"FormParam":        true,
+	"HeaderParam":      true,
+	"CookieParam":      true,
+	"MatrixParam":      true,
+	"BeanParam":        true,
 }
 
 // Analyze inventories Spring MVC endpoints, parses the same snapshot into a
@@ -191,20 +199,20 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 			JavaAST:       "not_available",
 			TaintAnalysis: "bounded_lexical_multi_category",
 			RuntimeStatus: "not_run",
-			AnalysisScope: "single_parameter_multi_category_v9",
+			AnalysisScope: "single_parameter_multi_category_v12",
 		},
 		Limitations: []string{
-			"sql_sink_scope: SQL findings model only Statement.execute*/prepareStatement SQL sinks and PreparedStatement value binding",
-			"multi_category_sinks: OS command execution (Runtime.getRuntime().exec, ProcessBuilder command/start), SSRF (URL.openConnection/openStream, RestTemplate), path traversal (file stream/reader constructors, Files.*), template injection (SpelExpressionParser.parseExpression, template engine process), XSS (PrintWriter/JspWriter/ServletOutputStream writes), unsafe deserialization (ObjectInputStream/XMLDecoder readObject), XXE (DocumentBuilder/SAXParser.parse, XMLInputFactory.createXMLStreamReader, Unmarshaller.unmarshal, Transformer.transform) and LDAP injection (DirContext.search/lookup, LdapTemplate.search/lookup/authenticate) are modeled",
+			"sql_sink_scope: SQL findings model Statement.execute*/prepareStatement, JdbcTemplate/NamedParameterJdbcTemplate query/update/execute family, JPA EntityManager/Hibernate Session createQuery/createNativeQuery, and PreparedStatement value binding",
+			"multi_category_sinks: OS command execution (Runtime.getRuntime().exec, ProcessBuilder command/start), SSRF (URL.openConnection/openStream, RestTemplate, HttpRequest.uri and WebClient.uri), path traversal (file stream/reader constructors, Files.*), template injection (SpelExpressionParser.parseExpression, template engine process), XSS (PrintWriter/JspWriter/ServletOutputStream writes), unsafe deserialization (ObjectInputStream/XMLDecoder readObject, including new ObjectInputStream(...)/new XMLDecoder(...) chains), XXE (DocumentBuilder/SAXParser/SAXReader.parse, SAXReader/XMLReader.read, XMLInputFactory.createXMLStreamReader/createXMLEventReader, Unmarshaller.unmarshal, Transformer.transform, SAXBuilder/Digester.parse, DocumentHelper.parseText), LDAP injection (DirContext.search/lookup, LdapTemplate.search/lookup/authenticate) and unrestricted upload (MultipartFile.transferTo, Part.write) are modeled",
 			"non_sql_sink_observed_only: non-SQL category findings are emitted only when that category sink or sink-specific boundary is observed for the parameter; absence is not safety",
 			"lexical_flow_not_ast: no Java AST, control-flow, alias, points-to or branch sensitivity",
-			"collection_taint_bounds: a tainted value written through List/Set/Map/Queue add/put marks that local or field container flow-insensitively; reads via get/values/keySet/entrySet/iterator propagate it, while clear/remove, cross-method container contents and element indices are not modeled",
+			"collection_taint_bounds: a tainted value written through List/Set/Map/Queue add/put marks that local or field container flow-insensitively; literal-index set/add and array element writes are tracked per element (name[0]) and literal-index get/remove operate on that element, while clear drops the container and its element taints; non-literal indices fall back to the container aggregate; resolved calls can mutate a caller collection or array parameter, while target-object containers and instance/thread state are not modeled",
 			"builder_and_format_bounds: StringBuilder/StringBuffer append and builder.toString() require a known builder-typed receiver; String.format requires a literal pattern with a conversion specifier, otherwise the result is an inconclusive boundary",
 			"return_value_bounds: tainted returns and builder parameter mutation are summarized only for resolved same-project calls; ambiguous dispatch, fields of other objects and external libraries stay unresolved",
 			"interface_inheritance_bounds: parents and implementations are matched by simple name in the same package or a unique simple name; a bodyless interface/abstract call needs exactly one concrete override with a compatible signature, otherwise it is an ambiguous_dispatch boundary",
 			"overload_and_parent_bounds: overloads are selected from simple inferred argument types (literals, locals, fields, casts, new, calls with known returns); remaining ties are ambiguous_overload, and a class with a parent outside the snapshot is unresolved_parent instead of assumed absent",
 			"lambda_generic_varargs_bounds: lambdas match known functional interfaces or single-method project interfaces but their bodies are not analyzed; generics are erased and method type variables are substituted only from direct same-named parameters; varargs match the component type and explicit array arguments are not modeled",
-			"deserialization_and_xss_bounds: unsafe deserialization requires a known ObjectInputStream/XMLDecoder local or field receiver before readObject; XSS requires a known response-writer receiver or a direct getWriter() chain, and reflected return values are not modeled",
+			"deserialization_and_xss_bounds: unsafe deserialization accepts a known ObjectInputStream/XMLDecoder local or field receiver, or a direct new ObjectInputStream(...)/new XMLDecoder(...).readObject() chain; XSS requires a known response-writer receiver or a direct getWriter() chain; a tainted String/CharSequence return from a response-body endpoint is confirmed only when produces declares text/html or application/xhtml+xml, refuted for an explicit non-HTML content type, and otherwise kept as an inconclusive reflected_return boundary because escaping and content negotiation are not resolved",
 			"field_taint_bounds: fields are tainted flow-insensitively per class lineage inside one endpoint analysis; instances, threads and clean reassignments are not distinguished",
 			"bounded_cross_method: max depth 8; reflection targets and external libraries are unresolved",
 			"absence_is_not_safety: no observed path yields inconclusive, not refuted",
@@ -287,27 +295,32 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 }
 
 type findingState struct {
-	category          categorySpec
-	categoryObserved  bool
-	confirmed         bool
-	dynamic           bool
-	unresolved        bool
-	binding           bool
-	pathObserved      bool
-	depthLimited      bool
-	sink              *SinkRef
-	protection        *ProtectionRef
-	boundary          *BoundaryRef
-	flow              []FlowStep
-	evidence          map[string]Evidence
-	limitations       map[string]bool
-	visited           map[string]bool
-	effectCache       map[string]methodEffects
-	effectsActive     map[string]bool
-	fields            map[string]taint
-	callsResolved     int
-	callsUnresolved   int
-	dynamicBoundaries int
+	category           categorySpec
+	categoryObserved   bool
+	confirmed          bool
+	dynamic            bool
+	unresolved         bool
+	binding            bool
+	encoded            bool
+	responseBody       bool
+	produces           []string
+	producesUnresolved bool
+	pathObserved       bool
+	depthLimited       bool
+	sink               *SinkRef
+	protection         *ProtectionRef
+	boundary           *BoundaryRef
+	flow               []FlowStep
+	evidence           map[string]Evidence
+	limitations        map[string]bool
+	visited            map[string]bool
+	effectCache        map[string]methodEffects
+	effectsActive      map[string]bool
+	fields             map[string]taint
+	endpoint           *methodModel
+	callsResolved      int
+	callsUnresolved    int
+	dynamicBoundaries  int
 }
 
 type analyzedFinding struct {
@@ -344,11 +357,15 @@ func analyzeEndpoint(index *projectModel, endpoint audit.Endpoint) []analyzedFin
 		}
 		for _, category := range allCategories {
 			state := &findingState{
-				category:    category,
-				evidence:    map[string]Evidence{},
-				limitations: map[string]bool{},
-				visited:     map[string]bool{},
-				fields:      map[string]taint{},
+				category:           category,
+				endpoint:           method,
+				responseBody:       endpoint.ResponseBody,
+				produces:           append([]string{}, endpoint.Produces...),
+				producesUnresolved: endpoint.ProducesStatus == "unresolved",
+				evidence:           map[string]Evidence{},
+				limitations:        map[string]bool{},
+				visited:            map[string]bool{},
+				fields:             map[string]taint{},
 			}
 			state.addEvidence(method)
 			state.analyzeMethod(index, method, map[string]taint{parameter.Name: {source: source}}, 0)
@@ -379,6 +396,9 @@ func (s *findingState) buildFinding(endpoint audit.Endpoint, parameter audit.Par
 	case s.binding:
 		status, severity = "refuted", "none"
 		limitations = append(limitations, "refuted only for the observed value binding on this parameter; not a whole-application safety proof")
+	case s.encoded:
+		status, severity = "refuted", "none"
+		limitations = append(limitations, "refuted only for the declared produces content type on this return; not a whole-application safety proof")
 	case s.pathObserved:
 		limitations = append(limitations, "a taint path was observed but no "+s.category.Noun+" or binding was identified")
 	default:

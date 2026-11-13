@@ -9,6 +9,7 @@ import (
 
 	"trident/internal/findings"
 	"trident/internal/project"
+	"trident/internal/sarif"
 )
 
 // runFindings links SCA, endpoint inventory and JDBC dataflow evidence on an
@@ -37,4 +38,35 @@ func runFindings(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	return json.NewEncoder(out).Encode(report)
+}
+
+// runSARIF exports the same static findings as a SARIF 2.1.0 log. It neither
+// reruns analysis differently nor upgrades runtime_status.
+func runSARIF(ctx context.Context, args []string, out io.Writer) error {
+	flags := flag.NewFlagSet("audit sarif", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	var snapshotDir, expectedHash, advisoryPath string
+	flags.StringVar(&snapshotDir, "snapshot", "", "existing trusted snapshot directory")
+	flags.StringVar(&expectedHash, "snapshot-hash", "", "trusted SHA-256 returned by import")
+	flags.StringVar(&advisoryPath, "advisories", "", "optional explicit local advisory catalog JSON")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("invalid sarif arguments: %w", err)
+	}
+	if flags.NArg() != 0 || snapshotDir == "" || expectedHash == "" {
+		return fmt.Errorf("audit sarif requires --snapshot and --snapshot-hash and no positional arguments")
+	}
+	snapshot, err := project.Open(ctx, snapshotDir, expectedHash)
+	if err != nil {
+		return err
+	}
+	defer snapshot.Close()
+	report, err := findings.Analyze(ctx, snapshot, findings.Options{AdvisoryPath: advisoryPath})
+	if err != nil {
+		return err
+	}
+	document, err := sarif.Build(report, "")
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(document)
 }

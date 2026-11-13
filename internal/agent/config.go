@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,6 +30,9 @@ type Config struct {
 	AllowLoopbackHTTP bool      `json:"allow_loopback_http"`
 	EgressAllowed     bool      `json:"egress_allowed"`
 	EgressExpiresAt   time.Time `json:"egress_expires_at"`
+	// AnalysisAdvisoryPath binds the optional local advisory catalog used by the
+	// read-only analysis tools. It is configuration, not snapshot content.
+	AnalysisAdvisoryPath string `json:"analysis_advisory_path,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -40,6 +44,11 @@ func (c Config) Validate() error {
 	}
 	if c.TimeoutSeconds < 1 || c.TimeoutSeconds > 120 || c.MaxOutputTokens < 1 || c.MaxOutputTokens > 16384 || c.MaxRequestBytes < 1024 || c.MaxRequestBytes > 2<<20 || c.MaxResponseBytes < 1024 || c.MaxResponseBytes > 512<<10 {
 		return fmt.Errorf("agent model limits outside supported bounds")
+	}
+	if c.AnalysisAdvisoryPath != "" {
+		if len(c.AnalysisAdvisoryPath) > 1024 || strings.ContainsAny(c.AnalysisAdvisoryPath, "\r\n\x00") || !filepath.IsAbs(c.AnalysisAdvisoryPath) {
+			return fmt.Errorf("analysis advisory path must be an absolute local path")
+		}
 	}
 	u, e := url.Parse(c.Endpoint)
 	if e != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || strings.ContainsAny(c.Endpoint, "\r\n\x00") {

@@ -123,6 +123,39 @@ func TestCompleteExplicitRequestAndAmbientIsolation(t *testing.T) {
 	}
 }
 
+func TestToolSchemaNumbersStayNumeric(t *testing.T) {
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		var tools []struct {
+			Function struct {
+				Parameters map[string]any `json:"parameters"`
+			} `json:"function"`
+		}
+		if err := json.Unmarshal(body["tools"], &tools); err != nil || len(tools) != 1 {
+			t.Fatalf("tools: %v", err)
+		}
+		properties, _ := tools[0].Function.Parameters["properties"].(map[string]any)
+		limit, _ := properties["limit"].(map[string]any)
+		cursor, _ := properties["cursor"].(map[string]any)
+		if limit["maximum"] != float64(200) || limit["minimum"] != float64(0) || cursor["maxLength"] != float64(2048) {
+			t.Fatalf("schema numbers were not preserved: %+v", properties)
+		}
+		replyJSON(w, completeJSON)
+	}, nil)
+	req := testRequest()
+	req.Tools = []model.Tool{{
+		Name:        "list_files",
+		Description: "List snapshot files",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":0,"maximum":200},"cursor":{"type":"string","maxLength":2048}},"required":[],"additionalProperties":false}`),
+	}}
+	if _, err := client.Complete(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLegacyOutputProfile(t *testing.T) {
 	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]json.RawMessage

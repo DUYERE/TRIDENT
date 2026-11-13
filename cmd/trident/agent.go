@@ -21,17 +21,20 @@ import (
 // [01] Agent 命令需要数据库身份；源码读取与模型外发分别显式确认。
 func runAgent(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: trident agent run|status|steps|resume")
+		return fmt.Errorf("usage: trident agent run|status|steps|resume|export")
 	}
 	command := args[0]
-	if command != "run" && command != "status" && command != "steps" && command != "resume" {
+	if command != "run" && command != "status" && command != "steps" && command != "resume" && command != "export" {
 		return fmt.Errorf("unknown agent command %q", command)
 	}
 	f := flag.NewFlagSet("agent "+command, flag.ContinueOnError)
 	f.SetOutput(io.Discard)
 	var runID, after int64
 	var limit int
-	var key, snapshot, hash, goal, endpoint, modelName, outputParam, apiKeyEnv string
+	var key, snapshot, hash, goal, endpoint, modelName, outputParam, apiKeyEnv, advisoryPath string
+	var exportPath string
+	var exportMaxBytes, retentionDays int64
+	var includeExpired bool
 	var allowEgress, loopback, ackUnknown bool
 	var timeout, outputTokens, maxModels, maxTools, maxTokens int64
 	apiKeyEnv = "TRIDENT_MODEL_API_KEY"
@@ -40,6 +43,7 @@ func runAgent(ctx context.Context, args []string, out io.Writer) error {
 		f.StringVar(&snapshot, "snapshot", "", "existing trusted snapshot directory")
 		f.StringVar(&hash, "snapshot-hash", "", "trusted snapshot hash")
 		f.StringVar(&goal, "goal", "", "analysis goal (also disclosed to approved model)")
+		f.StringVar(&advisoryPath, "advisories", "", "optional absolute local advisory catalog for read-only analysis tools")
 		f.StringVar(&endpoint, "endpoint", "", "explicit API base URL")
 		f.StringVar(&modelName, "model", "", "explicit model identifier")
 		f.StringVar(&outputParam, "output-parameter", "max_completion_tokens", "max_completion_tokens or legacy max_tokens")
@@ -52,6 +56,12 @@ func runAgent(ctx context.Context, args []string, out io.Writer) error {
 		f.Int64Var(&maxTokens, "max-tokens", 131072, "reserved/reported token allowance; not a billing guarantee")
 	} else {
 		f.Int64Var(&runID, "id", 0, "Run ID")
+	}
+	if command == "export" {
+		f.StringVar(&exportPath, "out", "", "new JSON export file outside the snapshot")
+		f.Int64Var(&exportMaxBytes, "max-bytes", 1<<20, "export size ceiling (1 KiB..8 MiB)")
+		f.Int64Var(&retentionDays, "retention-days", 30, "evidence retention window (1..3650 days)")
+		f.BoolVar(&includeExpired, "include-expired", false, "explicitly export evidence older than the retention window")
 	}
 	if command == "steps" {
 		f.Int64Var(&after, "after", 0, "last sequence already seen")
@@ -79,6 +89,13 @@ func runAgent(ctx context.Context, args []string, out io.Writer) error {
 		}
 		deadline := time.Now().UTC().Add(10 * time.Minute).Truncate(time.Second)
 		config = agent.Config{Version: agent.Version, Endpoint: endpoint, Model: modelName, OutputParameter: outputParam, TimeoutSeconds: timeout, MaxOutputTokens: outputTokens, MaxRequestBytes: 2 << 20, MaxResponseBytes: 512 << 10, AllowLoopbackHTTP: loopback, EgressAllowed: allowEgress, EgressExpiresAt: deadline}
+		if advisoryPath != "" {
+			absolute, pathErr := filepath.Abs(advisoryPath)
+			if pathErr != nil {
+				return pathErr
+			}
+			config.AnalysisAdvisoryPath = absolute
+		}
 		if e := config.Validate(); e != nil {
 			return e
 		}
@@ -110,6 +127,9 @@ func runAgent(ctx context.Context, args []string, out io.Writer) error {
 			return e
 		}
 		return json.NewEncoder(out).Encode(r)
+	}
+	if command == "export" {
+		return exportAgentRun(ctx, s, ss, runID, exportPath, exportMaxBytes, retentionDays, includeExpired, out)
 	}
 	if command == "steps" {
 		r, e := s.ListAgentRunSteps(ctx, ss, runID, after, limit)
@@ -162,7 +182,7 @@ func runAgent(ctx context.Context, args []string, out io.Writer) error {
 		return e
 	}
 	defer snapshotView.Close()
-	registry := tools.New(snapshotView)
+	registry := tools.NewWithAnalysis(snapshotView, tools.AnalysisOptions{AdvisoryPath: config.AnalysisAdvisoryPath})
 	runner, e := s.AcquireAgentRunner(ctx, ss, run.ID)
 	if e != nil {
 		return e
@@ -173,4 +193,92 @@ func runAgent(ctx context.Context, args []string, out io.Writer) error {
 		return encodeErr
 	}
 	return e
+}
+
+// exportAgentRun writes a bounded evidence export without deleting or mutating
+// the append-only database record. Retention is an access policy here, not DB
+// pruning; the agent tables are intentionally immutable.
+func exportAgentRun(ctx context.Context, s *store.Store, ss store.Session, runID int64, exportPath string, maxBytes, retentionDays int64, includeExpired bool, out io.Writer) error {
+	if exportPath == "" {
+		return fmt.Errorf("agent export requires --out")
+	}
+	if maxBytes < 1024 || maxBytes > 8<<20 {
+		return fmt.Errorf("export max-bytes must be between 1024 and 8388608")
+	}
+	if retentionDays < 1 || retentionDays > 3650 {
+		return fmt.Errorf("retention-days must be between 1 and 3650")
+	}
+	run, err := s.GetAgentRun(ctx, ss, runID)
+	if err != nil {
+		return err
+	}
+	expired := time.Since(run.CreatedAt) > time.Duration(retentionDays)*24*time.Hour
+	if expired && !includeExpired {
+		return fmt.Errorf("run %d is older than the %d-day retention window; pass --include-expired to export it", runID, retentionDays)
+	}
+	absoluteOut, err := filepath.Abs(exportPath)
+	if err != nil {
+		return err
+	}
+	if insideSnapshot(run.SnapshotPath, absoluteOut) {
+		return fmt.Errorf("export must be outside the pinned snapshot")
+	}
+	if info, statErr := os.Lstat(absoluteOut); statErr == nil || !os.IsNotExist(statErr) {
+		if statErr == nil && info.Mode().IsRegular() {
+			return fmt.Errorf("export output already exists; choose a new file")
+		}
+		return fmt.Errorf("export output must be a new regular file")
+	}
+	var steps []domain.AgentStep
+	after := int64(0)
+	for len(steps) <= 10_000 {
+		page, pageErr := s.ListAgentRunSteps(ctx, ss, runID, after, 200)
+		if pageErr != nil {
+			return pageErr
+		}
+		steps = append(steps, page...)
+		if len(page) < 200 {
+			break
+		}
+		after = page[len(page)-1].Seq
+	}
+	if len(steps) > 10_000 {
+		return fmt.Errorf("run %d exceeds the 10000-step export bound", runID)
+	}
+	envelope := map[string]any{
+		"export_kind":       "agent_run_evidence",
+		"schema_version":    1,
+		"retention_days":    retentionDays,
+		"retention_expired": expired,
+		"runtime_status":    "not_run",
+		"run":               run,
+		"steps":             steps,
+		"limitations": []string{
+			"export_is_read_only: the append-only run and step records are not deleted or modified",
+			"checkpoint_and_tool_payloads_are_included: review before sharing; credentials are never intentionally stored",
+			"retention_is_access_policy_not_database_pruning",
+		},
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	if int64(len(encoded)) > maxBytes {
+		return fmt.Errorf("export is %d bytes and exceeds --max-bytes %d", len(encoded), maxBytes)
+	}
+	file, err := os.OpenFile(absoluteOut, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = file.Write(encoded); err != nil {
+		file.Close()
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(map[string]any{
+		"run_id": runID, "out": absoluteOut, "bytes": len(encoded), "steps": len(steps),
+		"retention_days": retentionDays, "retention_expired": expired, "runtime_status": "not_run",
+	})
 }

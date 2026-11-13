@@ -23,13 +23,16 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+const productVersion = "TRIDENT 0.2.0-p0.2 + r1-core + r2-sca-declarations-v2 + r2-endpoint-inventory-v3 + r2-source-sink-flow-v12 + r2-finding-evidence + r2-readonly-web-console + r2-agent-analysis-tools + r2-cyclonedx-sbom + r2-sarif-reachability + r3-isolated-patch-v2 + r3-repair-policy-gvisor (read-only Agent Core; OpenAI Chat Completions; live-model acceptance pending)"
+
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: trident version | project <import|inspect|list|read|search> | sca inspect | audit <endpoints|dataflow|findings> | agent <run|status|steps|resume> | migrate | check | bootstrap <subject> | demo-offline")
+		return fmt.Errorf("usage: trident version | project <import|inspect|list|read|search> | sca <inspect|sbom|tree> | audit <endpoints|dataflow|findings|sarif|reachability> | web | patch <propose|verify|repair> | agent <run|status|steps|resume|export> | migrate | check | bootstrap <subject> | demo-offline")
 	}
 	command := os.Args[1]
 	if command == "version" {
-		fmt.Println("TRIDENT 0.2.0-p0.2 + r1-core + r2-sca-declarations + r2-endpoint-inventory + r2-jdbc-sql-flow + r2-finding-evidence (read-only Agent Core; OpenAI Chat Completions; live-model acceptance pending)")
+		fmt.Println(productVersion)
 		return nil
 	}
 	// [01] 本地项目工具不连接数据库，不调用模型，也不执行项目代码。
@@ -53,6 +56,16 @@ func run() error {
 		ctx, timeout := context.WithTimeout(ctx, 2*time.Minute)
 		defer timeout()
 		return runAudit(ctx, os.Args[2:], os.Stdout)
+	}
+	if command == "web" {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer cancel()
+		return runWeb(ctx, os.Args[2:], os.Stdout)
+	}
+	if command == "patch" {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer cancel()
+		return runPatch(ctx, os.Args[2:], os.Stdout)
 	}
 	if command == "agent" {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)

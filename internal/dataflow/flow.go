@@ -51,6 +51,18 @@ func (s *findingState) analyzeMethod(index *projectModel, method *methodModel, t
 			s.analyzeAssignment(index, method, tokens, i, localTypes, localTainted, safePrepared, depth)
 			continue
 		}
+		if tokens[i].Text == "return" && method == s.endpoint && s.responseBody && s.category.Key == xssCategory.Key && returnsTextual(method.ReturnType) {
+			end := assignmentEnd(tokens, i+1, method.BodyEnd)
+			if end > i+1 {
+				result := s.evaluateExpressionIn(index, method, localTypes, tokens[i+1:end], localTainted, depth)
+				switch {
+				case result.dynamic:
+					s.observeReflectedReturn("dynamic return expression", method, tokens[i].Line)
+				case result.found:
+					s.observeReflectedReturn("tainted return value", method, tokens[i].Line)
+				}
+			}
+		}
 		if tokens[i].Text != "(" {
 			continue
 		}
@@ -88,8 +100,9 @@ func (s *findingState) analyzeMethod(index *projectModel, method *methodModel, t
 			}
 			if s.category.Key == deserializationCategory.Key {
 				// The stream constructor is where untrusted bytes enter the
-				// deserializer; other constructors are irrelevant here.
-				if isDeserializationStreamType(name) {
+				// deserializer; a directly chained readObject is confirmed once
+				// at the read site instead.
+				if isDeserializationStreamType(name) && !chainedReadObject(tokens, close) {
 					s.categoryArgumentSink("new "+name, method, line, argEval)
 				}
 				continue
@@ -107,7 +120,51 @@ func (s *findingState) analyzeMethod(index *projectModel, method *methodModel, t
 			}
 			continue
 		}
+		if name == "clear" && isCollectionType(receiverType(method, receiver, localTypes)) {
+			deleteContainerTaint(localTainted, receiver)
+			s.clearFieldCollection(method, receiver, localTypes)
+			s.recordFlow("collection_clear", receiver, method.File.Path, line)
+			continue
+		}
+		if isCollectionRemoval(name) && isCollectionType(receiverType(method, receiver, localTypes)) {
+			if name == "remove" {
+				if index, ok := firstLiteralArgument(args); ok {
+					delete(localTainted, elementKey(receiver, index))
+					if _, aggregate := localTainted[receiver]; aggregate {
+						// The aggregate taint may still cover the removed element
+						// because earlier writes had no known index.
+						s.addLimitation("collection_remove_flow_insensitive")
+					}
+					s.recordFlow("collection_remove", receiver+"["+index+"]", method.File.Path, line)
+					continue
+				}
+			}
+			// A flow-insensitive container model cannot prove which element was
+			// removed, so keeping the aggregate taint is the conservative choice.
+			s.addLimitation("collection_remove_flow_insensitive")
+			s.recordFlow("collection_remove", receiver+"."+name, method.File.Path, line)
+			continue
+		}
 		if isCollectionMutation(name) && isCollectionType(receiverType(method, receiver, localTypes)) {
+			if (name == "add" || name == "set") && len(args) >= 2 {
+				if position, ok := firstLiteralArgument(args); ok {
+					value := s.evaluateExpressionIn(index, method, localTypes, args[1], localTainted, depth)
+					switch {
+					case value.dynamic:
+						s.unresolved = true
+						s.addLimitation("collection_dynamic")
+					case value.found:
+						if _, isLocal := localTypes[receiver]; isLocal {
+							localTainted[elementKey(receiver, position)] = value.taint
+						} else {
+							localTainted[receiver] = value.taint
+							s.writeFieldCollection(method, receiver, localTypes, value.taint)
+						}
+						s.recordFlow("collection_add", receiver+"["+position+"]", method.File.Path, line)
+					}
+					continue
+				}
+			}
 			// Adding a tainted value taints the container variable; reads from
 			// that variable propagate the taint at the use site.
 			switch {
@@ -116,6 +173,7 @@ func (s *findingState) analyzeMethod(index *projectModel, method *methodModel, t
 				s.addLimitation("collection_dynamic")
 			case argTainted:
 				localTainted[receiver] = argEval.taint
+				s.writeFieldCollection(method, receiver, localTypes, argEval.taint)
 				s.recordFlow("collection_add", receiver+"."+name, method.File.Path, line)
 			}
 			continue
@@ -127,7 +185,7 @@ func (s *findingState) analyzeMethod(index *projectModel, method *methodModel, t
 		}
 
 		if s.category.Key != sqlCategory.Key {
-			if s.analyzeCategorySink(method, tokens, nameIndex, name, receiver, argEval, localTypes, localTainted) {
+			if s.analyzeCategorySink(index, method, tokens, nameIndex, name, receiver, argEval, localTypes, localTainted, depth) {
 				continue
 			}
 			s.analyzeResolvedCall(index, method, name, receiver, api, args, argEval, localTypes, localTainted, depth, line)
@@ -136,10 +194,36 @@ func (s *findingState) analyzeMethod(index *projectModel, method *methodModel, t
 
 		switch name {
 		case "executeQuery", "executeUpdate", "execute", "addBatch", "prepareStatement":
+			if isSQLTemplateType(receiverType(method, receiver, localTypes)) && len(args) > 0 {
+				sqlArg := s.evaluateExpressionIn(index, method, localTypes, args[0], localTainted, depth)
+				switch {
+				case sqlArg.dynamic:
+					s.observeFormatBoundary(api, method, line)
+				case sqlArg.found:
+					s.confirmSink(api, method, line)
+				}
+				break
+			}
 			if argEval.dynamic {
 				s.observeFormatBoundary(api, method, line)
 			} else if argTainted {
 				s.confirmSink(api, method, line)
+			}
+		case "query", "queryForObject", "queryForList", "queryForMap", "queryForRowSet", "update", "batchUpdate", "createQuery", "createNativeQuery":
+			typeName := receiverType(method, receiver, localTypes)
+			if isSQLTemplateType(typeName) || isJPQLFactoryType(typeName) {
+				if len(args) == 0 {
+					break
+				}
+				sqlArg := s.evaluateExpressionIn(index, method, localTypes, args[0], localTainted, depth)
+				switch {
+				case sqlArg.dynamic:
+					s.observeFormatBoundary(api, method, line)
+				case sqlArg.found:
+					s.confirmSink(api, method, line)
+				}
+			} else {
+				s.analyzeResolvedCall(index, method, name, receiver, api, args, argEval, localTypes, localTainted, depth, line)
 			}
 		case "setString", "setInt", "setLong", "setObject", "setBoolean", "setFloat", "setDouble", "setDate", "setTimestamp", "setBytes":
 			if argEval.dynamic {
@@ -239,12 +323,65 @@ func (s *findingState) analyzeResolvedCall(index *projectModel, method *methodMo
 			s.addLimitation("callee_effects_unresolved")
 		}
 	}
+	if positions := collectionArguments(method, localTypes, args, target); len(positions) > 0 {
+		effects := s.methodEffects(index, target, targetTainted, depth+1)
+		for _, position := range positions {
+			mutated, ok := effects.mutated[position]
+			if !ok {
+				continue
+			}
+			ident := singleIdent(args[position])
+			if ident == "" {
+				continue
+			}
+			tainted[ident] = mutated
+			s.addEvidence(target)
+			s.recordFlow("collection_mutated", ident, method.File.Path, line)
+		}
+		if effects.dynamic {
+			s.observeFormatBoundary(api, method, line)
+		}
+		if effects.unresolved {
+			s.unresolved = true
+			s.addLimitation("callee_effects_unresolved")
+		}
+	}
 	s.analyzeMethod(index, target, targetTainted, depth+1)
 	s.seedFields(method.Class, tainted)
 }
 
 func (s *findingState) analyzeAssignment(index *projectModel, method *methodModel, tokens []javaToken, eq int, localTypes map[string]string, tainted map[string]taint, safePrepared map[string]bool, depth int) {
 	if eq > method.BodyStart && isCompoundOrComparison(tokens[eq-1].Text) {
+		return
+	}
+	if eq > method.BodyStart && tokens[eq-1].Text == "]" {
+		if name, element, field, ok := indexedTarget(tokens, eq, method.BodyStart); ok {
+			rhsEnd := assignmentEnd(tokens, eq+1, method.BodyEnd)
+			if rhsEnd <= eq+1 {
+				return
+			}
+			result := s.evaluateExpressionIn(index, method, localTypes, tokens[eq+1:rhsEnd], tainted, depth)
+			if result.dynamic {
+				s.observeFormatBoundary(name, method, tokens[eq-1].Line)
+				return
+			}
+			if !result.found {
+				return
+			}
+			s.pathObserved = true
+			if field {
+				if s.writeField(method, name, result.taint) {
+					s.recordFlow("array_write", name, method.File.Path, tokens[eq-1].Line)
+				}
+				return
+			}
+			if element != "" {
+				tainted[elementKey(name, element)] = result.taint
+			} else {
+				tainted[name] = result.taint
+			}
+			s.recordFlow("array_write", name, method.File.Path, tokens[eq-1].Line)
+		}
 		return
 	}
 	lhsIndex := previousIdent(tokens, eq, method.BodyStart)
@@ -322,6 +459,9 @@ func (s *findingState) analyzeAssignment(index *projectModel, method *methodMode
 	case result.kind == "collection_read":
 		tainted[lhs] = result.taint
 		s.recordFlow("collection_read", lhs, method.File.Path, tokens[lhsIndex].Line)
+	case result.kind == "array_read":
+		tainted[lhs] = result.taint
+		s.recordFlow("array_read", lhs, method.File.Path, tokens[lhsIndex].Line)
 	case result.kind == "return":
 		tainted[lhs] = result.taint
 		s.recordFlow("return", lhs, method.File.Path, tokens[lhsIndex].Line)
@@ -405,7 +545,7 @@ func (s *findingState) observeUnresolvedParent(api string, method *methodModel, 
 // analyzeCategorySink recognizes the sinks of the active non-SQL category. It
 // reports whether the call was consumed, so unhandled calls still flow through
 // the bounded project call graph.
-func (s *findingState) analyzeCategorySink(method *methodModel, tokens []javaToken, nameIndex int, name, receiver string, argEval exprResult, localTypes map[string]string, tainted map[string]taint) bool {
+func (s *findingState) analyzeCategorySink(index *projectModel, method *methodModel, tokens []javaToken, nameIndex int, name, receiver string, argEval exprResult, localTypes map[string]string, tainted map[string]taint, depth int) bool {
 	line := tokens[nameIndex].Line
 	typeName := receiverType(method, receiver, localTypes)
 	switch s.category.Key {
@@ -461,6 +601,19 @@ func (s *findingState) analyzeCategorySink(method *methodModel, tokens []javaTok
 			}
 			return false
 		}
+		if name == "uri" {
+			chainType := ""
+			if receiver != "" {
+				chainType = receiverType(method, receiver, localTypes)
+			}
+			if chainType == "" {
+				chainType = receiverChainType(method, tokens, nameIndex, localTypes)
+			}
+			if isHTTPClientBuilderType(chainType) {
+				s.categoryArgumentSink(chainType+".uri", method, line, argEval)
+				return true
+			}
+		}
 		return false
 	case pathCategory.Key:
 		if receiver == "Files" && isFilesAccess(name) {
@@ -495,20 +648,31 @@ func (s *findingState) analyzeCategorySink(method *methodModel, tokens []javaTok
 		}
 		return false
 	case deserializationCategory.Key:
-		if name == "readObject" && isDeserializationStreamType(typeName) {
-			if _, ok := tainted[receiver]; ok {
-				s.confirmCategorySink(typeName+".readObject", method, line)
+		if name == "readObject" {
+			if isDeserializationStreamType(typeName) {
+				if _, ok := tainted[receiver]; ok {
+					s.confirmCategorySink(typeName+".readObject", method, line)
+				}
+				return true
 			}
-			return true
+			if constructorArgs, streamType := chainedDeserialization(tokens, nameIndex); constructorArgs != nil {
+				resolved := s.evaluateArgumentsIn(index, method, localTypes, constructorArgs, tainted, depth)
+				if resolved.dynamic {
+					s.observeCategoryBoundary("new "+streamType+"(...).readObject", method, line)
+				} else if resolved.found {
+					s.confirmCategorySink("new "+streamType+"(...).readObject", method, line)
+				}
+				return true
+			}
 		}
 		return false
 	case xxeCategory.Key:
-		if name == "parse" && isXMLParserType(typeName) {
-			s.categoryArgumentSink(typeName+".parse", method, line, argEval)
+		if (name == "parse" || name == "read") && isXMLParserType(typeName) {
+			s.categoryArgumentSink(typeName+"."+name, method, line, argEval)
 			return true
 		}
-		if name == "createXMLStreamReader" && typeName == "XMLInputFactory" {
-			s.categoryArgumentSink(typeName+".createXMLStreamReader", method, line, argEval)
+		if (name == "createXMLStreamReader" || name == "createXMLEventReader") && typeName == "XMLInputFactory" {
+			s.categoryArgumentSink(typeName+"."+name, method, line, argEval)
 			return true
 		}
 		if name == "unmarshal" && typeName == "Unmarshaller" {
@@ -519,10 +683,32 @@ func (s *findingState) analyzeCategorySink(method *methodModel, tokens []javaTok
 			s.categoryArgumentSink(typeName+".transform", method, line, argEval)
 			return true
 		}
+		if name == "build" && typeName == "SAXBuilder" {
+			s.categoryArgumentSink(typeName+".build", method, line, argEval)
+			return true
+		}
+		if name == "parse" && typeName == "Digester" {
+			s.categoryArgumentSink(typeName+".parse", method, line, argEval)
+			return true
+		}
+		if receiver == "DocumentHelper" && name == "parseText" {
+			s.categoryArgumentSink("DocumentHelper.parseText", method, line, argEval)
+			return true
+		}
 		return false
 	case ldapCategory.Key:
 		if isLDAPQueryName(name) && isLDAPContextType(typeName) {
 			s.categoryArgumentSink(typeName+"."+name, method, line, argEval)
+			return true
+		}
+		return false
+	case uploadCategory.Key:
+		if name == "transferTo" && typeName == "MultipartFile" {
+			s.categoryArgumentSink("MultipartFile.transferTo", method, line, argEval)
+			return true
+		}
+		if name == "write" && typeName == "Part" {
+			s.categoryArgumentSink("Part.write", method, line, argEval)
 			return true
 		}
 		return false
@@ -550,6 +736,55 @@ func (s *findingState) categoryArgumentSink(api string, method *methodModel, lin
 	case argEval.found:
 		s.confirmCategorySink(api, method, line)
 	}
+}
+
+// observeReflectedReturn judges a tainted response-body return from the
+// declared produces media type. HTML is confirmed because Spring writes String
+// values without escaping; an explicit non-HTML type is refuted for this
+// return; absent or unresolved types stay inconclusive.
+func (s *findingState) observeReflectedReturn(detail string, method *methodModel, line int) {
+	if !s.responseBody {
+		return
+	}
+	s.categoryObserved = true
+	s.recordFlow("reflected_return", detail, method.File.Path, line)
+	switch {
+	case s.producesUnresolved:
+		s.unresolved = true
+		s.addBoundary("reflected_return", detail, method, line)
+		s.addLimitation("produces_unresolved")
+		s.addLimitation("reflected_return_content_type_unverified")
+	case hasHTMLProduces(s.produces):
+		s.confirmCategorySink("return:"+htmlProduces(s.produces), method, line)
+	case len(s.produces) > 0:
+		s.encoded = true
+		s.protection = &ProtectionRef{
+			API:    "return",
+			File:   method.File.Path,
+			SHA256: method.File.SHA256,
+			Line:   line,
+			Detail: "produces=" + strings.Join(s.produces, ",") + " does not render HTML",
+		}
+		s.recordFlow("return_content_type", strings.Join(s.produces, ","), method.File.Path, line)
+	default:
+		s.unresolved = true
+		s.addBoundary("reflected_return", detail, method, line)
+		s.addLimitation("reflected_return_content_type_unverified")
+	}
+}
+
+func hasHTMLProduces(produces []string) bool {
+	return htmlProduces(produces) != ""
+}
+
+func htmlProduces(produces []string) string {
+	for _, mediaType := range produces {
+		lower := strings.ToLower(strings.TrimSpace(strings.SplitN(mediaType, ";", 2)[0]))
+		if lower == "text/html" || lower == "application/xhtml+xml" {
+			return lower
+		}
+	}
+	return ""
 }
 
 // observeCategoryBoundary records a known non-SQL sink whose receiver type or
@@ -611,6 +846,55 @@ func isRestTemplateCall(name string) bool {
 	return false
 }
 
+func isSQLTemplateType(typeName string) bool {
+	switch typeName {
+	case "JdbcTemplate", "NamedParameterJdbcTemplate", "JdbcOperations", "NamedParameterJdbcOperations":
+		return true
+	}
+	return false
+}
+
+func isJPQLFactoryType(typeName string) bool {
+	switch typeName {
+	case "EntityManager", "Session", "StatelessSession":
+		return true
+	}
+	return false
+}
+
+func isHTTPClientBuilderType(typeName string) bool {
+	switch typeName {
+	case "HttpRequest", "HttpRequest.Builder", "WebClient", "WebClient.Builder":
+		return true
+	}
+	return false
+}
+
+// receiverChainType walks back over a fluent chain to find the nearest typed
+// receiver. It is bounded and stops at statement/block delimiters.
+func receiverChainType(method *methodModel, tokens []javaToken, nameIndex int, localTypes map[string]string) string {
+	if method == nil {
+		return ""
+	}
+	start := nameIndex - 16
+	if start < method.BodyStart+1 {
+		start = method.BodyStart + 1
+	}
+	for i := nameIndex - 1; i >= start; i-- {
+		switch tokens[i].Text {
+		case ";", "{", "}":
+			return ""
+		}
+		if tokens[i].Tok != scanner.Ident {
+			continue
+		}
+		if typeName := receiverType(method, tokens[i].Text, localTypes); typeName != "" {
+			return typeName
+		}
+	}
+	return ""
+}
+
 func isSpelParserType(typeName string) bool {
 	return typeName == "SpelExpressionParser" || typeName == "ExpressionParser"
 }
@@ -664,10 +948,16 @@ func isDeserializationStreamType(name string) bool {
 
 func isXMLParserType(typeName string) bool {
 	switch typeName {
-	case "DocumentBuilder", "SAXParser":
+	case "DocumentBuilder", "SAXParser", "SAXReader", "XMLReader":
 		return true
 	}
 	return false
+}
+
+// returnsTextual limits reflected-return observation to body types that Spring
+// may write to the response without an explicit writer.
+func returnsTextual(typeName string) bool {
+	return typeName == "String" || typeName == "CharSequence"
 }
 
 func isLDAPQueryName(name string) bool {
@@ -690,7 +980,7 @@ func isLDAPContextType(typeName string) bool {
 // Only the receiver is marked tainted: the mutation itself is never a sink.
 func isCollectionMutation(name string) bool {
 	switch name {
-	case "add", "addAll", "addFirst", "addLast", "offer", "push",
+	case "add", "addAll", "addFirst", "addLast", "offer", "push", "set",
 		"put", "putIfAbsent", "putAll":
 		return true
 	}
@@ -716,6 +1006,86 @@ func isCollectionType(typeName string) bool {
 		return true
 	}
 	return false
+}
+
+// isCollectionRemoval lists the calls that delete elements. The container
+// model has no per-element taint, so removal never clears the container.
+func isCollectionRemoval(name string) bool {
+	switch name {
+	case "remove", "removeAll", "retainAll", "removeIf":
+		return true
+	}
+	return false
+}
+
+func isArrayType(typeName string) bool {
+	return strings.HasSuffix(typeName, "[]")
+}
+
+// writeFieldCollection records container taint on a field receiver. A local or
+// parameter with the same name always shadows the field.
+func (s *findingState) writeFieldCollection(method *methodModel, name string, localTypes map[string]string, value taint) {
+	if _, isLocal := localTypes[name]; isLocal {
+		return
+	}
+	if method == nil || method.Class == nil {
+		return
+	}
+	if fieldOwner(method.Class, name) == nil {
+		return
+	}
+	s.writeField(method, name, value)
+}
+
+func (s *findingState) clearFieldCollection(method *methodModel, name string, localTypes map[string]string) {
+	if _, isLocal := localTypes[name]; isLocal {
+		return
+	}
+	if method == nil || method.Class == nil {
+		return
+	}
+	owner := fieldOwner(method.Class, name)
+	if owner == nil || s.fields == nil {
+		return
+	}
+	delete(s.fields, owner.Symbol+"."+name)
+}
+
+func chainedReadObject(tokens []javaToken, close int) bool {
+	return close+2 < len(tokens) && tokens[close+1].Text == "." && tokens[close+2].Text == "readObject"
+}
+
+// chainedDeserialization matches new ObjectInputStream(...).readObject() and
+// new XMLDecoder(...).readObject() where the stream is never stored.
+func chainedDeserialization(tokens []javaToken, nameIndex int) ([][]javaToken, string) {
+	if nameIndex < 3 || tokens[nameIndex-1].Text != "." || tokens[nameIndex-2].Text != ")" {
+		return nil, ""
+	}
+	closeIndex := nameIndex - 2
+	depth := 0
+	openIndex := -1
+	for i := closeIndex; i >= 0; i-- {
+		switch tokens[i].Text {
+		case ")":
+			depth++
+		case "(":
+			depth--
+			if depth == 0 {
+				openIndex = i
+			}
+		}
+		if openIndex >= 0 {
+			break
+		}
+	}
+	if openIndex < 2 || tokens[openIndex-1].Tok != scanner.Ident || tokens[openIndex-2].Text != "new" {
+		return nil, ""
+	}
+	streamType := tokens[openIndex-1].Text
+	if !isDeserializationStreamType(streamType) {
+		return nil, ""
+	}
+	return splitTopLevel(tokens[openIndex+1 : closeIndex]), streamType
 }
 
 func (s *findingState) addBoundary(kind, detail string, method *methodModel, line int) {
@@ -839,6 +1209,17 @@ func evaluateExpression(tokens []javaToken, tainted map[string]taint) exprResult
 	if len(tokens) == 0 {
 		return exprResult{}
 	}
+	if name, index, ok := indexedBase(tokens); ok {
+		if index != "" {
+			if value, taintedValue := tainted[elementKey(name, index)]; taintedValue {
+				return exprResult{found: true, taint: value, kind: "array_read"}
+			}
+		}
+		if value, taintedValue := tainted[name]; taintedValue {
+			return exprResult{found: true, taint: value, kind: "array_read"}
+		}
+		return exprResult{}
+	}
 	name, receiver, open, close, ok := fullCall(tokens)
 	if !ok {
 		return scanExpression(tokens, tainted)
@@ -853,6 +1234,11 @@ func evaluateExpression(tokens []javaToken, tainted map[string]taint) exprResult
 		}
 		return exprResult{}
 	case isCollectionRead(name) && receiver != "":
+		if index, ok := firstLiteralArgument(args); ok {
+			if value, taintedValue := tainted[elementKey(receiver, index)]; taintedValue {
+				return exprResult{found: true, taint: value, kind: "collection_read"}
+			}
+		}
 		if value, ok := tainted[receiver]; ok {
 			return exprResult{found: true, taint: value, kind: "collection_read"}
 		}
@@ -917,7 +1303,38 @@ func scanExpression(tokens []javaToken, tainted map[string]taint) exprResult {
 					i = close
 					continue
 				}
+				if isCollectionRead(name) && receiver != "" {
+					inner := splitTopLevel(tokens[i+1 : close])
+					if index, ok := firstLiteralArgument(inner); ok {
+						if value, taintedValue := tainted[elementKey(receiver, index)]; taintedValue {
+							result = mergeExpr(result, exprResult{found: true, taint: value, kind: "collection_read"})
+							i = close
+							continue
+						}
+					}
+					if value, ok := tainted[receiver]; ok {
+						result = mergeExpr(result, exprResult{found: true, taint: value, kind: "collection_read"})
+						i = close
+						continue
+					}
+				}
 				result = mergeExpr(result, scanExpression(tokens[i+1:close], tainted))
+				i = close
+				continue
+			}
+		}
+		if token.Text == "[" {
+			// An element access consults its literal index before falling back to
+			// the aggregate container taint; the index expression itself is not
+			// a value source.
+			if close := matchDelimiter(tokens, i, "[", "]"); close > i {
+				if i > 0 && tokens[i-1].Tok == scanner.Ident {
+					if index, ok := literalIndex(tokens[i+1 : close]); ok {
+						if value, taintedValue := tainted[elementKey(tokens[i-1].Text, index)]; taintedValue {
+							result = mergeExpr(result, exprResult{found: true, taint: value, kind: "array_read"})
+						}
+					}
+				}
 				i = close
 				continue
 			}
@@ -1191,6 +1608,110 @@ func singleIdent(tokens []javaToken) string {
 	return ""
 }
 
+// indexedBase matches an expression whose only value is an array/container
+// element access: name[...] or this.name[...]. The literal index is returned
+// when it is a compile-time integer so element-level taint can be consulted.
+func indexedBase(tokens []javaToken) (string, string, bool) {
+	tokens = trimParens(tokens)
+	if len(tokens) < 3 {
+		return "", "", false
+	}
+	baseIndex := -1
+	switch {
+	case tokens[0].Tok == scanner.Ident && tokens[1].Text == "[":
+		baseIndex = 0
+	case len(tokens) >= 4 && tokens[0].Text == "this" && tokens[1].Text == "." &&
+		tokens[2].Tok == scanner.Ident && tokens[3].Text == "[":
+		baseIndex = 2
+	}
+	if baseIndex < 0 {
+		return "", "", false
+	}
+	open := baseIndex + 1
+	close := matchDelimiter(tokens, open, "[", "]")
+	if close != len(tokens)-1 {
+		return "", "", false
+	}
+	index := ""
+	if literal, ok := literalIndex(tokens[open+1 : close]); ok {
+		index = literal
+	}
+	return tokens[baseIndex].Text, index, true
+}
+
+// indexedTarget matches the left side of an element assignment: name[...] = or
+// this.name[...] =. The returned field flag reflects an explicit this.receiver.
+func indexedTarget(tokens []javaToken, eq, bodyStart int) (string, string, bool, bool) {
+	if eq <= bodyStart || tokens[eq-1].Text != "]" {
+		return "", "", false, false
+	}
+	depth := 0
+	open := -1
+	for i := eq - 1; i > bodyStart; i-- {
+		switch tokens[i].Text {
+		case "]":
+			depth++
+		case "[":
+			depth--
+			if depth == 0 {
+				open = i
+			}
+		}
+		if open >= 0 {
+			break
+		}
+	}
+	if open < 1 || tokens[open-1].Tok != scanner.Ident {
+		return "", "", false, false
+	}
+	nameIndex := open - 1
+	field := nameIndex >= 2 && tokens[nameIndex-1].Text == "." && tokens[nameIndex-2].Text == "this"
+	index := ""
+	if literal, ok := literalIndex(tokens[open+1 : eq-1]); ok {
+		index = literal
+	}
+	return tokens[nameIndex].Text, index, field, true
+}
+
+func literalIndex(tokens []javaToken) (string, bool) {
+	tokens = trimParens(tokens)
+	if len(tokens) == 1 && tokens[0].Tok == scanner.Int {
+		return tokens[0].Text, true
+	}
+	return "", false
+}
+
+func firstLiteralArgument(args [][]javaToken) (string, bool) {
+	if len(args) == 0 {
+		return "", false
+	}
+	return literalIndex(args[0])
+}
+
+func elementKey(name, index string) string {
+	return name + "[" + index + "]"
+}
+
+func deleteContainerTaint(tainted map[string]taint, name string) {
+	delete(tainted, name)
+	prefix := name + "["
+	for key := range tainted {
+		if strings.HasPrefix(key, prefix) {
+			delete(tainted, key)
+		}
+	}
+}
+
+func hasElementTaint(tainted map[string]taint, name string) bool {
+	prefix := name + "["
+	for key := range tainted {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func builderArguments(method *methodModel, localTypes map[string]string, args [][]javaToken, target *methodModel) []int {
 	var positions []int
 	for i := 0; i < len(args) && i < len(target.Params); i++ {
@@ -1199,6 +1720,32 @@ func builderArguments(method *methodModel, localTypes map[string]string, args []
 		}
 		ident := singleIdent(args[i])
 		if ident == "" || !isBuilderReceiver(method, ident, localTypes) {
+			continue
+		}
+		positions = append(positions, i)
+	}
+	return positions
+}
+
+// collectionArguments identifies collection or array parameters whose tainted
+// contents may be written by the resolved callee.
+func collectionArguments(method *methodModel, localTypes map[string]string, args [][]javaToken, target *methodModel) []int {
+	var positions []int
+	for i := 0; i < len(args) && i < len(target.Params); i++ {
+		paramType := target.Params[i].Type
+		if !isCollectionType(paramType) && !isArrayType(paramType) {
+			continue
+		}
+		ident := singleIdent(args[i])
+		if ident == "" {
+			continue
+		}
+		callerType := receiverType(method, ident, localTypes)
+		if isArrayType(paramType) {
+			if !isArrayType(callerType) {
+				continue
+			}
+		} else if !isCollectionType(callerType) {
 			continue
 		}
 		positions = append(positions, i)
@@ -1240,6 +1787,17 @@ func (s *findingState) evaluateExpressionIn(index *projectModel, method *methodM
 		s.addLimitation("cross_method_depth_limit")
 		return exprResult{}
 	}
+	if name, index, ok := indexedBase(tokens); ok {
+		if index != "" {
+			if value, taintedValue := tainted[elementKey(name, index)]; taintedValue {
+				return exprResult{found: true, taint: value, kind: "array_read"}
+			}
+		}
+		if value, taintedValue := tainted[name]; taintedValue {
+			return exprResult{found: true, taint: value, kind: "array_read"}
+		}
+		return exprResult{}
+	}
 	if len(tokens) >= 4 && tokens[0].Text == "new" && tokens[1].Tok == scanner.Ident && tokens[2].Text == "(" {
 		if close := matchDelimiter(tokens, 2, "(", ")"); close == len(tokens)-1 {
 			resolved := s.evaluateArgumentsIn(index, method, localTypes, splitTopLevel(tokens[3:close]), tainted, depth)
@@ -1269,6 +1827,11 @@ func (s *findingState) evaluateExpressionIn(index *projectModel, method *methodM
 		}
 		return exprResult{}
 	case isCollectionRead(name) && receiver != "":
+		if index, ok := firstLiteralArgument(args); ok {
+			if value, taintedValue := tainted[elementKey(receiver, index)]; taintedValue {
+				return exprResult{found: true, taint: value, kind: "collection_read"}
+			}
+		}
 		if value, ok := tainted[receiver]; ok {
 			return exprResult{found: true, taint: value, kind: "collection_read"}
 		}
@@ -1365,6 +1928,31 @@ func (s *findingState) methodEffects(index *projectModel, method *methodModel, p
 			if i > method.BodyStart && isCompoundOrComparison(tokens[i-1].Text) {
 				continue
 			}
+			if i > method.BodyStart && tokens[i-1].Text == "]" {
+				if name, element, _, ok := indexedTarget(tokens, i, method.BodyStart); ok {
+					rhsEnd := assignmentEnd(tokens, i+1, method.BodyEnd)
+					if rhsEnd <= i+1 {
+						continue
+					}
+					result := s.evaluateExpressionIn(index, method, localTypes, tokens[i+1:rhsEnd], local, depth+1)
+					if result.dynamic {
+						effects.dynamic = true
+						continue
+					}
+					if !result.found {
+						continue
+					}
+					if element != "" {
+						local[elementKey(name, element)] = result.taint
+					} else {
+						local[name] = result.taint
+					}
+					if position, ok := paramIndex[name]; ok && isArrayType(method.Params[position].Type) {
+						effects.mutated[position] = result.taint
+					}
+				}
+				continue
+			}
 			lhsIndex := previousIdent(tokens, i, method.BodyStart)
 			if lhsIndex < 0 || (lhsIndex >= 2 && tokens[lhsIndex-1].Text == ".") {
 				continue
@@ -1387,7 +1975,7 @@ func (s *findingState) methodEffects(index *projectModel, method *methodModel, p
 				continue
 			}
 			switch {
-			case isDirectTaint(rhs, local), containsToken(rhs, "+"), isFieldRead(rhs), result.kind == "builder_to_string", result.kind == "string_format", result.kind == "return", result.kind == "constructor":
+			case isDirectTaint(rhs, local), containsToken(rhs, "+"), isFieldRead(rhs), result.kind == "builder_to_string", result.kind == "string_format", result.kind == "return", result.kind == "constructor", result.kind == "collection_read", result.kind == "array_read":
 				local[lhs] = result.taint
 			default:
 				effects.unresolved = true
@@ -1426,6 +2014,54 @@ func (s *findingState) methodEffects(index *projectModel, method *methodModel, p
 			}
 			if name == "append" && isBuilderReceiver(method, receiver, localTypes) {
 				if argEval.found {
+					local[receiver] = argEval.taint
+					if position, ok := paramIndex[receiver]; ok {
+						effects.mutated[position] = argEval.taint
+					}
+				}
+				continue
+			}
+			if name == "clear" && isCollectionType(receiverType(method, receiver, localTypes)) {
+				deleteContainerTaint(local, receiver)
+				if position, ok := paramIndex[receiver]; ok {
+					delete(effects.mutated, position)
+				}
+				continue
+			}
+			if isCollectionRemoval(name) && isCollectionType(receiverType(method, receiver, localTypes)) {
+				if name == "remove" {
+					if position, ok := firstLiteralArgument(args); ok {
+						delete(local, elementKey(receiver, position))
+						continue
+					}
+				}
+				// Keeping the aggregate taint matches the flow-insensitive fallback.
+				continue
+			}
+			if isCollectionMutation(name) && isCollectionType(receiverType(method, receiver, localTypes)) {
+				if (name == "add" || name == "set") && len(args) >= 2 {
+					if element, ok := firstLiteralArgument(args); ok {
+						value := s.evaluateExpressionIn(index, method, localTypes, args[1], local, depth+1)
+						switch {
+						case value.dynamic:
+							effects.dynamic = true
+						case value.found:
+							if _, isParam := paramIndex[receiver]; isParam {
+								local[receiver] = value.taint
+							} else {
+								local[elementKey(receiver, element)] = value.taint
+							}
+							if position, ok := paramIndex[receiver]; ok {
+								effects.mutated[position] = value.taint
+							}
+						}
+						continue
+					}
+				}
+				switch {
+				case argEval.dynamic:
+					effects.unresolved = true
+				case argEval.found:
 					local[receiver] = argEval.taint
 					if position, ok := paramIndex[receiver]; ok {
 						effects.mutated[position] = argEval.taint
@@ -1578,7 +2214,16 @@ func declarationType(tokens []javaToken, nameIndex, bodyStart int) string {
 found:
 	for i := start; i < nameIndex; i++ {
 		if tokens[i].Tok == scanner.Ident && !isModifier(tokens[i].Text) {
-			return tokens[i].Text
+			typeName := tokens[i].Text
+			for j := i + 1; j < nameIndex; j++ {
+				if tokens[j].Text == "<" || tokens[j].Text == "," {
+					break
+				}
+				if tokens[j].Text == "[" {
+					typeName += "[]"
+				}
+			}
+			return typeName
 		}
 	}
 	return ""
