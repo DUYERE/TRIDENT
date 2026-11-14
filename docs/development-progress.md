@@ -1071,6 +1071,15 @@
 - 验收：`go test ./internal/sbom ./cmd/trident -count=1` 与 `python scripts/test-sbom.py`（5 项）通过。
 - 限制与 pending：`not_affected` 是最小可信形态（有界图负判定），不证明类加载/运行时利用/供应链完整性；下游应结合 `detail` 与 `trident:reachability_claim` 解读；code scanning 页面告警呈现仍未人工复核。
 
+### 2026-11-14 续二十三：P2-3 生产设施项——真实监控联调、数据量级备份与容量模型
+
+- **控制台 Prometheus 抓取端点**（`f2568ec`）：`GET /metrics`（文本格式 0.0.4，与 JSON 端点同一组计数器，指标名对齐告警规则）；`authorize()` 增加 `Authorization: Bearer` 支持，`/metrics` 豁免浏览器专用 console 头（运维面），仅 GET；每次抓取落入 JSONL 审计日志。测试：`metrics_test.go`（401 门禁、Bearer 200、全部 TYPE 行、scrape/JSON 计数器一致性、Bearer 无 console 头访问 API 面仍 403）与 `test-web.py`（真实 CLI 全链路断言）。
+- **真实监控联调**（`9787d2f`）：`ops/monitoring/`（prometheus.yml 经 `authorization.credentials_file` 注入 Bearer 抓宿主 loopback、alerts.yml 六条规则对齐真实指标名、docker-compose prometheus v2.53.0 + alertmanager v0.27.0）+ `scripts/test-monitoring.py` 端到端演练：抓取 target up → 指标可查询 → 告警经 Alertmanager webhook 送达本地 receiver → 抓取落审计日志，四项 PASS。**调试记录**：首次通知在 Alertmanager gossip settle（~10s）前失败、重试退避数分钟——演练分两段等待（AM 收到告警 → webhook 送达），生产验收窗口按分钟计。控制台保持 loopback 绑定不放宽；Windows/macOS 经 host.docker.internal，Linux 需 socat sidecar。镜像 tag pin，生产须 digest pin。
+- **数据量级备份演练**（`ff53636`）：`scripts/test-backup-scale.py` 在真实迁移 Schema 上灌 50 万 principals + 100 万 activities + 20 万 outbox_events（624 MB），实测 pg_dump(custom,compress=6) 3.6s（归档 37 MB，压缩比约 16:1）、pg_restore 6.7s、check+行数核对 3.1s，**RTO（restore+verify）9.8s**；RPO 语义演示：备份后写入 5000 行全部不在恢复点（backup-only 策略最大丢失窗口）。行数核对五表全匹配，`trident check` 通过。
+- **容量与成本模型**：新增 `docs/capacity-cost.md`——RTO/RPO 外推公式（restore 吞吐 ≈105 MB/s、dump ≈175 MB/s、归档压缩比、RPO 由备份策略决定）、静态分析容量（内建有界上限 + 缓存语义 + 大项目必须单次重基准化）、DB 增长模型（审计类表为主，公式 + 复核要求）、模型 token 成本公式（明确标注未实测，live-model pending）。`docs/deployment.md` §2.2 重写为真实联调实况、备份节加 RTO/RPO 实测引用。
+- 验收：`go test ./internal/webui ./cmd/trident -count=1`、`python scripts/test-web.py`（8 项）、`python scripts/test-monitoring.py`（4 项）、`python scripts/test-backup-scale.py` 全部通过；全量 `go build/vet/test` + `verify-offline.ps1`（14 脚本）绿。
+- 限制与 pending：RTO/RPO 实测仅覆盖本机容器与该数据量，生产承诺须按容量模型在生产硬件重测；组织级分权审批记录（表 owner 审批单、密钥系统登记）需组织流程，工具侧无法替代；Alertmanager 探针规则（TridentAlertDeliveryProbe）仅演练用，生产删除；真实项目规模基准与 live-model 成本实测待授权。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

@@ -57,54 +57,20 @@ server {
 - 代理层访问日志可记录来源 IP，与应用层 JSONL 审计日志（无 IP、无令牌）互补。
 - 多用户令牌与审计日志不改变只读边界：控制台仍无写路由、无执行/修复入口。
 
-### 2.2 监控与告警规则模板（P2-3 本地部分）
+### 2.2 监控与告警规则（P2-3）
 
-控制台提供两类可采集信号（未接真实监控系统，模板为文档形态）：
+控制台提供三类可采集信号，**已用真实 Prometheus v2.53.0 + Alertmanager v0.27.0 容器端到端联调**
+（`python scripts/test-monitoring.py`，四项 PASS；实测记录见 [容量与成本模型](capacity-cost.md) §5）：
 
-1. **探活**：`GET /healthz`（未认证）返回 `{"status":"ok",...}`；代理探活路径指向它，非 200 或超时即视为实例不可用。
-2. **指标**：`GET /api/metrics`（令牌 + console 头门禁）返回进程生命周期计数器（字段见 [Web 控制台契约](web-console-contract.md) §6.1）。采集方以只读 reviewer 令牌轮询（建议 15–60s），不得在指标标签中附加令牌。
-3. **结构化日志**：`--access-log` JSONL（每行 time/token_id/method/path/status）+ stderr 告警行；JSONL 适合 filebeat/loki 等逐行采集。
+1. **抓取端点**：`GET /metrics`（Prometheus 文本格式 0.0.4；令牌门禁，`authorization.credentials_file` 注入 Bearer 令牌）；`GET /healthz`（未认证探活）。配置与规则在 [`ops/monitoring/`](../ops/monitoring/)（`prometheus.yml`、`alerts.yml`、`docker-compose.yml`），指标名与告警规则对齐。
+2. **JSON 指标**：`GET /api/metrics`（令牌 + console 头），字段见 [Web 控制台契约](web-console-contract.md) §6.1；采集方以只读令牌轮询（15–60s）。
+3. **结构化日志**：`--access-log` JSONL（每行 time/token_id/method/path/status）+ stderr 告警行；JSONL 适合 filebeat/loki 逐行采集。
 
-Prometheus 告警规则模板（`trident-console.rules.yml`，指标经导出器转换为同名 gauge；`threshold` 按环境调整）：
-
-```yaml
-groups:
-  - name: trident-console
-    rules:
-      - alert: TridentConsoleDown
-        expr: probe_success{job="trident-console"} == 0 or up{job="trident-console"} == 0
-        for: 1m
-        labels: {severity: critical}
-        annotations:
-          summary: "TRIDENT 控制台 /healthz 连续 1 分钟不可达"
-      - alert: TridentConsoleUnauthorizedSpike
-        expr: increase(trident_console_requests_unauthorized_total[10m]) > 50
-        for: 5m
-        labels: {severity: warning}
-        annotations:
-          summary: "令牌拒绝激增（爆破或轮换失误）；先核对 --tokens 文件 mtime 与内容"
-      - alert: TridentConsoleForbiddenSpike
-        expr: increase(trident_console_requests_forbidden_total[10m]) > 50
-        for: 5m
-        labels: {severity: warning}
-        annotations:
-          summary: "console 头缺失激增（异常客户端或脚本未带 X-Trident-Request）"
-      - alert: TridentAnalysisFailure
-        expr: increase(trident_console_analysis_failures_total[15m]) > 0
-        for: 0m
-        labels: {severity: critical}
-        annotations:
-          summary: "分析终态失败（cached_ok=false；last_error 记录于 /api/metrics 与审计日志上下文）"
-      - alert: TridentAnalysisStale
-        expr: trident_console_analysis_cached == 0 and up{job="trident-console"} == 1
-        for: 30m
-        labels: {severity: info}
-        annotations:
-          summary: "控制台运行超过 30 分钟仍无缓存分析（无人访问或分析从未完成）"
-```
+告警规则（`ops/monitoring/alerts.yml`，已在真实 Alertmanager 验证加载与送达）：`TridentConsoleDown`、`TridentConsoleUnauthorizedSpike`（10m 内 >50 次令牌拒绝）、`TridentConsoleForbiddenSpike`、`TridentAnalysisFailure`、`TridentAnalysisStale`（30 分钟无缓存分析）、`TridentAlertDeliveryProbe`（**管道探针，仅演练用，生产删除**）。阈值按环境调整。
 
 - 告警响应手册要点：`ConsoleDown` → 检查进程与 loopback 端口；`UnauthorizedSpike` → 对照审计日志 `token_id` 分布与令牌文件轮换记录；`AnalysisFailure` → 复现 `trident audit findings --snapshot ...` CLI 侧失败原因（同一分析引擎）。
 - 指标不含令牌值、Cookie、路径查询串；`last_error` 采集中按敏感信息策略脱敏后再入告警注释。
+- 拓扑约束：控制台只绑定 loopback；Windows/macOS Docker Desktop 经 `host.docker.internal` 抓宿主 loopback，Linux 需 socat sidecar 或宿主网络，不得放宽控制台绑定。镜像当前为 tag pin，生产必须 digest pin。Prometheus→Alertmanager 首次通知可能因 gossip settle 重试延迟数分钟，告警验收窗口按分钟计。
 
 ## 3. 数据库迁移
 
@@ -136,7 +102,8 @@ TRIDENT_DATABASE_URL="$TRIDENT_RESTORE_URL" ./trident check
 - Agent Run/Step 表为 append-only 审计记录，备份应包含它们；当前没有自动物理清理。
 - 恢复后先用 `check` 验证迁移校验和，再启动 Web/Agent。
 - 备份文件包含授权与证据元数据，按敏感数据管理；不要放入仓库或公开对象存储。
-- 恢复演练：`python scripts/test-db-governance.py` 已在一次性 PostgreSQL 18 容器内完成 `pg_dump --format=custom` → 新库 `pg_restore` → `trident check` → 行数比对（`principals`、`tasks`、`tool_calls`、`approvals`、`schema_migrations`），结果一致。该演练覆盖工具与 Schema，不覆盖生产数据量、备份窗口、异地存储与恢复时限。
+- 恢复演练：`python scripts/test-db-governance.py` 已在一次性 PostgreSQL 18 容器内完成 `pg_dump --format=custom` → 新库 `pg_restore` → `trident check` → 行数比对（`principals`、`tasks`、`tool_calls`、`approvals`、`schema_migrations`），结果一致。
+- **数据量级演练与 RTO/RPO（2026-11-14）**：`python scripts/test-backup-scale.py` 在 624 MB / 约 170 万行的真实迁移 Schema 上实测——dump 3.6s（归档 37 MB）、restore 6.7s、check+行数核对 3.1s，**RTO（restore+verify）9.8s**；并演示 RPO 语义（备份后写入的 5000 行不在恢复点内）。估算公式（restore 吞吐 ≈105 MB/s、归档压缩比 ≈16:1、RPO 由备份策略决定）见 [容量与成本模型](capacity-cost.md)；生产 RTO/RPO 承诺必须按该模型在生产硬件上重测。
 
 ## 5. CI 与 SARIF
 

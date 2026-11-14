@@ -28,8 +28,11 @@
 > P2-1 CI 门禁已在真实 runner 验证：`offline` 与 `db-governance` job 全绿（run 43585245302、
 > 43585400725），故意红灯探针可复现失败（run 43585523523，revert 恢复），`release-artifacts` job
 > 已提供待打 tag 演练——tag `v0.2.0-p0.2` 已推送并全绿（run 43587721384，release-artifacts 产物
-> 成功）。P3 两项已实现：SARIF GitHub 映射与 CycloneDX VEX 分析状态（见上）。
-> 记录见 [开发进度](development-progress.md) 续十一至续二十二。其余项仍为计划。
+> 成功）。P3 两项已实现：SARIF GitHub 映射与 CycloneDX VEX 分析状态（见上）；P2-3 生产设施项
+> 大幅推进：控制台 `/metrics` Prometheus 抓取端点、真实 Prometheus/Alertmanager 容器联调
+> （`scripts/test-monitoring.py` 四项 PASS）、624 MB 数据量级备份演练实测 RTO 9.8s 与 RPO 语义
+> （`scripts/test-backup-scale.py`）、容量与成本估算模型（`docs/capacity-cost.md`）。
+> 记录见 [开发进度](development-progress.md) 续十一至续二十三。其余项仍为计划。
 
 ## 1. 原则与约束
 
@@ -275,16 +278,22 @@
 
 ### P2-3 生产运维门槛
 
-- **状态**：本地部分已实现（控制台 `/healthz` 探活、`/api/metrics` 只读计数器、JSONL 审计日志作为
-  结构化日志、Prometheus 告警规则模板与响应手册要点进 `docs/deployment.md` §2.2）。生产级分权执行
-  记录、真实数据量备份演练与 RTO/RPO、容量/成本实测、真实监控系统联调仍待真实生产设施，保持 pending。
+- **状态**：2026-11-14 大幅推进——监控真实联调已落地（控制台 `/metrics` Prometheus 文本端点 +
+  `ops/monitoring` 配置，`scripts/test-monitoring.py` 四项 PASS：真实 Prometheus v2.53.0 抓取、
+  指标可查询、告警经 Alertmanager v0.27.0 webhook 端到端送达、抓取落 JSONL 审计日志）；
+  **生产数据量级备份演练已实测**（`scripts/test-backup-scale.py`：624 MB/170 万行，RTO 9.8s、
+  RPO 语义演示）；**容量与成本估算模型已建立**（`docs/capacity-cost.md`：RTO/RPO 外推公式、
+  静态分析容量、DB 增长、模型 token 公式——模型成本未实测，live-model 仍 pending）。
+  仍待真实生产设施/组织流程：生产硬件上的 RTO/RPO 承诺复测、生产级分权执行的组织审批记录
+  （密钥系统登记表）、真实项目规模基准、按真实数据分布复核 DB 增长。
 - **目标**：把本地演练升级为可审计的生产准备证据。
 - **实现要点**：
   - 生产级分权执行记录（真实表 owner、密钥系统、审计审批）；生产数据量备份恢复演练与 RTO/RPO 记录。
   - 监控：`/healthz`、只读指标（分析耗时/失败数/Run 状态）、结构化日志；告警规则模板。
   - 容量与成本模型：按快照规模/依赖数/模型 token 给出估算方法与实测样本。
 - **验收标准**：
-  - 运维演练报告（脱敏）与 `docs/deployment.md` 更新；checklist 对应项改为“已验证”需附证据路径。
+  - 运维演练报告（脱敏）与 `docs/deployment.md` 更新（监控/备份/容量模型均已更新）；
+    checklist 对应项改为"已验证"需附证据路径。
 - **非目标**：不替代组织级安全评审与合规认证。
 
 ### P3 可选增强
