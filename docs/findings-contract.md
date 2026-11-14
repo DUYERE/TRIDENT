@@ -133,6 +133,15 @@ Finding ID：
 ## 2026-11-13 扩展：SARIF 与 import 可达性
 
 - `audit sarif` 将同一份 findings 报告转换为确定性 SARIF 2.1.0；rule ID 为 `trident/<kind>`，`static_confirmed`→`warning`、`inconclusive`→`note`、`refuted`→`none`；结果和 run 属性都保留 `runtime_status=not_run`。SARIF 不是新的分析结论。
+
+## 2026-11-14 扩展：GitHub code scanning 规则映射
+
+- 规则元数据新增 GitHub code scanning 分类（均由静态状态确定，不引入新语义）：
+  - `security-severity`：`static_confirmed`→`7.5`（≥7 即 high）、`inconclusive`→`3.0`（<4，与 `note` 一致，未确认假设永不高于其证据）、`refuted`→`0.0`（与 `none` 一致）。
+  - `precision`/`problem.precision`：仅 `static_confirmed` 为 `high`；`problem.severity` 与默认 level 相同。
+  - `tags`：固定 `security` 加可解析的 `CWE-<n>`（关联 GitHub Advisory Database；不可解析时仅保留 `security`）。
+- 结果新增确定性 `partialFingerprints["primaryLocationLineHash"]`：`sha256(ruleId|uri|startLine)` 前 16 字节十六进制，供 code scanning 跨上传合并告警；不依赖运行时状态。
+- 不添加 `helpUri`（无真实文档 URL，不虚构）；未运行真实 GitHub 上传验收（需 push/授权，P2-1 同因 pending）。
 - `audit reachability` 使用显式 `--package-map` 在类级 import/同包类型引用图上做有界 BFS；`reachable` 表示找到入口→中间类→依赖 import 的路径，`unreachable` 仅表示本快照有界图中无路径，`unknown` 表示缺少映射、模块无入口、版本未解析、反射或图超限。三者都不证明类加载或运行时利用，`runtime_status` 保持 `not_run`。
 - 数据流新增 `upload` 类别（CWE-434）与框架 SQL/SSRF sink；finding kind 为 `unrestricted_upload`，仍遵守 `runtime_status=not_run` 与 `inconclusive` 不等于安全的规则。
 

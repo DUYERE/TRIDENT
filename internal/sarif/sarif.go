@@ -4,8 +4,11 @@
 package sarif
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"trident/internal/findings"
@@ -15,6 +18,15 @@ const (
 	SchemaVersion = "2.1.0"
 	SchemaURI     = "https://json.schemastore.org/sarif-2.1.0.json"
 	ToolName      = "TRIDENT"
+)
+
+// GitHub code scanning consumes security-severity (0.0-10.0) to classify
+// results and precision/tags for rule metadata. The mapping below is fixed and
+// derived only from the static status; runtime evidence never raises it.
+const (
+	SecuritySeverityConfirmed    = "7.5" // >= 7 renders as "high"
+	SecuritySeverityInconclusive = "3.0" // < 4 renders as "low" alongside "note"
+	SecuritySeverityRefuted      = "0.0" // renders as "none"; negative control only
 )
 
 type Log struct {
@@ -59,12 +71,13 @@ type Message struct {
 }
 
 type Result struct {
-	RuleID     string      `json:"ruleId"`
-	RuleIndex  int         `json:"ruleIndex"`
-	Level      string      `json:"level"`
-	Message    Message     `json:"message"`
-	Locations  []Location  `json:"locations"`
-	Properties PropertyBag `json:"properties,omitempty"`
+	RuleID              string            `json:"ruleId"`
+	RuleIndex           int               `json:"ruleIndex"`
+	Level               string            `json:"level"`
+	Message             Message           `json:"message"`
+	Locations           []Location        `json:"locations"`
+	PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
+	Properties          PropertyBag       `json:"properties,omitempty"`
 }
 
 type Location struct {
@@ -126,10 +139,15 @@ func Build(report findings.Report, toolVersion string) (Log, error) {
 			FullDescription:  Message{Text: finding.Title},
 			DefaultConfig:    RuleConfig{Level: levelFor(finding.Status)},
 			Properties: PropertyBag{
-				"cwe":             finding.CWE,
-				"category":        finding.Category,
-				"runtime_status":  "not_run",
-				"analysis_origin": strings.Join(finding.SourceAnalyses, ","),
+				"cwe":               finding.CWE,
+				"category":          finding.Category,
+				"runtime_status":    "not_run",
+				"analysis_origin":   strings.Join(finding.SourceAnalyses, ","),
+				"security-severity": securitySeverityFor(finding.Status),
+				"precision":         precisionFor(finding.Status),
+				"problem.severity":  levelFor(finding.Status),
+				"problem.precision": precisionFor(finding.Status),
+				"tags":              ruleTags(finding),
 			},
 		})
 	}
@@ -145,6 +163,9 @@ func Build(report findings.Report, toolVersion string) (Log, error) {
 			Level:     levelFor(finding.Status),
 			Message:   Message{Text: resultMessage(finding)},
 			Locations: locations,
+			PartialFingerprints: map[string]string{
+				"primaryLocationLineHash": locationFingerprint(ruleID(finding), locations[0]),
+			},
 			Properties: PropertyBag{
 				"finding_id":     finding.ID,
 				"kind":           finding.Kind,
@@ -201,6 +222,62 @@ func levelFor(status string) string {
 	default:
 		return "note"
 	}
+}
+
+// securitySeverityFor maps the static status onto the GitHub code scanning
+// 0.0-10.0 scale. Inconclusive results stay below the "medium" threshold so an
+// unconfirmed hypothesis can never surface above its evidence.
+func securitySeverityFor(status string) string {
+	switch status {
+	case "static_confirmed":
+		return SecuritySeverityConfirmed
+	case "refuted":
+		return SecuritySeverityRefuted
+	default:
+		return SecuritySeverityInconclusive
+	}
+}
+
+// precisionFor mirrors the reviewer-facing semantics: only a statically
+// confirmed dataflow deserves "high" precision; everything else is advisory.
+func precisionFor(status string) string {
+	if status == "static_confirmed" {
+		return "high"
+	}
+	return "low"
+}
+
+// ruleTags classifies a rule for GitHub code scanning: the "security" tag
+// enables the security view, and a parseable CWE tag links the rule to the
+// GitHub Advisory Database.
+func ruleTags(finding findings.Finding) []string {
+	tags := []string{"security"}
+	if number, ok := cweNumber(finding.CWE); ok {
+		tags = append(tags, "CWE-"+strconv.Itoa(number))
+	}
+	return tags
+}
+
+func cweNumber(cwe string) (int, bool) {
+	value := strings.TrimSpace(strings.ToUpper(cwe))
+	if !strings.HasPrefix(value, "CWE-") {
+		return 0, false
+	}
+	number, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(value, "CWE-")))
+	if err != nil || number <= 0 {
+		return 0, false
+	}
+	return number, true
+}
+
+// locationFingerprint derives the deterministic GitHub "primaryLocationLineHash"
+// from the rule id and primary location, so code scanning can merge alerts
+// across uploads without any runtime state.
+func locationFingerprint(rule string, location Location) string {
+	primary := location.PhysicalLocation
+	seed := fmt.Sprintf("%s|%s|%d", rule, primary.ArtifactLocation.URI, primary.Region.StartLine)
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:16])
 }
 
 func resultMessage(finding findings.Finding) string {

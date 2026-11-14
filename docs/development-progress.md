@@ -1042,6 +1042,14 @@
 - 验收：`go test ./internal/webui ./cmd/trident -count=1` 通过；`python scripts/test-web.py` 通过（8 项）。
 - 限制与 pending：Run 状态指标属 Agent Core（`agent status`），不在控制台进程内，本片指标覆盖控制台自身；生产备份演练与 RTO/RPO、容量/成本实测、真实 Prometheus/Alertmanager 联调待真实生产设施（P2-3 剩余项保持 pending）。
 
+### 2026-11-14 续二十：P3 SARIF 规则分类细化与 GitHub code scanning 映射
+
+- `internal/sarif/sarif.go`：规则元数据新增 GitHub code scanning 分类——`security-severity`（`static_confirmed`→`7.5`、`inconclusive`→`3.0`、`refuted`→`0.0`；未确认假设永不高于其证据）、`precision`/`problem.precision`（仅确认数据流为 `high`）、`problem.severity`、`tags`（`security` + 可解析 `CWE-<n>`）；结果新增确定性 `partialFingerprints["primaryLocationLineHash"]`（`sha256(ruleId|uri|startLine)` 前 16 字节，供跨上传合并告警）。全部由静态状态推导，`runtime_status=not_run` 不变，不添加 `helpUri`。
+- `internal/sarif/sarif_test.go`：新增 `TestBuildGitHubCodeScanningMapping`（映射值、确定性指纹、不同主位置不同指纹）与 `TestSecuritySeverityAndCWEClassification`（映射边界与 CWE 解析拒绝）。
+- 契约：`docs/findings-contract.md` 新增 2026-11-14 GitHub 映射扩展节。
+- 验收：`go test ./internal/sarif -count=1` 通过。
+- 限制与 pending：真实 GitHub code scanning 上传验收需 push/仓库授权（与 P2-1 同因 pending）；VEX 导出未做（`not_affected` 声明语义的证据门槛需产品决策，见续二十一前确认）。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

@@ -22,8 +22,10 @@
 > 并通过 `go test ./internal/webui ./cmd/trident` 与 `scripts/test-web.py` 第二阶段验收；P2-3 本地部分
 > （`/healthz` 探活、`/api/metrics` 只读计数器、Prometheus 告警规则模板文档）已实现并通过
 > `go test ./internal/webui` 与 `scripts/test-web.py` 验收，生产备份演练/RTO-RPO 与真实监控系统
-> 联调仍待真实生产设施。
-> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六、续十七、续十八、续十九。其余项仍为计划。
+> 联调仍待真实生产设施；P3 可选增强中的 SARIF 规则分类细化与 GitHub code scanning 规则映射已实现
+> （`security-severity`/`precision`/`tags`/确定性 `partialFingerprints`，见 findings 契约 2026-11-14 扩展）
+> 并通过 `go test ./internal/sarif` 验收，真实 GitHub 上传验收仍需 push 授权。
+> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六、续十七、续十八、续十九、续二十。其余项仍为计划。
 
 ## 1. 原则与约束
 

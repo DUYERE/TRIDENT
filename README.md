@@ -114,7 +114,7 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit findings --snapshot "$T
 
 ## R2 CI 出口：SARIF 与有界可达性
 
-`audit sarif` 将同一份统一 evidence 报告导出为确定性 SARIF 2.1.0；`static_confirmed` 映射为 `warning`、`inconclusive` 为 `note`、`refuted` 为 `none`，所有结果保留 `runtime_status=not_run`，不会因导出升级为运行时确认。
+`audit sarif` 将同一份统一 evidence 报告导出为确定性 SARIF 2.1.0；`static_confirmed` 映射为 `warning`、`inconclusive` 为 `note`、`refuted` 为 `none`，所有结果保留 `runtime_status=not_run`，不会因导出升级为运行时确认。规则元数据带 GitHub code scanning 分类：`security-severity`（确认 7.5 / 证据不足 3.0 / 已驳倒 0.0，未确认假设永不高于其证据）、`precision`（仅确认数据流为 high）、`tags`（`security` + `CWE-<n>` 关联 Advisory Database）；每个结果带确定性 `partialFingerprints` 指纹供跨上传合并告警。
 
 `audit reachability` 在类级 import/同包类型引用图上从入口做有界 BFS（深度/节点/边/路径上限），并用调用者显式提供的 `--package-map`（`group:artifact` → 包前缀）映射声明依赖。分类为 `reachable` / `unreachable` / `unknown`：`reachable` 附入口→中间类→依赖的路径证据（文件 SHA-256 + 行号）；`unreachable` 仅表示本快照有界图中无路径；缺少映射、模块无入口、版本未解析、反射或超限均为 `unknown`。**三条路径都不证明类加载或运行时利用**，`runtime_status` 保持 `not_run`。
 
