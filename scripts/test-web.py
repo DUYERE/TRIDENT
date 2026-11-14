@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -75,6 +76,10 @@ def request(base, path, method="GET", headers=None, body=None):
             return response.status, dict(response.headers), response.read()
     except urllib.error.HTTPError as error:
         return error.code, dict(error.headers), error.read()
+
+
+def token_sha256(value):
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def main():
@@ -225,9 +230,114 @@ def main():
                 server.kill()
                 server.wait(timeout=5)
 
+        # ── Phase 2: multi-user token file, rotation, deterministic export and
+        # JSONL access log. Same snapshot; still no database/model/Java.
+        alice_token = "web-alice-token-0123456789"
+        bob_token = "web-bob-token-0123456789"
+        carol_token = "web-carol-token-0123456789"
+        tokens_path = parent / "tokens.json"
+        log_path = parent / "access.jsonl"
+
+        def write_tokens(users):
+            tokens_path.write_text(json.dumps(
+                [{"id": user_id, "role": role, "token_hash": token_sha256(value)}
+                 for user_id, role, value in users], indent=1), encoding="utf-8")
+            future = time.time() + 2
+            os.utime(tokens_path, (future, future))
+
+        write_tokens([("alice", "reviewer", alice_token), ("bob", "auditor", bob_token)])
+        port = free_port()
+        base = f"http://127.0.0.1:{port}"
+        console_header = {"X-Trident-Request": "console"}
+        server = subprocess.Popen(
+            [str(binary), "web", "--snapshot", str(snapshot), "--snapshot-hash", snapshot_hash,
+             "--advisories", str(ADVISORY), "--addr", f"127.0.0.1:{port}",
+             "--tokens", str(tokens_path), "--access-log", str(log_path)],
+            cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        try:
+            ready = False
+            for _ in range(80):
+                if server.poll() is not None:
+                    break
+                try:
+                    status, _, _ = request(base, "/")
+                    if status == 200:
+                        ready = True
+                        break
+                except (urllib.error.URLError, ConnectionError):
+                    pass
+                time.sleep(0.1)
+            require(ready, "multi-user console did not become ready: "
+                    + (server.stderr.read() if server.poll() is not None else "timeout"))
+
+            alice = {**console_header, "X-Trident-Token": alice_token}
+            bob = {**console_header, "X-Trident-Token": bob_token}
+            status, _, _ = request(base, "/api/overview", headers=alice)
+            require(status == 200, f"alice overview failed: {status}")
+            status, _, _ = request(base, "/api/health", headers=bob)
+            require(status == 200, f"bob health failed: {status}")
+            status, _, _ = request(base, "/api/overview", headers={**console_header, "X-Trident-Token": "charlie-token-0123456789"})
+            require(status == 401, "unknown user token must be rejected")
+
+            # Rotation: alice re-keyed, bob revoked, carol added; no restart.
+            write_tokens([("alice", "reviewer", "web-alice-token-rotated-123456"),
+                          ("carol", "reviewer", carol_token)])
+            status, _, _ = request(base, "/api/overview", headers=alice)
+            require(status == 401, "rotated-out alice token must be rejected")
+            status, _, _ = request(base, "/api/overview", headers=bob)
+            require(status == 401, "revoked bob token must be rejected")
+            alice = {**console_header, "X-Trident-Token": "web-alice-token-rotated-123456"}
+            status, _, _ = request(base, "/api/overview", headers=alice)
+            require(status == 200, "rotated-in alice token must be accepted")
+            carol = {**console_header, "X-Trident-Token": carol_token}
+            status, _, _ = request(base, "/api/overview", headers=carol)
+            require(status == 200, "carol token must be accepted")
+
+            # Deterministic HTML export: byte-identical, no external URLs, no
+            # wall-clock timestamps.
+            status, headers, body = request(base, "/export/report", headers=alice)
+            require(status == 200 and header(headers, "Content-Type") == "text/html; charset=utf-8",
+                    f"export failed: {status} {header(headers, 'Content-Type')}")
+            require("attachment" in header(headers, "Content-Disposition")
+                    and ".html" in header(headers, "Content-Disposition"), "export disposition missing")
+            status, _, body_again = request(base, "/export/report", headers=carol)
+            require(body == body_again, "export must be byte-identical across users and requests")
+            text = body.decode("utf-8")
+            require(snapshot_hash[:12] in text, "export must pin the snapshot hash")
+            require("sql_injection" in text, "export must contain finding details")
+            for banned in ("http://", "https://", "<script", 'src="'):
+                require(banned not in text, f"export must not contain external resource marker: {banned}")
+            require(re.search(r"20\d{2}-\d{2}-\d{2}T", text) is None, "export must not contain ISO timestamps")
+
+            # JSONL access audit: fixed fields, per-user ids, no token values.
+            require(log_path.is_file(), "access log missing")
+            lines = [line for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            require(lines, "access log is empty")
+            seen_ids = set()
+            for line in lines:
+                record = json.loads(line)
+                require(set(record) == {"time", "token_id", "method", "path", "status"},
+                        f"unexpected access record fields: {sorted(record)}")
+                require("?" not in record["path"], "access record must not contain a query string")
+                seen_ids.add(record["token_id"])
+            require({"alice", "carol", ""} <= seen_ids, f"access log token ids incomplete: {sorted(seen_ids)}")
+            log_text = log_path.read_text(encoding="utf-8")
+            for secret in (alice_token, bob_token, carol_token, "web-alice-token-rotated-123456", TOKEN):
+                require(secret not in log_text, "access log must never contain a token value")
+            print("[04] multi-user token file isolation, rotation and revocation: PASS")
+            print("[05] deterministic HTML export (byte-identical, no external URLs, no timestamps): PASS")
+            print("[06] JSONL access audit log with per-user ids and no token values: PASS")
+        finally:
+            server.terminate()
+            try:
+                server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait(timeout=5)
+
         require(tree_hashes(snapshot) == snapshot_before, "snapshot changed during console verification")
         require(tree_hashes(FIXTURE) == fixture_before, "fixture changed during console verification")
-        print("[04] snapshot and fixture are byte-identical; no database/model/Java execution: PASS")
+        print("[07] snapshot and fixture are byte-identical; no database/model/Java execution: PASS")
         print("TRIDENT web console acceptance passed.")
 
 

@@ -1022,6 +1022,17 @@
 - 验收：`go test ./internal/cache` 通过（往返、缺失、版本不匹配、损坏、非法键、无源码）；新增 `scripts/test-cache.py` 通过（冷 `miss` → 热 `hit` 且结果与冷一致、输出确定；缓存全为 JSON 且无源码标记；损坏条目 → `partial` + 重建限制且结果不变；修改单文件 → `partial` 且其余结果不变；缓存/快照重叠与文件路径拒绝且快照字节不变）；`python scripts/benchmark.py 3 --baseline <baseline> --max-ratio 4` 通过（相对比较，非绝对阈值）。
 - 未验证：大型仓库的实际加速比、并发进程下的缓存竞争、跨机器缓存共享（非目标）。
 
+### 2026-11-14 续十八：P2-2 Web 控制台多用户、审计日志与确定性导出
+
+- `internal/webui/tokens.go`（新增）：多用户令牌注册表。`--tokens <file>` 读取 JSON 数组 `[{id, role, token_hash}]`，`token_hash` 为令牌明文 SHA-256 十六进制（文件永不存明文）；校验 id/role 字符集（`A-Za-z0-9._-`，1–64）、64 位十六进制哈希、id/哈希重复、未知字段，启动失败即退出。呈现令牌 → SHA-256 → 注册表比对（命中后常数时间比较）。每次授权请求检查文件 mtime+size 签名热重载：同 id 换哈希=轮换、删条目=撤销，下一请求生效；重载解析失败沿用最后已知良好注册表并向 stderr 告警一次，合法空数组按全部撤销处理（仅启动时拒绝空数组）。单 `--token` 兼容：注册表内固定身份 `local`/`reviewer`，`Token()` 仍打印明文；`--token` 与 `--tokens` 互斥。
+- `internal/webui/accesslog.go`（新增）：`--access-log <file>` JSONL 审计访问日志（追加、0600）。记录全部 `/api/` 与 `/export/` 请求（含未认证行），字段固定 `time`（UTC RFC3339 微秒）/`token_id`/`method`/`path`（无查询串）/`status`；永不记录令牌明文或 Cookie 值；写失败 best-effort 并告警。响应状态经 `statusRecorder` 捕获。
+- `internal/webui/export.go`（新增）：`GET /export/report` 确定性 HTML 审阅报告（`text/html` 附件）。内容为快照信息、结论概要、类别分布、按 ID 排序的逐发现明细（类型/类别/CWE/严重度/状态/runtime_status/入口/组件/证据/假设/限制）与统一限制；不含生成时间/耗时/启动时间/访问者身份；无外部资源引用（无 http(s)、无外链脚本/样式/图片），全部动态文本 HTML 转义；同一快照+公告目录+二进制两次导出字节一致。中间件将 `/export/` 纳入令牌+console 头门禁与 `no-store`。
+- `cmd/trident/web.go`：新增 `--tokens`/`--access-log`；多用户模式打印用户 id 列表与文件路径，不打印任何令牌明文。
+- 前端：顶栏新增“导出报告”按钮（复用既有下载管线），about 视图 API 表新增 `/export/report` 行。
+- 契约与部署：`docs/web-console-contract.md` 新增 §2.1 多用户令牌文件（含 POSIX/PowerShell 哈希生成命令）、§5 审计访问日志、§6 确定性报告导出、§8 TLS 反向代理部署要求并重排章节；`docs/deployment.md` 新增 §2.1 nginx 示例与令牌文件管理要求。
+- 验收：`go test ./internal/webui ./cmd/trident -count=1` 通过（新增令牌文件轮换+审计日志、格式校验拒绝、导出确定性 3 项）；`python scripts/test-web.py` 通过并在第二阶段以 `--tokens`+`--access-log` 启动第二个服务，验证多用户隔离（alice/bob/carol 各自 `token_id`）、轮换（旧令牌 401/新令牌 200）、撤销、导出两次跨用户字节一致且无 `http://`/`https://`/ISO 时间戳、审计日志字段固定且不含令牌明文；快照与 fixture 字节不变。
+- 限制：多用户令牌文件热重载依赖 mtime+size 签名（原子重写或整体重写场景）；role 当前仅为审计身份标注，不构成权限边界；TLS 反代说明未经真实域名/证书联调；多快照对比、finding 状态流转、PDF 导出明确不做（写入口与只读边界冲突）。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

@@ -200,6 +200,7 @@
 
   function installChrome() {
     $("#exportBtn").addEventListener("click", exportReport);
+    $("#exportHtmlBtn").addEventListener("click", exportHtmlReport);
     $("#mobileNav").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
     document.addEventListener("click", (event) => {
       const sidebar = $("#sidebar");
@@ -260,6 +261,15 @@
     try {
       await downloadArtifact("/api/report", "trident-findings.json");
       toast("证据报告已导出", "ok");
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  }
+
+  async function exportHtmlReport() {
+    try {
+      await downloadArtifact("/export/report", "trident-report.html");
+      toast("HTML 审阅报告已导出", "ok");
     } catch (error) {
       toast(error.message, "bad");
     }
@@ -1237,6 +1247,7 @@
           ${apiRow("GET", "/api/files · /api/file", "清单与逐行源码读取")}
           ${apiRow("GET", "/api/search", "快照内字面量检索")}
           ${apiRow("GET", "/api/report", "下载统一证据 JSON")}
+          ${apiRow("GET", "/export/report", "下载确定性 HTML 审阅报告")}
         </div>
       </section>
       <section class="card section-gap">

@@ -137,7 +137,7 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit java-model --snapshot "
 
 ## R2 只读 Web 分析控制台
 
-`trident web` 为单个已 pin 的本地快照提供暗色分析控制台，视图包括概览、安全发现（含证据抽屉）、HTTP 入口、依赖与公告、源码浏览/检索和边界说明。它复用既有快照与四个分析包，不新增分析语义，不导入源码、不执行 Java/Maven、不调用模型或访问网络，也不提供 Agent 运行/审批/执行控制 API。控制台仅监听 loopback，使用启动时打印的一次性访问令牌；除登录页外所有 API 都要求令牌与 `X-Trident-Request: console` 头，响应启用 CSP、`nosniff`、`DENY` 与 `no-store`。
+`trident web` 为单个已 pin 的本地快照提供暗色分析控制台，视图包括概览、安全发现（含证据抽屉）、HTTP 入口、依赖与公告、源码浏览/检索和边界说明。它复用既有快照与四个分析包，不新增分析语义，不导入源码、不执行 Java/Maven、不调用模型或访问网络，也不提供 Agent 运行/审批/执行控制 API。控制台仅监听 loopback，支持单用户 `--token` 与多用户 `--tokens` 令牌文件（JSON `[{id, role, token_hash}]`，只存 SHA-256，mtime 热重载支持轮换/撤销）；`--access-log` 记录 JSONL 审计访问日志（time/token_id/method/path/status，永不记录令牌明文）。除登录页外所有 API 与 `/export/report` 都要求令牌与 `X-Trident-Request: console` 头，响应启用 CSP、`nosniff`、`DENY` 与 `no-store`。`/export/report` 输出确定性 HTML 审阅报告（无时间戳、无外部资源，同一快照同一二进制字节一致）。
 
 以下命令不连接数据库、不调用模型；令牌只打印在终端，不要写入共享日志：
 
@@ -148,7 +148,7 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident web --snapshot "$TRIDENT_PARE
 # [02] 浏览器打开终端打印的地址，粘贴同一终端打印的访问令牌；Ctrl+C 停止，不写入快照。
 ```
 
-首次请求任一分析 API 时，SCA、入口清单、有界数据流和统一证据模型各运行一次并缓存；失败会作为终态缓存并返回 `analysis_failed`，不会逐请求重试。页面上的 `runtime_status` 恒为 `not_run`，静态确认、`inconclusive`、`refuted` 与 CLI 含义一致。契约见 [Web 控制台契约](docs/web-console-contract.md)；真实 CLI 验收为 `python scripts/test-web.py`。
+首次请求任一分析 API 时，SCA、入口清单、有界数据流和统一证据模型各运行一次并缓存；失败会作为终态缓存并返回 `analysis_failed`，不会逐请求重试。页面上的 `runtime_status` 恒为 `not_run`，静态确认、`inconclusive`、`refuted` 与 CLI 含义一致。多用户令牌文件格式、审计日志行格式、确定性导出边界与 TLS 反向代理部署要求见 [Web 控制台契约](docs/web-console-contract.md)与 [部署指南](docs/deployment.md)；真实 CLI 验收为 `python scripts/test-web.py`。
 
 ## 统一 Agent Core（R1 本地协议验收）
 
@@ -304,7 +304,7 @@ docker compose --project-directory 'E:/pentest agent/TRIDENT' -f 'E:/pentest age
 | `internal/httpverify/` | 显式 origin 授权的运行时 HTTP 断言、cookie session、角色矩阵/CSRF 与有界证据 |
 | `internal/correlate/` | 静态 findings 与运行时报告的只读 route/method 关联（`correlated`/`ambiguous`/`not_correlated`） |
 | `internal/findings/`、`internal/sarif/`、`internal/reach/`、`internal/javaast/` | 统一 finding/假设/证据模型；SARIF 2.1.0；类级有界入口可达性；受限 Java 语义模型与方法级调用图 |
-| `internal/webui/` | 只读 Web 控制台：令牌鉴权、JSON API、嵌入的暗色前端资源 |
+| `internal/webui/` | 只读 Web 控制台：单/多用户令牌鉴权（SHA-256 文件热重载）、JSON API、确定性 HTML 导出、JSONL 审计访问日志、嵌入的暗色前端资源 |
 | `internal/sbom/` | 确定性 CycloneDX 1.5 序列化与 metadata/component/vulnerability 映射 |
 | `internal/r3/` | 快照工作区复制、统一 diff 应用、策略约束、离线 Maven/javac/JUnit（XML/JaCoCo）验证、质量评分、多轮修复与 Docker/gVisor |
 | `docs/sca-contract.md`、`docs/audit-contract.md`、`docs/dataflow-contract.md`、`docs/findings-contract.md`、`docs/web-console-contract.md`、`docs/sbom-contract.md`、`docs/patch-contract.md`、`docs/runtime-contract.md`、`docs/deployment.md`、`docs/benchmark-report.md`、`docs/release-checklist.md` | SCA、入口清单、数据流、证据模型、Web、SBOM、R3、运行时验证、部署、基准与发布检查表 |

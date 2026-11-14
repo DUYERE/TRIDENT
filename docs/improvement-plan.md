@@ -17,8 +17,10 @@
 > `scripts/test-runtime.py` 验收；P1-3 回滚计划、质量评分版本、多模块选择与 `gradle-test` 验证 profile
 > 已实现并通过 `go test ./internal/r3` 与 `scripts/test-patch.py` 验收（Gradle 使用桩工具链，真实 Gradle
 > 构建未验证）；P1-4 派生索引缓存与相对基线性能门槛已实现并通过 `go test ./internal/cache`、
-> `scripts/test-cache.py` 与 `scripts/benchmark.py --baseline` 验收。
-> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六、续十七。其余项仍为计划。
+> `scripts/test-cache.py` 与 `scripts/benchmark.py --baseline` 验收；P2-2 Web 控制台多用户令牌文件
+> （SHA-256 哈希 + mtime 热重载）、JSONL 审计访问日志、确定性 HTML 导出与 TLS 反代部署说明已实现
+> 并通过 `go test ./internal/webui ./cmd/trident` 与 `scripts/test-web.py` 第二阶段验收。
+> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六、续十七、续十八。其余项仍为计划。
 
 ## 1. 原则与约束
 
@@ -241,6 +243,8 @@
 
 ### P2-2 Web 控制台与多用户
 
+- **状态**：核心已实现（多用户令牌文件 + 审计日志 + 确定性 HTML 导出；TLS 反代部署说明已固化，
+  未经真实域名/证书联调）。多快照对比、finding 状态流转与 PDF 导出明确不做（写入口与只读边界冲突）。
 - **目标**：从单机只读控制台提升为可部署的团队审阅界面。
 - **实现要点**：
   - TLS 反向代理部署说明与安全响应头；令牌改为可轮换的多用户令牌文件（或外部 OIDC 接入点，
@@ -248,8 +252,10 @@
   - 报告导出：确定性 HTML（无外部资源）与 PDF（可选）；多快照对比与 finding 状态流转（人工）。
   - 审计访问日志与只读约束；不提供执行/修复入口。
 - **验收标准**：
-  - `scripts/test-web.py` 增加多用户隔离、导出确定性与无外部资源断言。
-  - 契约更新 `docs/web-console-contract.md`。
+  - `scripts/test-web.py` 增加多用户隔离、令牌轮换/撤销、审计日志与导出确定性（两次字节一致、
+    无外部 URL、无时间戳）断言（已通过；`--tokens`/`--access-log` 第二阶段）。
+  - `go test ./internal/webui` 覆盖令牌文件格式校验拒绝、互斥参数与轮换热重载（已通过）。
+  - 契约更新 `docs/web-console-contract.md`（§2.1/§5/§6/§8 已完成）与 `docs/deployment.md`（§2.1 已完成）。
 - **非目标**：不做 SaaS 多租户、不在控制台内执行补丁。
 
 ### P2-3 生产运维门槛

@@ -21,10 +21,41 @@ go build -trimpath -o trident ./cmd/trident
 | `TRIDENT_MIGRATION_ACTOR` | 迁移操作者标识 | 仅 `migrate` 需要；生产应使用 `trident_migrator` 账号 |
 | `TRIDENT_POSTGRES_PASSWORD` | 本地 compose 初始化密码 | 只写入本机 `.env`，不要提交 |
 | `TRIDENT_MODEL_API_KEY` | 真实模型命令的密钥 | 仅在显式 `--approve-egress` 时读取；不落 Run/日志 |
-| `web --token` | 控制台访问令牌 | 省略时随机生成并只打印一次；不要通过 URL 传递 |
+| `web --token` | 单用户控制台访问令牌 | 省略时随机生成并只打印一次；不要通过 URL 传递 |
+| `web --tokens` | 多用户令牌文件（P2-2） | JSON `[{id, role, token_hash}]`，`token_hash=sha256(token)` 十六进制；文件永不存令牌明文；mtime 变化热重载，轮换/撤销下一个请求生效 |
+| `web --access-log` | JSONL 审计访问日志 | 记录 time/token_id/method/path/status；永不记录令牌明文；轮转交给外部日志工具 |
 | `runtime http --approve-target` | 运行时目标 origin | 必须与计划 `base_url` 完全一致；loopback 另需 `--allow-loopback` |
 
-原则：迁移账号与运行账号分离；模型密钥与数据库密钥不共用；控制台只绑定 loopback，若需远程访问必须另加 TLS、反向代理和强认证，当前实现不提供这些生产能力。
+原则：迁移账号与运行账号分离；模型密钥与数据库密钥不共用；控制台只绑定 loopback，远程团队访问必须经同机 TLS 反向代理（见 §2.1）。
+
+### 2.1 Web 控制台 TLS 反向代理部署（P2-2）
+
+```nginx
+server {
+  listen 443 ssl;
+  server_name console.example;
+  # 证书与 HSTS 由部署方提供；ssl_certificate ... 省略
+  add_header Strict-Transport-Security "max-age=31536000" always;
+
+  # 不记录令牌/Cookie 头：保持 nginx 默认，禁止在自定义 log_format 中加入
+  # $http_x_trident_token 或 $http_cookie
+  location / {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_set_header Host $host;
+  }
+}
+server {
+  listen 80;
+  server_name console.example;
+  return 301 https://$host$request_uri;
+}
+```
+
+- 反向代理必须与控制台同机，只转发到数值 loopback 地址；不要把控制台端口暴露到非 loopback 网卡。
+- 不得剥离或覆盖应用安全响应头（CSP/`nosniff`/`DENY`/`no-referrer`/`CORP`/`no-store`）；只能追加。
+- 令牌文件按密钥管理：`token_hash` 生成方式见 [Web 控制台契约](web-console-contract.md) §2.1；轮换=同 id 换新哈希，撤销=删除条目，均无需重启。
+- 代理层访问日志可记录来源 IP，与应用层 JSONL 审计日志（无 IP、无令牌）互补。
+- 多用户令牌与审计日志不改变只读边界：控制台仍无写路由、无执行/修复入口。
 
 ## 3. 数据库迁移
 
@@ -84,4 +115,5 @@ TRIDENT_DATABASE_URL="$TRIDENT_RESTORE_URL" ./trident check
 - 本地容器分权与恢复演练已通过，但未在独立生产环境执行和审计。
 - 完整 Java AST/调用图/跨方法污点、制品哈希与依赖到入口调用可达性。
 - CI 中的 Java/Maven/Gradle、模型与运行时 job 需要专用 runner、授权和密钥管理。
-- TLS/多用户控制台、监控告警、生产级备份恢复（数据量/时限/异地）与容量/成本报告。
+- 监控告警、生产级备份恢复（数据量/时限/异地）与容量/成本报告。
+- TLS 反向代理示例未经真实域名/证书联调（命令结构与安全要求已在契约固化）；OIDC 仅预留 `role` 接口。

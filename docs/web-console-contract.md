@@ -13,15 +13,37 @@
 ```bash
 trident web --snapshot <dir> --snapshot-hash <sha256> \
   [--advisories <local-advisory.json>] \
-  [--addr 127.0.0.1:8787] [--token <value>]
+  [--addr 127.0.0.1:8787] \
+  [--token <value> | --tokens <file>] \
+  [--access-log <file>]
 ```
 
 1. 必须提供既有快照与外部可信摘要；`webui.New` 使用 `project.Open` 重新校验清单，失败即退出。
 2. `--addr` 只接受数值 loopback 地址或 `localhost`；通配地址、私网地址和外部域名一律拒绝。默认 `127.0.0.1:8787`。
 3. 未提供 `--token` 时生成 48 位十六进制令牌并仅在启动终端打印一次。令牌不写入快照、日志或前端资源。
-4. 浏览器登录使用 `POST /api/session`，成功返回 `Set-Cookie: trident_console=...; HttpOnly; SameSite=Strict; Path=/`，有效期 8 小时。脚本可使用 `X-Trident-Token` 请求头。
-5. 所有 `/api/` 请求必须携带 `X-Trident-Request: console`。跨源页面无法在不触发 CORS 预检的情况下设置该头，服务端不授予任何 CORS 预检；配合 `SameSite=Strict` Cookie 构成 CSRF 防线。
-6. 统一响应头：`Content-Security-Policy`（不含 `unsafe-inline`，脚本/样式全部为同源外部文件）、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Cross-Origin-Resource-Policy: same-origin`；API 为 `Cache-Control: no-store`。
+4. `--token` 与 `--tokens` 互斥，同时提供即拒绝启动。
+5. 浏览器登录使用 `POST /api/session`，成功返回 `Set-Cookie: trident_console=...; HttpOnly; SameSite=Strict; Path=/`，有效期 8 小时。脚本可使用 `X-Trident-Token` 请求头。
+6. 所有 `/api/` 与 `/export/` 请求必须携带令牌（Cookie 或 `X-Trident-Token`）与 `X-Trident-Request: console`。跨源页面无法在不触发 CORS 预检的情况下设置该头，服务端不授予任何 CORS 预检；配合 `SameSite=Strict` Cookie 构成 CSRF 防线。
+7. 统一响应头：`Content-Security-Policy`（不含 `unsafe-inline`，脚本/样式全部为同源外部文件）、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Cross-Origin-Resource-Policy: same-origin`；API 与导出为 `Cache-Control: no-store`。
+
+### 2.1 多用户令牌文件（P2-2）
+
+`--tokens <file>` 将单令牌升级为可轮换的多用户令牌注册表。文件为 UTF-8 JSON 数组：
+
+```json
+[
+  {"id": "alice", "role": "reviewer", "token_hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"},
+  {"id": "bob",   "role": "auditor",  "token_hash": "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752"}
+]
+```
+
+- `token_hash` 是令牌明文的 SHA-256 十六进制小写（64 字符）；**文件永不保存令牌明文**。生成方式：
+  - POSIX：`printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1`
+  - PowerShell：`$sha=[System.Security.Cryptography.SHA256]::Create();[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($TOKEN))).Replace('-','').ToLower()`
+- 校验规则（启动失败即退出）：数组至少 1 项；`id`/`role` 为 1–64 字符且仅含 `A-Za-z0-9._-`；`id` 不得重复；`token_hash` 必须是 64 位十六进制且不得重复（同一令牌不能映射两个身份）；未知字段拒绝。
+- 呈现令牌 → 计算 SHA-256 → 与注册表比对（命中后再做常数时间比较）。所有角色共享完全相同的只读权限；`role` 当前仅为审计身份标注与未来细粒度授权的预留接口，不是权限边界。
+- **热重载与轮换**：每次授权请求检查令牌文件的 mtime+size 签名，变化即重新加载，无需重启。同一 `id` 换新 `token_hash` = 轮换（旧令牌下一个请求即 401，新令牌即生效）；删除条目 = 撤销。文件必须整体重写或原子替换（写临时文件后 rename）；就地部分写入导致解析失败时沿用最后已知良好注册表并向 stderr 告警，恢复合法内容后自动接管。重载遇到结构合法但为空数组的文件按“全部撤销”处理；仅启动时拒绝空数组以防误配置。
+- 单令牌 `--token` 模式保持原语义（注册表内固定身份 `local`/`reviewer`）；`Token()` 仅在单令牌模式返回明文，多用户模式由 CLI 打印用户 id 列表而不打印任何令牌。
 
 ## 3. API
 
@@ -39,6 +61,7 @@ trident web --snapshot <dir> --snapshot-hash <sha256> \
 | GET | `/api/search` | 快照内区分大小写字面量检索（`q`、`prefix`、`limit`、`cursor`） |
 | GET | `/api/report` | 下载与 `trident audit findings` 相同的统一证据 JSON |
 | GET | `/api/sbom` | 下载与 `trident sca sbom` 相同的 CycloneDX 1.5 JSON |
+| GET | `/export/report` | 下载确定性 HTML 审阅报告（见 §6；无时间戳、无外部资源） |
 
 `limit` 默认 50、最大 200；`offset` 最大 1,000,000；查询串与路径长度有上限。错误响应为 `{"schema_version":1,"code":"...","error":"..."}`：
 
@@ -57,7 +80,32 @@ trident web --snapshot <dir> --snapshot-hash <sha256> \
 3. 分析期间的并发请求由互斥锁串行等待，只有一次实际分析。快照不可变，因此不提供“刷新分析”按钮；更换快照需重启控制台。
 4. `--advisories` 是调用者配置，不是快照内容；未提供时依赖页面与统一报告会明确显示未加载公告目录。
 
-## 5. 前端视图
+## 5. 审计访问日志（P2-2）
+
+`--access-log <file>` 启用本地 JSONL 审计访问日志（追加写，`0600`，无轮转——轮转交给外部日志工具）。
+
+- 记录范围：全部 `/api/` 与 `/export/` 请求，含未认证请求（`token_id` 为空字符串）；静态资源（`/`、`/assets/`）不记录。
+- 行格式（每行一个 JSON 对象，UTC RFC3339 微秒时间）：
+
+```json
+{"time":"2026-11-14T09:00:00.123456Z","token_id":"alice","method":"GET","path":"/api/overview","status":200}
+```
+
+- 字段固定为 `time`/`token_id`/`method`/`path`/`status`；`path` 只记 URL 路径，不含查询串。
+- **永不记录令牌明文或 Cookie 值**；`token_id` 是令牌文件中的身份标注（未认证为 `""`）。
+- 写日志失败不阻断请求（best-effort，向 stderr 告警）；审计日志是访问痕迹而非安全边界，不得替代代理层审计。
+
+## 6. 确定性报告导出（P2-2）
+
+`GET /export/report` 返回 `text/html; charset=utf-8` 附件 `trident-report-<hash 前 12 位>.html`，用于团队审阅归档。
+
+- **确定性**：同一快照 + 同一公告目录 + 同一二进制 → 输出字节一致。报告不含生成时间、分析耗时、进程启动时间或任何当前时刻；两次请求必须逐字节相同。
+- **无外部资源**：不引用任何 `http://`/`https://` 资源、无外链脚本/样式/图片；样式为单个内联 `<style>`，全部动态文本经 HTML 转义。
+- **内容**：快照信息（摘要、来源、清单/策略/工具版本、文件数与字节）、结论概要（状态计数与覆盖）、类别分布、逐发现明细（入口/组件/证据/假设/限制，按 finding ID 排序）、统一限制。`runtime_status` 恒为 `not_run` 原样保留。
+- **不含**：访问者身份、令牌、访问日志或任何会话信息。报告与 `/api/report` JSON 同源，不新增分析语义。
+- 非目标：PDF 导出、多快照对比、finding 状态流转（人工状态管理需要写入口，与只读边界冲突，明确不做）。
+
+## 7. 前端视图
 
 | 路由 | 内容 |
 |---|---|
@@ -70,7 +118,17 @@ trident web --snapshot <dir> --snapshot-hash <sha256> \
 
 前端为无构建步骤的原生 HTML/CSS/JS，通过 `go:embed` 打包进单一二进制；无 npm、无 CDN、无外部字体或图片请求。样式只使用 CSSOM 设置动态宽度，CSP 不包含 `unsafe-inline`。
 
-## 6. 限制与非目标
+## 8. 部署：TLS 反向代理与安全响应头
+
+控制台只绑定 loopback；远程团队访问必须在**同一台主机**上加 TLS 终结反向代理（nginx/Caddy 等），把 `https://console.example` 反代到 `127.0.0.1:8787`。代理要求：
+
+- 仅转发到数值 loopback 目标；强制 HTTPS，HTTP 请求 301 到 HTTPS；开启 HSTS。
+- 不得剥离或覆盖应用安全响应头（CSP/`nosniff`/`DENY`/`no-referrer`/`CORP`/`no-store`）；可在其上追加头部，不可降低。
+- 不得记录 `X-Trident-Token`、Cookie 或 Authorization 等请求头（nginx 默认不记录自定义头，保持默认；自定义日志格式不得加 `$http_x_trident_token`/`$http_cookie`）。
+- 代理层访问日志可记录来源 IP 与时间，与应用层 JSONL 审计日志（无 IP、无令牌）互补。
+- 反向代理不改变只读边界：控制台仍无写路由、无执行/修复入口；OIDC 仅以令牌文件 `role` 字段预留接口，不实现任何供应商。
+
+## 9. 限制与非目标
 
 - 只读控制台不改变 R2 分析能力：没有 Java AST、别名/指向分析、跨模块类型解析或运行时验证。
 - 不提供多快照工作区、源码导入、任务管理、Agent 会话或工具审批。
@@ -78,13 +136,15 @@ trident web --snapshot <dir> --snapshot-hash <sha256> \
 - `--advisories` 文件与快照摘要不绑定；更换公告目录不会自动刷新已有进程。
 - 应用层只读不等于 OS 级不可变；持有令牌的本机用户仍可读取快照内全部允许文件。
 
-## 7. 验收
+## 10. 验收
 
-1. `go test ./internal/webui ./cmd/trident -count=1`：令牌/头鉴权、Cookie 标志、CSP、资产目录拒绝、概览/发现/详情/入口/依赖/文件/检索/报告、路径遍历与缺失文件、并发缓存。
-2. `python scripts/test-web.py`：构建真实 CLI、导入合成快照、在随机 loopback 端口启动服务，验证登录与会话、全部只读 API、401/403/400/404 负例、报告下载、快照与样本字节级不变；全程不连接数据库、不调用模型、不执行 Java/Maven。
+1. `go test ./internal/webui ./cmd/trident -count=1`：令牌/头鉴权、Cookie 标志、CSP、资产目录拒绝、概览/发现/详情/入口/依赖/文件/检索/报告、路径遍历与缺失文件、并发缓存；多用户令牌文件（隔离、轮换、撤销、格式校验拒绝、互斥参数）、审计访问日志（字段、无令牌明文、未认证行）、导出确定性（两次字节一致、无外部 URL、无 ISO 时间戳）。
+2. `python scripts/test-web.py`：构建真实 CLI、导入合成快照、在随机 loopback 端口启动服务，验证登录与会话、全部只读 API、401/403/400/404 负例、报告下载、快照与样本字节级不变；第二阶段以 `--tokens` + `--access-log` 启动第二个服务，验证多用户隔离（不同令牌不同 `token_id`）、轮换（旧令牌 401/新令牌 200）、`/export/report` 两次字节一致且无外部 URL/时间戳、JSONL 审计日志存在且不含令牌明文；全程不连接数据库、不调用模型、不执行 Java/Maven。
 3. 人工浏览器检查只用于视觉与交互，不作为安全验收的替代。
 
-## 8. 实际结果（2026-11-13）
+## 11. 实际结果
+
+### 2026-11-13（初版单令牌控制台）
 
 - `go build ./...`、`go test ./... -count=1`、`go vet ./...`：通过（含 `internal/webui` 7 项与 `cmd/trident` 2 项新测试）。
 - `go test ./internal/webui -count=1 -v`：7 项通过（鉴权、资产与安全头、会话 Cookie、概览与发现、入口与依赖、文件/检索/报告、并发缓存）。
@@ -93,3 +153,9 @@ trident web --snapshot <dir> --snapshot-hash <sha256> \
 - 回归：`test-project.py`、`test-sca.py`、`test-audit.py`、`test-dataflow.py`、`test-findings.py` 全部通过且分析计数不变；`test-local.py`（真实 PostgreSQL）、`test-agent.py`（loopback 非真实 LLM，Run 28/29）与 `test-linux.py`（`-race -tags=integration -p 1 ./...`）通过。
 - 浏览器人工检查：登录页、概览、发现列表与证据抽屉、入口、依赖、源码阅读与检索、820px 响应式布局；无控制台错误。390px 移动截图因浏览器工具超时未采集，不据此声称移动端已验证。
 - 未运行：真实外部模型、Java/Maven/JUnit、运行时漏洞验证、多用户并发压力测试、HTTPS/TLS 终止、操作系统级快照隔离。
+
+### 2026-11-14（P2-2 多用户令牌、审计日志与确定性导出）
+
+- `go build ./...`、`go vet ./internal/webui ./cmd/trident`、`go test ./internal/webui ./cmd/trident -count=1`：通过；`internal/webui` 新增 3 项测试（令牌文件轮换与审计日志、令牌文件格式校验拒绝、导出确定性）。
+- `python scripts/test-web.py`：通过，第二阶段（`--tokens` + `--access-log`）验证多用户隔离（alice/bob/carol 各自 `token_id`）、轮换（alice 换新哈希后旧令牌 401、新令牌 200）、撤销（bob 删除即 401）、`/export/report` 两次请求跨用户字节一致且无 `http://`/`https://`/ISO 时间戳、JSONL 审计日志字段固定且不含任何令牌明文；快照与 fixture 字节不变。
+- 未运行：真实 TLS 反向代理（nginx/Caddy）联调、OIDC 接入（仅预留 role 接口）、浏览器人工复核新按钮视觉（导出按钮复用既有下载管线与按钮样式）。

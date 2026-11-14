@@ -2,6 +2,8 @@ package webui
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,13 +11,20 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"trident/internal/findings"
 	"trident/internal/project"
 )
+
+func tokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
 
 func writeFixture(t *testing.T) (string, string, string) {
 	t.Helper()
@@ -467,4 +476,226 @@ func TestConsoleCachesAnalysisConcurrently(t *testing.T) {
 		}()
 	}
 	wait.Wait()
+}
+
+func writeTokenFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Force a distinct mtime signature so the reload check cannot miss the
+	// rewrite even on filesystems with coarse timestamps.
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConsoleTokenFileRotationAndAuditLog(t *testing.T) {
+	destination, advisoryPath, hash := writeFixture(t)
+	parent := filepath.Dir(destination)
+	tokensPath := filepath.Join(parent, "tokens.json")
+	logPath := filepath.Join(parent, "access.log")
+	writeTokenFile(t, tokensPath, `[
+		{"id":"alice","role":"reviewer","token_hash":"`+tokenHash("alice-token-0123456789")+`"},
+		{"id":"bob","role":"auditor","token_hash":"`+tokenHash("bob-token-0123456789")+`"}
+	]`)
+	console, err := New(context.Background(), Options{SnapshotDir: destination, SnapshotHash: hash, AdvisoryPath: advisoryPath, TokensFile: tokensPath, AccessLog: logPath, Version: "test-build"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = console.Close() }()
+	if !console.MultiToken() || console.Token() != "" {
+		t.Fatalf("file mode must not expose a plaintext token: multi=%v token=%q", console.MultiToken(), console.Token())
+	}
+	server := httptest.NewServer(console.Handler())
+	defer server.Close()
+
+	request := func(token, path string) (*http.Response, []byte) {
+		req, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			req.Header.Set(TokenHeader, token)
+		}
+		req.Header.Set(RequestHeader, "console")
+		response, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response, body
+	}
+
+	if response, _ := request("alice-token-0123456789", "/api/overview"); response.StatusCode != http.StatusOK {
+		t.Fatalf("alice overview: %d", response.StatusCode)
+	}
+	if response, _ := request("bob-token-0123456789", "/api/health"); response.StatusCode != http.StatusOK {
+		t.Fatalf("bob health: %d", response.StatusCode)
+	}
+	if response, _ := request("charlie-token-0123456789", "/api/overview"); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unknown user must be rejected: %d", response.StatusCode)
+	}
+	if response, _ := request("", "/api/overview"); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("missing token must be rejected: %d", response.StatusCode)
+	}
+
+	// Rotation: alice gets a new hash, bob is revoked, carol joins.
+	writeTokenFile(t, tokensPath, `[
+		{"id":"alice","role":"reviewer","token_hash":"`+tokenHash("alice-token-rotated-123456")+`"},
+		{"id":"carol","role":"reviewer","token_hash":"`+tokenHash("carol-token-0123456789")+`"}
+	]`)
+	if response, _ := request("alice-token-0123456789", "/api/overview"); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("rotated-out token must be rejected: %d", response.StatusCode)
+	}
+	if response, _ := request("bob-token-0123456789", "/api/overview"); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked token must be rejected: %d", response.StatusCode)
+	}
+	if response, _ := request("alice-token-rotated-123456", "/api/overview"); response.StatusCode != http.StatusOK {
+		t.Fatalf("rotated-in token must be accepted: %d", response.StatusCode)
+	}
+	if response, _ := request("carol-token-0123456789", "/api/overview"); response.StatusCode != http.StatusOK {
+		t.Fatalf("added user must be accepted: %d", response.StatusCode)
+	}
+	ids := console.TokenIDs()
+	if len(ids) != 2 || ids[0] != "alice" || ids[1] != "carol" {
+		t.Fatalf("token ids after rotation: %v", ids)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := string(data)
+	var records []struct {
+		Time    string `json:"time"`
+		TokenID string `json:"token_id"`
+		Method  string `json:"method"`
+		Path    string `json:"path"`
+		Status  int    `json:"status"`
+	}
+	for _, line := range strings.Split(strings.TrimSpace(logged), "\n") {
+		var record struct {
+			Time    string `json:"time"`
+			TokenID string `json:"token_id"`
+			Method  string `json:"method"`
+			Path    string `json:"path"`
+			Status  int    `json:"status"`
+		}
+		decoder := json.NewDecoder(strings.NewReader(line))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&record); err != nil {
+			t.Fatalf("access log line %q: %v", line, err)
+		}
+		if decoder.More() {
+			t.Fatalf("access log line must be a single JSON object: %q", line)
+		}
+		records = append(records, record)
+	}
+	seen := map[string]bool{}
+	for _, record := range records {
+		if record.Time == "" || record.Method == "" || record.Path == "" || record.Status == 0 {
+			t.Fatalf("incomplete access record: %+v", record)
+		}
+		if strings.Contains(record.Path, "?") {
+			t.Fatalf("access record must not contain a query string: %+v", record)
+		}
+		seen[record.TokenID] = true
+	}
+	for _, id := range []string{"alice", "carol", ""} {
+		if !seen[id] {
+			t.Fatalf("access log missing token_id %q: %v", id, seen)
+		}
+	}
+	for _, secret := range []string{"alice-token-0123456789", "alice-token-rotated-123456", "bob-token-0123456789", "carol-token-0123456789"} {
+		if strings.Contains(logged, secret) {
+			t.Fatalf("access log must never contain a token value: %s", secret)
+		}
+	}
+}
+
+func TestConsoleTokenFileValidation(t *testing.T) {
+	destination, advisoryPath, hash := writeFixture(t)
+	parent := filepath.Dir(destination)
+	tokensPath := filepath.Join(parent, "tokens.json")
+	build := func(content string) error {
+		writeTokenFile(t, tokensPath, content)
+		console, err := New(context.Background(), Options{SnapshotDir: destination, SnapshotHash: hash, AdvisoryPath: advisoryPath, TokensFile: tokensPath, Version: "test-build"})
+		if err != nil {
+			return err
+		}
+		_ = console.Close()
+		return nil
+	}
+	cases := map[string]string{
+		"invalid json":   `[{"id":"alice","role":"reviewer","token_hash":"nothex"}]`,
+		"empty array":    `[]`,
+		"missing role":   `[{"id":"alice","token_hash":"` + tokenHash("x") + `"}]`,
+		"bad id charset": `[{"id":"bad id","role":"reviewer","token_hash":"` + tokenHash("x") + `"}]`,
+		"short hash":     `[{"id":"alice","role":"reviewer","token_hash":"` + strings.Repeat("a", 63) + `"}]`,
+		"duplicate id":   `[{"id":"alice","role":"reviewer","token_hash":"` + tokenHash("x") + `"},{"id":"alice","role":"reviewer","token_hash":"` + tokenHash("y") + `"}]`,
+		"duplicate hash": `[{"id":"alice","role":"reviewer","token_hash":"` + tokenHash("x") + `"},{"id":"bob","role":"reviewer","token_hash":"` + tokenHash("x") + `"}]`,
+		"unknown field":  `[{"id":"alice","role":"reviewer","token_hash":"` + tokenHash("x") + `","token":"plaintext"}]`,
+	}
+	for name, content := range cases {
+		if err := build(content); err == nil {
+			t.Fatalf("%s must be rejected", name)
+		}
+	}
+	if err := build(`[{"id":"alice","role":"reviewer","token_hash":"` + tokenHash("valid-token-0123456789") + `"}]`); err != nil {
+		t.Fatalf("valid token file rejected: %v", err)
+	}
+	if _, err := New(context.Background(), Options{SnapshotDir: destination, SnapshotHash: hash, Token: "single-token-0123456789", TokensFile: tokensPath}); err == nil {
+		t.Fatal("--token and --tokens must be mutually exclusive")
+	}
+}
+
+func TestConsoleExportReportDeterministic(t *testing.T) {
+	console, hash := newTestConsole(t)
+	server := httptest.NewServer(console.Handler())
+	defer server.Close()
+	c := &client{t: t, server: server, token: console.Token()}
+
+	response, body := c.do(http.MethodGet, "/export/report", true, true)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("export: %d %s", response.StatusCode, body)
+	}
+	if response.Header.Get("Content-Type") != "text/html; charset=utf-8" {
+		t.Fatalf("export content type: %s", response.Header.Get("Content-Type"))
+	}
+	if disposition := response.Header.Get("Content-Disposition"); !strings.Contains(disposition, "attachment") || !strings.Contains(disposition, ".html") {
+		t.Fatalf("export disposition: %s", disposition)
+	}
+	response, second := c.do(http.MethodGet, "/export/report", true, true)
+	if response.StatusCode != http.StatusOK || string(second) != string(body) {
+		t.Fatalf("export must be byte-identical across requests: %d", response.StatusCode)
+	}
+	page := string(body)
+	if !strings.Contains(page, hash[:12]) {
+		t.Fatalf("export must pin the snapshot hash")
+	}
+	if !strings.Contains(page, "sql_injection") {
+		t.Fatalf("export must contain finding details")
+	}
+	for _, banned := range []string{"http://", "https://", "<script", "src=\"", "generated_at"} {
+		if strings.Contains(page, banned) {
+			t.Fatalf("export must not contain %q", banned)
+		}
+	}
+	if matched := regexp.MustCompile(`20\d{2}-\d{2}-\d{2}T`).FindString(page); matched != "" {
+		t.Fatalf("export must not contain ISO timestamps: %s", matched)
+	}
+	response, _ = c.do(http.MethodGet, "/export/report", false, true)
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("export without token: %d", response.StatusCode)
+	}
+	response, _ = c.do(http.MethodGet, "/export/report", true, false)
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("export without console header: %d", response.StatusCode)
+	}
 }

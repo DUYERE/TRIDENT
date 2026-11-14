@@ -11,7 +11,6 @@ package webui
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -60,7 +59,12 @@ type Options struct {
 	SnapshotDir  string
 	SnapshotHash string
 	AdvisoryPath string
-	Token        string
+	// Token is the legacy single-user token. TokensFile and Token are mutually
+	// exclusive; the file form carries per-user identities as SHA-256 hashes.
+	Token      string
+	TokensFile string
+	// AccessLog, when set, appends one JSONL audit line per API/export request.
+	AccessLog string
 	// Version is the product build string shown in the console footer.
 	Version string
 }
@@ -70,9 +74,11 @@ type Options struct {
 type Console struct {
 	snapshot     *project.Snapshot
 	advisoryPath string
-	token        string
+	tokens       *tokenRegistry
+	singleToken  string // plaintext of the legacy single-token mode; empty in file mode
 	version      string
 	startedAt    time.Time
+	accessLog    *accessLogger
 
 	mu    sync.Mutex
 	state *analysisState
@@ -94,15 +100,29 @@ func New(ctx context.Context, opts Options) (*Console, error) {
 		return nil, fmt.Errorf("web console requires an existing --snapshot and trusted --snapshot-hash")
 	}
 	token := strings.TrimSpace(opts.Token)
-	if token == "" {
-		generated, err := randomToken()
+	if opts.TokensFile != "" && token != "" {
+		return nil, fmt.Errorf("use either --token or --tokens, not both")
+	}
+	var registry *tokenRegistry
+	switch {
+	case opts.TokensFile != "":
+		loaded, err := newFileTokenRegistry(opts.TokensFile, os.Stderr)
 		if err != nil {
 			return nil, err
 		}
-		token = generated
-	}
-	if len(token) < 16 || len(token) > 256 || strings.ContainsAny(token, "\r\n\x00") {
-		return nil, fmt.Errorf("console token must contain 16 to 256 bytes without control characters")
+		registry = loaded
+	default:
+		if token == "" {
+			generated, err := randomToken()
+			if err != nil {
+				return nil, err
+			}
+			token = generated
+		}
+		if len(token) < 16 || len(token) > 256 || strings.ContainsAny(token, "\r\n\x00") {
+			return nil, fmt.Errorf("console token must contain 16 to 256 bytes without control characters")
+		}
+		registry = newSingleTokenRegistry(token)
 	}
 	snapshot, err := project.Open(ctx, opts.SnapshotDir, opts.SnapshotHash)
 	if err != nil {
@@ -112,7 +132,16 @@ func New(ctx context.Context, opts Options) (*Console, error) {
 	if version == "" {
 		version = Product
 	}
-	return &Console{snapshot: snapshot, advisoryPath: opts.AdvisoryPath, token: token, version: version, startedAt: time.Now().UTC()}, nil
+	console := &Console{snapshot: snapshot, advisoryPath: opts.AdvisoryPath, tokens: registry, singleToken: token, version: version, startedAt: time.Now().UTC()}
+	if opts.AccessLog != "" {
+		logger, err := newAccessLogger(opts.AccessLog)
+		if err != nil {
+			_ = snapshot.Close()
+			return nil, err
+		}
+		console.accessLog = logger
+	}
+	return console, nil
 }
 
 func randomToken() (string, error) {
@@ -123,13 +152,27 @@ func randomToken() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-// Token returns the access token so the CLI can print it once.
-func (c *Console) Token() string { return c.token }
+// Token returns the legacy single-mode access token so the CLI can print it
+// once; multi-user token files never expose a plaintext here.
+func (c *Console) Token() string { return c.singleToken }
+
+// TokenIDs returns the sorted identities currently loaded from the token
+// registry.
+func (c *Console) TokenIDs() []string { return c.tokens.TokenIDs() }
+
+// MultiToken reports whether the console was started from a token file.
+func (c *Console) MultiToken() bool { return c.tokens.source != "" }
 
 // SnapshotHash returns the pinned snapshot digest.
 func (c *Console) SnapshotHash() string { return c.snapshot.Hash() }
 
-func (c *Console) Close() error { return c.snapshot.Close() }
+func (c *Console) Close() error {
+	err := c.snapshot.Close()
+	if logErr := c.accessLog.Close(); logErr != nil && err == nil {
+		err = logErr
+	}
+	return err
+}
 
 // analyze runs SCA, the endpoint inventory, bounded dataflow and the unified
 // evidence model once, then serves every page from the cached report. A failed
@@ -182,6 +225,7 @@ func (c *Console) Handler() http.Handler {
 	mux.HandleFunc("GET /api/search", c.handleSearch)
 	mux.HandleFunc("GET /api/sbom", c.handleSBOM)
 	mux.HandleFunc("GET /api/report", c.handleReport)
+	mux.HandleFunc("GET /export/report", c.handleExportReport)
 	return c.middleware(mux)
 }
 
@@ -193,38 +237,49 @@ func (c *Console) middleware(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		var entry TokenEntry
+		gated := auditPath(r.URL.Path)
+		if gated {
 			h.Set("Cache-Control", "no-store")
 			if r.URL.Path != "/api/session" {
-				if err := c.authorize(r); err != nil {
+				resolved, err := c.authorize(r)
+				if err != nil {
+					c.accessLog.record(entry, r, http.StatusUnauthorized)
 					writeError(w, http.StatusUnauthorized, "unauthorized", "a valid console token is required")
 					return
 				}
+				entry = resolved
 			}
 			if r.Header.Get(RequestHeader) != "console" {
+				c.accessLog.record(entry, r, http.StatusForbidden)
 				writeError(w, http.StatusForbidden, "missing_console_header", "API requests require the console request header")
 				return
 			}
 			if r.Method != http.MethodGet && r.Method != http.MethodPost {
+				c.accessLog.record(entry, r, http.StatusMethodNotAllowed)
 				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "read-only console")
 				return
 			}
 		}
-		next.ServeHTTP(w, r)
+		recorder := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		if gated {
+			c.accessLog.record(entry, r, recorder.recorded())
+		}
 	})
 }
 
-func (c *Console) authorize(r *http.Request) error {
+func (c *Console) authorize(r *http.Request) (TokenEntry, error) {
 	token := r.Header.Get(TokenHeader)
 	if token == "" {
 		if cookie, err := r.Cookie(SessionCookie); err == nil {
 			token = cookie.Value
 		}
 	}
-	if subtle.ConstantTimeCompare([]byte(token), []byte(c.token)) != 1 {
-		return ErrUnauthorized
+	if entry, ok := c.tokens.lookup(token); ok {
+		return entry, nil
 	}
-	return nil
+	return TokenEntry{}, ErrUnauthorized
 }
 
 func (c *Console) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -278,7 +333,7 @@ type sessionRequest struct {
 	Token string `json:"token"`
 }
 
-// handleSession exchanges the printed token for an HttpOnly, SameSite=Strict
+// handleSession exchanges a valid token for an HttpOnly, SameSite=Strict
 // session cookie. Cross-origin pages cannot set the console request header, so
 // they cannot brute-force this exchange from a browser.
 func (c *Console) handleSession(w http.ResponseWriter, r *http.Request) {
@@ -295,11 +350,11 @@ func (c *Console) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "trailing session payload")
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(request.Token), []byte(c.token)) != 1 {
+	if _, ok := c.tokens.lookup(request.Token); !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "access token rejected")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: SessionCookie, Value: c.token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 8 * 60 * 60})
+	http.SetCookie(w, &http.Cookie{Name: SessionCookie, Value: request.Token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 8 * 60 * 60})
 	w.WriteHeader(http.StatusNoContent)
 }
 

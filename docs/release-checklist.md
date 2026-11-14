@@ -94,7 +94,8 @@ python scripts/benchmark.py 3
 | 本地制品哈希与来源核对 | `python scripts/test-artifact-hash.py` | 通过：fixture 本地仓库 jar/pom SHA-256 与字节命中；调用者清单 exact/mismatch/catalog-only 三态；空仓库 `unavailable`；非法清单/不存在仓库失败关闭；SBOM 同一组 observed 哈希；快照与仓库字节不变 |
 | 依赖到入口有界可达性 | `python scripts/test-reachability.py` | 通过：`java-reachability` 三模块 3 入口，`reachable` 路径 2 步且带 SHA-256/行号，仅声明未引用 `unreachable`，`Class.forName` 为 `unknown/reflection_not_resolved`；findings 假设 `supported/unsupported/unverified`；无 package map 全部 unknown |
 | 受限 Java 语义模型 | `python scripts/test-java-ast.py` | 通过：`java-ast-model` 5 文件（1 个语法错误单独拒绝）；嵌套类、泛型擦除重载、唯一实现接口分派、双实现歧义分派、注解常量/数组/枚举折叠、确定性、fixture 字节不变 |
-| 离线全量门禁 | `powershell -File scripts/verify-offline.ps1` | 通过（Go 测试/vet + 13 个离线 CLI 验收脚本） |
+| Web 控制台多用户与审计 | `go test ./internal/webui ./cmd/trident` + `python scripts/test-web.py`（第二阶段） | 通过：`--tokens` JSON `[{id,role,token_hash}]` 仅存 SHA-256 并 mtime 热重载（轮换/撤销下一请求生效）；`--access-log` JSONL 记录 time/token_id/method/path/status 且不含令牌明文；`/export/report` 两次跨用户字节一致、无外部 URL/时间戳；TLS 反代说明未经真实域名/证书联调 |
+| 离线全量门禁 | `powershell -File scripts/verify-offline.ps1` | 通过（Go 测试/vet + 14 个离线 CLI 验收脚本） |
 | CI 工作流模板 | `.github/workflows/ci.yml` | 已提供并在本地核对 YAML/命令；未在 GitHub runner 实际执行 |
 | 部署/备份/升级文档 | `docs/deployment.md` | 已提供构建、迁移、备份恢复、凭据分权与版本矩阵；生产恢复演练仍待完成 |
 | 最小权限角色与迁移/运行分权 | `python scripts/test-db-governance.py` | 通过：一次性 PostgreSQL 18 容器；`migrate` 幂等、runtime/readonly 可 `check`、runtime 建表/建角色与 readonly 写入被拒绝、新表默认权限生效、`bootstrap` 与 `demo-offline` 在 runtime 账号下完成写入；未在独立生产库执行 |
