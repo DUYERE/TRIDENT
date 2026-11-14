@@ -79,7 +79,7 @@ Web 控制台依赖页提供“导出 SBOM”，对应 `GET /api/sbom`。契约�
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit endpoints --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH"
 ```
 
-契约见 [入口清单契约](docs/audit-contract.md)；真实 CLI 验收为 `python scripts/test-audit.py`。
+契约见 [入口清单契约](docs/audit-contract.md)；真实 CLI 验收为 `python scripts/test-audit.py`。可选 `--cache-dir <dir>`（必须在快照之外）复用单文件端点派生索引，输出 `coverage.cache=not_used|miss|hit|partial`，缓存只含路径/方法/注解/行号等元数据、不含源码；契约见 [派生索引缓存契约](docs/cache-contract.md)，验收为 `python scripts/test-cache.py`。
 
 ## R4 权限/越权控制清单
 
@@ -300,6 +300,7 @@ docker compose --project-directory 'E:/pentest agent/TRIDENT' -f 'E:/pentest age
 | `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`dataflow.go`、`findings.go`、`reach.go`、`java_model.go`、`web.go`、`patch.go`、`runtime.go`、`agent.go` | version / project / sca / audit / web / patch / runtime / agent / migrate / check / bootstrap / demo-offline |
 | `internal/sca/` | 离线 Maven/Gradle 声明解析、属性/父 POM/依赖管理、公告精确/区间/别名匹配与模块树；Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准） |
 | `internal/audit/`、`internal/authz/`、`internal/dataflow/` | Spring MVC/JAX-RS/Servlet 注解级入口清单；权限/越权控制清单；10 类 Source/Sink 有界数据流 |
+| `internal/cache/` | 按文件 SHA-256 + 工具版本缓存的派生索引（仅端点元数据，不含源码） |
 | `internal/httpverify/` | 显式 origin 授权的运行时 HTTP 断言、cookie session、角色矩阵/CSRF 与有界证据 |
 | `internal/correlate/` | 静态 findings 与运行时报告的只读 route/method 关联（`correlated`/`ambiguous`/`not_correlated`） |
 | `internal/findings/`、`internal/sarif/`、`internal/reach/`、`internal/javaast/` | 统一 finding/假设/证据模型；SARIF 2.1.0；类级有界入口可达性；受限 Java 语义模型与方法级调用图 |

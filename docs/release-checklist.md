@@ -82,6 +82,7 @@ python scripts/benchmark.py 3
 | 真实项目 AI 补丁 | `patch repair` + `patch verify`（`D:\Code\Java\market`，2026-11-14） | 通过（编译级）：`deepseek-v4-pro` 访问控制补丁，`maven-compile` 通过，quality 80/B；无测试、无运行时验证 |
 | 真实项目集中式访问控制补丁 | `patch verify --profile maven-test`（2026-11-14） | 通过：LoginInterceptor 全量拦截 manager/staff 路由，4 个 JUnit 测试通过，offline `mvn test` 退出 0，quality 75/B，快照完整 |
 | 补丁回滚、模块与 Gradle 验证 profile | `go test ./internal/r3` + `python scripts/test-patch.py` | 通过：失败/通过报告含 `rollback` 原始哈希与 `rubric_version`；`--module .` 逐模块结果；越界模块拒绝；`gradle-test` 以 PATH 桩工具链验证命令、退出码与 JUnit XML（真实 Gradle 未验证） |
+| 派生索引缓存与性能门槛 | `go test ./internal/cache` + `python scripts/test-cache.py` + `python scripts/benchmark.py --baseline` | 通过：冷 `miss`/热 `hit`/损坏 `partial`、单文件变更局部重建；缓存仅 JSON 且无源码；缓存与快照重叠拒绝；相对中位数倍数门槛通过 |
 | 真实 Tomcat/MySQL HTTP 权限 | Tomcat 9.0.106 + MySQL 8.0.46 容器（2026-11-14） | 通过：未登录 manager/staff 业务端点均 302 到各自登录页，登录后放行；跨会话拒绝；错误密码不建立会话 |
 | 硬件 VM/系统调用隔离 | — | 未实现；gVisor 是用户态内核 |
 | Maven 有效依赖树（离线） | `python scripts/test-resolve.py` | 通过（3 模块/31 依赖/25 传递） |
@@ -111,6 +112,7 @@ python scripts/benchmark.py 3
 - `runtime http` 的 `runtime_status=observed` 只覆盖调用者声明的请求与断言，不是漏洞利用或生产安全证明，也不自动回写 finding。
 - `runtime correlate` 仅按注解级 route/method 字面量匹配；不解析 context path、部署前缀、路径变量或归一化，`correlated` 不证明参数可控、控制缺失或可利用。
 - `rollback` 只提供原始文件哈希与人工回退说明，不执行回滚命令；`gradle-test` profile 的桩工具链验收只证明命令构造与报告解析，不证明真实 Gradle 构建。
+- `audit endpoints --cache-dir` 只缓存端点派生索引，不存源码；缓存不改变分析结论，也不代表大型仓库的实际加速比。
 - gVisor 需要 Docker 注册 `runsc`；Docker 不是硬件 VM。
 
 ## 6. 发布门槛

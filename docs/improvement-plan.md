@@ -16,8 +16,9 @@
 > （`runtime correlate` 三态关联、只读输入、独立报告）已实现并通过 `go test ./internal/correlate` 与
 > `scripts/test-runtime.py` 验收；P1-3 回滚计划、质量评分版本、多模块选择与 `gradle-test` 验证 profile
 > 已实现并通过 `go test ./internal/r3` 与 `scripts/test-patch.py` 验收（Gradle 使用桩工具链，真实 Gradle
-> 构建未验证）。
-> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六。其余项仍为计划。
+> 构建未验证）；P1-4 派生索引缓存与相对基线性能门槛已实现并通过 `go test ./internal/cache`、
+> `scripts/test-cache.py` 与 `scripts/benchmark.py --baseline` 验收。
+> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六、续十七。其余项仍为计划。
 
 ## 1. 原则与约束
 
@@ -204,16 +205,26 @@
 
 ### P1-4 扫描性能与增量
 
+- **状态**：已实现（`internal/cache` + `audit endpoints --cache-dir`）。
 - **目标**：让中型仓库可重复使用缓存，并给出性能回归门槛。
 - **实现要点**：
   - 分析缓存键：文件 SHA-256 + 工具版本 + 参数；缓存只存派生索引（符号表/入口/控制清单），
     不存源码或密钥。
   - 快照未变化时复用索引；变化文件做局部重建，输出 `cache=hit|partial|miss`。
   - `scripts/benchmark.py` 增加断言阈值（相对基线倍数，而非绝对时间），防止性能回退。
+- **实现结果**：
+  - 新增 `internal/cache`：键为 `SHA-256(tool_version, kind, file_sha256)`，JSON 条目带
+    `schema_version/kind/key/tool_version` 校验，损坏条目视为 miss 并在解析后原子覆盖写入。
+  - `audit endpoints --cache-dir <dir>` 只缓存单文件端点元数据（路径、方法、注解、参数、行号、文件 SHA），
+    不存源码；`coverage.cache` 输出 `not_used|miss|hit|partial`，并附命中/未命中/损坏计数。
+    缓存与快照任一方向重叠、缓存路径为文件均失败关闭。
+  - `scripts/benchmark.py` 新增 `--baseline <json>` 与 `--max-ratio <n>`，按相对中位数断言；
+    新增 `audit endpoints cached` 场景。
 - **验收标准**：
-  - `scripts/test-cache.py`：命中/失效/损坏缓存三种结果；缓存目录不得包含源码。
-  - 契约更新 `docs/snapshot-contract.md` 或新增 `docs/cache-contract.md`。
-- **非目标**：不做分布式缓存、不做跨机器共享。
+  - `scripts/test-cache.py`：命中/失效/损坏缓存三种结果；缓存目录不含源码；快照字节不变（已通过）。
+  - `python scripts/benchmark.py 3 --baseline <baseline.json> --max-ratio 4`：相对基线通过（已运行）。
+  - 契约新增 `docs/cache-contract.md`（已完成）。
+- **非目标**：不做分布式缓存、不做跨机器共享、不缓存源码或完整分析报告。
 
 ### P2-1 CI 与发布流水线落地
 

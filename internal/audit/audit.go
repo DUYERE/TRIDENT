@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"trident/internal/cache"
 	"trident/internal/project"
 )
 
@@ -102,12 +103,26 @@ type Coverage struct {
 	JavaAST              string `json:"java_ast"`
 	TaintAnalysis        string `json:"taint_analysis"`
 	RuntimeStatus        string `json:"runtime_status"`
+	Cache                string `json:"cache"`
+	CacheFilesHit        int    `json:"cache_files_hit,omitempty"`
+	CacheFilesMiss       int    `json:"cache_files_miss,omitempty"`
+	CacheCorrupt         int    `json:"cache_corrupt,omitempty"`
 }
 
 // Inspect parses every snapshot .java file and reports only recognized Spring
 // MVC controller mappings. Snapshot integrity errors abort; individual
 // unsupported files are reported as partial coverage.
 func Inspect(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
+	return inspect(ctx, snapshot, nil)
+}
+
+// InspectCached reuses per-file derived endpoint indexes. The cache stores only
+// paths, hashes, line numbers, annotations and parameters — never source text.
+func InspectCached(ctx context.Context, snapshot *project.Snapshot, store *cache.Store) (Report, error) {
+	return inspect(ctx, snapshot, store)
+}
+
+func inspect(ctx context.Context, snapshot *project.Snapshot, store *cache.Store) (Report, error) {
 	if snapshot == nil || snapshot.Hash() == "" {
 		return Report{}, fmt.Errorf("%w: pinned snapshot required", ErrLimit)
 	}
@@ -118,7 +133,7 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 		AnalysisKind:  "http_annotation_inventory",
 		Controllers:   []Controller{},
 		Endpoints:     []Endpoint{},
-		Coverage:      Coverage{JavaAST: "not_available", TaintAnalysis: "not_run", RuntimeStatus: "not_run"},
+		Coverage:      Coverage{JavaAST: "not_available", TaintAnalysis: "not_run", RuntimeStatus: "not_run", Cache: "not_used"},
 		Limitations: []string{
 			"lexical_annotation_inventory_not_ast: no JavaParser, type resolution, meta-annotations, interface inheritance or framework configuration analysis",
 			"http_framework_annotations_only: Spring MVC, JAX-RS (@Path/@GET family) and @WebServlet doGet/doPost-style methods are recognized; web.xml, Servlet 3 registration APIs, WebFlux and custom routers are not",
@@ -143,25 +158,55 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 	}
 	if len(javaFiles) == 0 {
 		report.Limitations = append(report.Limitations, "no_java_source_found")
+		if store != nil {
+			report.Coverage.Cache = "miss"
+			report.Limitations = append(report.Limitations, cacheLimitations()...)
+		}
 		sort.Strings(report.Limitations)
 		return report, nil
 	}
 
+	hits, misses, corrupt := 0, 0, 0
 	for _, file := range javaFiles {
 		if err := ctx.Err(); err != nil {
 			return Report{}, err
 		}
-		data, err := snapshot.ReadFile(ctx, file)
-		if err != nil {
-			return Report{}, err
-		}
 		entry := manifestEntry(snapshot, file)
-		parsed, err := parseJavaFile(file, entry.SHA256, data)
-		if err != nil {
-			report.Partial = true
-			report.Coverage.JavaFilesRejected++
-			report.Limitations = append(report.Limitations, "rejected_java:"+file+":"+javaErrorReason(err))
-			continue
+		var parsed parsedJava
+		cached := false
+		cacheKey := ""
+		if store != nil {
+			cacheKey = cache.Key(ToolVersion, "endpoint-inventory-v1", entry.SHA256)
+			hit, cacheErr := store.Get("endpoint-inventory", cacheKey, ToolVersion, &parsed)
+			switch {
+			case cacheErr != nil:
+				corrupt++
+			case hit:
+				cached = true
+				hits++
+			}
+		}
+		if !cached {
+			data, err := snapshot.ReadFile(ctx, file)
+			if err != nil {
+				return Report{}, err
+			}
+			parsed, err = parseJavaFile(file, entry.SHA256, data)
+			if err != nil {
+				if store != nil {
+					misses++
+				}
+				report.Partial = true
+				report.Coverage.JavaFilesRejected++
+				report.Limitations = append(report.Limitations, "rejected_java:"+file+":"+javaErrorReason(err))
+				continue
+			}
+			if store != nil {
+				misses++
+				if putErr := store.Put("endpoint-inventory", cacheKey, ToolVersion, parsed); putErr != nil {
+					report.Limitations = append(report.Limitations, "cache_write_failed")
+				}
+			}
 		}
 		report.Coverage.JavaFilesScanned++
 		report.Controllers = append(report.Controllers, parsed.Controllers...)
@@ -171,6 +216,23 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 	}
 	report.Coverage.ControllersFound = len(report.Controllers)
 	report.Coverage.EndpointsFound = len(report.Endpoints)
+	if store != nil {
+		report.Coverage.CacheFilesHit = hits
+		report.Coverage.CacheFilesMiss = misses
+		report.Coverage.CacheCorrupt = corrupt
+		switch {
+		case hits == len(javaFiles) && corrupt == 0:
+			report.Coverage.Cache = "hit"
+		case hits == 0:
+			report.Coverage.Cache = "miss"
+		default:
+			report.Coverage.Cache = "partial"
+		}
+		report.Limitations = append(report.Limitations, cacheLimitations()...)
+		if corrupt > 0 {
+			report.Limitations = append(report.Limitations, "cache_entry_corrupt_rebuilt")
+		}
+	}
 
 	if len(report.Controllers) == 0 {
 		report.Limitations = append(report.Limitations, "no_spring_mvc_controller_found")
@@ -207,6 +269,13 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 	sort.Strings(report.Limitations)
 	report.Limitations = dedupe(report.Limitations)
 	return report, nil
+}
+
+func cacheLimitations() []string {
+	return []string{
+		"cache_derived_index_only: entries contain endpoint metadata (paths, hashes, line numbers, annotations, parameters), never source text, credentials or secrets",
+		"cache_key_file_sha_tool_version: an entry is reused only when the file SHA-256, tool version and extraction parameters match",
+	}
 }
 
 func manifestEntry(snapshot *project.Snapshot, file string) project.FileEntry {

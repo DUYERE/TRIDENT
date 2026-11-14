@@ -20,7 +20,8 @@ $scripts = @(
     "test-findings.py",
     "test-sbom.py",
     "test-web.py",
-    "test-runtime.py"
+    "test-runtime.py",
+    "test-cache.py"
 )
 foreach ($name in $scripts) {
     python (Join-Path "scripts" $name)

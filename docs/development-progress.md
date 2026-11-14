@@ -1014,6 +1014,14 @@
 - 验收：`go test ./internal/r3` 通过（回滚计划、模块路径逃逸/数量上限、Gradle 构建文件检测）；`python scripts/test-patch.py` 通过（失败/通过报告均含正确 rollback 与 rubric；`--module .` 聚合；越界模块拒绝；`gradle-test` 使用 PATH 桩工具链验证命令、退出码、JUnit 汇总与离线限制）。`scripts/test-upgrade.py` 的 Gradle 依赖升级场景因缺少真实 Gradle/离线缓存未运行。
 - 未验证：真实 Gradle 工具链与缓存、多模块真实构建、回滚命令自动化（保持人工，非目标）。
 
+### 2026-11-14 续十七：P1-4 派生索引缓存与性能门槛
+
+- 新增 `internal/cache`：条目键为 `SHA-256(tool_version, kind, file_sha256)`，JSON 信封带 `schema_version/kind/key/tool_version` 校验；缺失条目为 miss，损坏/不匹配条目返回 `ErrCorrupt` 并按 miss 重建；写入使用同目录临时文件 + 原子重命名（`0600`/`0700`），单条目上限 8 MiB。
+- `trident audit endpoints --cache-dir <dir>` 缓存单文件端点派生索引（路径、方法、注解、参数、文件 SHA-256、行号），不存源码/凭据/密钥；`coverage` 新增 `cache=not_used|miss|hit|partial`、`cache_files_hit`、`cache_files_miss`、`cache_corrupt`，并追加 `cache_derived_index_only`、`cache_key_file_sha_tool_version`、`cache_entry_corrupt_rebuilt` 限制。缓存目录与快照任一方向重叠、缓存路径为文件均失败关闭。
+- `scripts/benchmark.py` 新增 `--baseline <json>` 与 `--max-ratio <n>`（默认 3.0），按相对中位数断言性能不回退，并新增 `audit endpoints cached` 场景；重申不访问网络/模型/Maven/Java。
+- 验收：`go test ./internal/cache` 通过（往返、缺失、版本不匹配、损坏、非法键、无源码）；新增 `scripts/test-cache.py` 通过（冷 `miss` → 热 `hit` 且结果与冷一致、输出确定；缓存全为 JSON 且无源码标记；损坏条目 → `partial` + 重建限制且结果不变；修改单文件 → `partial` 且其余结果不变；缓存/快照重叠与文件路径拒绝且快照字节不变）；`python scripts/benchmark.py 3 --baseline <baseline> --max-ratio 4` 通过（相对比较，非绝对阈值）。
+- 未验证：大型仓库的实际加速比、并发进程下的缓存竞争、跨机器缓存共享（非目标）。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。
