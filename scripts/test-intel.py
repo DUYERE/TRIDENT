@@ -98,17 +98,18 @@ def main():
             "dependencies": {"org.apache.commons:commons-text": ["org.apache.commons.text"]},
         }), encoding="utf-8")
         reach = invoke("audit", "reachability", *common, "--package-map", str(package_map))
-        require(reach["coverage"]["imports_parsed"] > 0 and reach["coverage"]["import_reachable"] >= 2,
-                "Import reachability coverage mismatch")
-        matched = [entry for entry in reach["dependencies"]
-                   if entry["dependency"] == "org.apache.commons:commons-text"
-                   and entry["classification"] == "import_reachable"
-                   and entry["matched_imports"]]
-        require(len(matched) >= 2 and all(entry["runtime_status"] == "not_run" for entry in reach["dependencies"]),
-                "Import reachability match mismatch")
+        require(reach["coverage"]["imports_parsed"] > 0 and reach["coverage"]["entrypoints"] > 0
+                and reach["coverage"]["unreachable"] >= 1 and reach["coverage"]["unknown"] >= 1
+                and reach["coverage"]["reachable"] == 0,
+                "Bounded reachability coverage mismatch")
+        states = {entry["module"]: entry["reachability"] for entry in reach["dependencies"]
+                  if entry["dependency"] == "org.apache.commons:commons-text"}
+        require(states.get("jdbc-app") == "unreachable" and states.get("advisory-control") == "unknown"
+                and all(entry["runtime_status"] == "not_run" for entry in reach["dependencies"]),
+                "Bounded reachability state mismatch")
         unmapped = invoke("audit", "reachability", *common)
-        require(unmapped["coverage"]["unverified"] == unmapped["coverage"]["dependencies"],
-                "Dependencies without a package map must stay unverified")
+        require(unmapped["coverage"]["unknown"] == unmapped["coverage"]["dependencies"],
+                "Dependencies without a package map must stay unknown")
 
         tree = invoke("sca", "tree", *common, "--advisories", str(ADVISORY))
         require(len(tree["roots"]) == 1 and tree["roots"][0]["pom"] == "pom.xml"
@@ -182,10 +183,10 @@ def main():
         print(json.dumps({
             "result": "passed", "snapshot_hash": snapshot_hash, "gradle_hash": gradle_hash,
             "sarif_results": len(sarif["runs"][0]["results"]),
-            "reachability_matches": reach["coverage"]["import_reachable"],
+            "reachability_matches": reach["coverage"]["reachable"] + reach["coverage"]["unreachable"],
             "tree_modules": tree["coverage"]["modules"], "gradle_dependencies": gradle["coverage"]["dependencies_declared"],
             "checks": ["real_cli", "no_database", "no_model", "no_java_execution", "sarif_2_1_0",
-                       "sarif_runtime_not_run", "import_reachability", "unmapped_unverified",
+                       "sarif_runtime_not_run", "bounded_reachability", "unmapped_unknown",
                        "module_tree", "advisory_range", "advisory_alias", "range_excluded",
                        "gradle_declarations", "gradle_tree", "wrong_hash_rejected", "unsafe_map_rejected",
                        "snapshot_unchanged", "fixtures_unchanged"],

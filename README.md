@@ -6,7 +6,7 @@
 
 **当前开发基线保留 `0.2.0-p0.2` 离线治理，已新增 R0 样本、R1 快照/四项只读工具、统一 Agent Core/持久 Run/OpenAI 兼容协议适配，R2 离线 Maven/Gradle 声明、公告区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类 Source/Sink 静态证据、统一 Finding/Hypothesis 证据模型、SARIF/import 可达性、只读 Web 分析控制台、九个 Agent 只读工具和 CycloneDX SBOM，以及 R3 补丁生成、策略约束、隔离验证（JUnit XML/JaCoCo/多测试类）、质量评分、多轮修复、Docker/gVisor 沙箱。已完成获准的真实模型只读闭环（DeepSeek `deepseek-flash` Run 43、`deepseek-v4-pro` Run 46、真实 `CodeScan-Artex-main` 快照 Run 48）与真实模型补丁生成 + Maven/Docker 验证；其他模型/快照仍需逐次授权。Maven/Gradle 在线有效依赖树、完整 Java AST/污点分析、硬件 VM 隔离、真实项目 AI 补丁与更多生产验证未实现；这不是完整 R1—R6，也不是 MVP。实际验证与限制以进度记录为准。**
 
-**开发交接入口：[当前进度与维护记录](docs/development-progress.md)。** 每个切片在该文档记录已实现/已验证/待完成、准确测试结果和下一步，运行时状态不以 Markdown 作为权威源。
+**开发交接入口：[当前进度与维护记录](docs/development-progress.md)。** 每个切片在该文档记录已实现/已验证/待完成、准确测试结果和下一步，运行时状态不以 Markdown 作为权威源。剩余功能、验收标准与里程碑见 [剩余功能改进计划](docs/improvement-plan.md)。
 
 ## 新开发主线
 

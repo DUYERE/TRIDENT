@@ -11,10 +11,10 @@
 | R1 快照与四项只读工具 | 已实现并完成本地验收 | `snapshot-contract.md`、`internal/project/` |
 | R1 Core、Run、OpenAI 适配 | 已实现并完成本地协议验收与两次真实模型只读闭环；DeepSeek `reasoning_content`/Schema 数值兼容、48 KiB 检查点确定性压缩、按工具类型的保留策略与有界结果摘要已实现 | `agent-contract.md`；下方 2026-11-12 与 2026-11-13 记录 |
 | R1 真实模型自主工具闭环 | 已完成获准验收：DeepSeek `deepseek-flash` Run 43、`deepseek-v4-pro` Run 46，均仅合成样本且 `completed`；其他模型/快照需逐次授权 | `agent-contract.md` §6.1；下方 2026-11-13 记录 |
-| R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准）、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0 与 import 可达性已实现并验收；完整 AST/污点/制品哈希/依赖到入口可达性未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/` |
+| R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准）、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0、本地制品 SHA-256/调用者哈希清单与类级有界入口可达性已实现并验收；完整 AST/跨方法污点未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/` |
 | R2 只读 Web 分析控制台 | 已实现并完成本地验收；单快照、loopback、令牌鉴权、只读 JSON API 与嵌入前端；不改变分析语义，不提供 Agent 控制 API | `web-console-contract.md`、`internal/webui/`、`cmd/trident/web.go` |
 | R2 Agent 分析工具 | 已实现并完成本地验收与真实模型/真实项目使用；5 个分析工具、分析缓存、Run 公告配置、实际读取行引用与证据账本桥接 | `agent-contract.md`、`internal/tools/analysis.go`、`internal/agent/` |
-| R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射；无传递树/制品哈希/可达性 | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
+| R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射、本地观测制品 SHA-256；无传递树，依赖可达性不写入 SBOM | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
 | R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/maven-compile/maven-test/javac/JUnit、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；支持新文件/BOM/多文件补丁；真实 Java/Maven/JUnit、真实模型合成补丁、真实项目编译级补丁、集中式访问控制运行时单测与真实 Tomcat/MySQL HTTP 权限测试已完成；运行时 HTTP 验证执行器已实现（显式 origin、cookie session、有界断言）；硬件 VM 与生产验证未实现 | `patch-contract.md`、`runtime-contract.md`、`internal/r3/`、`internal/httpverify/`、`cmd/trident/patch.go`、`cmd/trident/runtime.go`、`docs/evidence/2026-11-14-market-access-control.patch` |
 
 ## 2026-11-12：已完成快照切片（上轮基线）
@@ -955,6 +955,16 @@
 - 应用路径：`bootstrap` 与 `demo-offline` 使用 runtime 账号完成真实写入（`principals` ≥ 2），证明最小权限角色足以支撑现有应用 DML。
 - 备份恢复：容器内 `pg_dump --format=custom` → 新建 `trident_drill_restore` → `pg_restore` → `trident check` 通过；`principals`、`tasks`、`tool_calls`、`approvals`、`schema_migrations` 行数与源库一致。
 - 限制：演练库是本机一次性容器，不等于生产环境；未覆盖生产数据量、备份窗口、异地存储、恢复时限、密钥管理和审计审批。CI runner 实际执行与硬件 VM 隔离仍未验证。
+
+### 2026-11-14 续十一：M1 证据可信度（制品哈希与有界可达性）
+
+- 新增 `internal/sca/artifacts.go` 与 `sca inspect --maven-repo/--gradle-user-home/--hash-catalog`：对已解析 GAV 在调用者显式本地仓库/缓存中计算 jar/pom SHA-256 与字节数；输出 `artifacts[]`、`coverage.artifact_hashes=observed|partial|unavailable`、`artifact_hash_local_only`、`artifact_signature_not_verified`。不下载、不验证签名、不推断默认仓库。
+- 哈希清单严格 JSON（≤128 KiB、≤4096 项、64 hex、键唯一），支持 exact match、mismatch 与 catalog-only；mismatch 只写 `artifact_hash_mismatch:<g:a:v:kind>` 证据，不升级漏洞结论。SBOM 组件新增 `hashes[]`（仅本地 observed SHA-256）与 `trident:artifact_hashes` 属性。
+- 重写 `internal/reach` 为类级有界调用图：package/import/首个类型声明/同包类型引用/反射标记；从 `audit.Inspect` 入口做深度 ≤8、节点 ≤4000、边 ≤20000 的 BFS；输出 `reachable|unreachable|unknown`、入口与每一步的文件 SHA-256/行号、命中 import、模块作用域与 reason。
+- `audit findings --package-map` / `audit sarif --package-map`：依赖假设 `dependency_reachable_from_http_entrypoint` 映射为 `supported/unsupported/unverified`；`reachable` 仅静态调用证据，`findings` 仍 `inconclusive`、`runtime_status=not_run`，不回写运行时结果。
+- 新增 fixture `tests/fixtures/java-artifact-hash`、`tests/fixtures/java-reachability`，以及 `scripts/test-artifact-hash.py`、`scripts/test-reachability.py`；加入 `scripts/verify-offline.ps1`。
+- 验收结果：`go test ./...` 通过；`python scripts/test-artifact-hash.py` 通过（本地命中/清单 exact/mismatch/catalog-only/空仓库/SBOM/确定性）；`python scripts/test-reachability.py` 通过（三态、2 步路径与 SHA-256/行号、findings unsupported/unverified、无映射全 unknown）；`test-sca.py`、`test-sbom.py`、`test-intel.py`、`test-findings.py` 均通过，快照与 fixture 字节不变。
+- 限制：制品哈希不证明来源；可达性不解析字节码、方法重载/继承/接口分派、AOP、异步、动态代理或网关；`unreachable` 是有界静态图结论，不是运行时不可能性证明。
 
 ## 维护规则
 

@@ -109,8 +109,8 @@ Finding ID：
 
 - 身份：`schema_version=1`、`tool_version`、`snapshot_hash`、`analysis_kind=unified_finding_evidence_v1`、`partial`。
 - `findings[]`：上述字段与假设。
-- `coverage`：finding/hypothesis 状态计数；SCA 依赖与 candidate/unknown/not_affected 计数；入口数；数据流 finding 数；权限控制数、`authz_unprotected` 与权限 finding 数；`java_ast=not_available`、`sca_resolution=declaration_only`、`taint_analysis=bounded_lexical_multi_category`、`runtime_status=not_run`、`dependency_reachability=unverified`。
-- `limitations[]`：固定包含 `static_runtime_separation`、`sca_declaration_only`、`advisory_exact_version_only`、`dependency_reachability_unverified`、`endpoint_inventory_annotation_only`、`dataflow_bounded_lexical`、`authz_control_inventory_lexical`、`authz_unprotected_is_inconclusive`、`absence_is_not_safety`、`correlation_not_exploitation`；子分析 partial 时追加 `sca_report_partial` / `endpoint_inventory_partial` / `dataflow_report_partial` / `authz_report_partial`。
+- `coverage`：finding/hypothesis 状态计数；SCA 依赖与 candidate/unknown/not_affected 计数；入口数；数据流 finding 数；权限控制数、`authz_unprotected` 与权限 finding 数；`java_ast=not_available`、`sca_resolution=declaration_only`、`taint_analysis=bounded_lexical_multi_category`、`runtime_status=not_run`、`dependency_reachability=unverified|bounded_entry_call_graph`。
+- `limitations[]`：无 `--package-map` 时包含 `dependency_reachability_unverified`；提供时改为 `reachability_bounded_call_graph` 与 `reflection_not_resolved`，并固定包含 `static_runtime_separation`、`sca_declaration_only`、`advisory_exact_version_only`、`endpoint_inventory_annotation_only`、`dataflow_bounded_lexical`、`authz_control_inventory_lexical`、`authz_unprotected_is_inconclusive`、`absence_is_not_safety`、`correlation_not_exploitation`；子分析 partial 时追加 `sca_report_partial` / `endpoint_inventory_partial` / `dataflow_report_partial` / `authz_report_partial` / `reachability_report_partial`。
 - 参数、快照或完整性错误返回非零且不输出成功 JSON。
 
 ## 7. 验收
@@ -133,5 +133,15 @@ Finding ID：
 ## 2026-11-13 扩展：SARIF 与 import 可达性
 
 - `audit sarif` 将同一份 findings 报告转换为确定性 SARIF 2.1.0；rule ID 为 `trident/<kind>`，`static_confirmed`→`warning`、`inconclusive`→`note`、`refuted`→`none`；结果和 run 属性都保留 `runtime_status=not_run`。SARIF 不是新的分析结论。
-- `audit reachability` 使用显式 `--package-map` 将声明依赖映射到 Java import；`import_reachable` 仅表示观察到匹配 import，`import_not_observed` 仅表示本快照未见 import，`unverified` 表示缺少映射。三者都不证明类加载、调用路径或运行时利用。
+- `audit reachability` 使用显式 `--package-map` 在类级 import/同包类型引用图上做有界 BFS；`reachable` 表示找到入口→中间类→依赖 import 的路径，`unreachable` 仅表示本快照有界图中无路径，`unknown` 表示缺少映射、模块无入口、版本未解析、反射或图超限。三者都不证明类加载或运行时利用，`runtime_status` 保持 `not_run`。
 - 数据流新增 `upload` 类别（CWE-434）与框架 SQL/SSRF sink；finding kind 为 `unrestricted_upload`，仍遵守 `runtime_status=not_run` 与 `inconclusive` 不等于安全的规则。
+
+## 2026-11-14 扩展：findings 与有界可达性
+
+- `audit findings --package-map <file>` 复用 `audit reachability` 的类级有界图；`coverage.dependency_reachability=bounded_entry_call_graph`，同时保留 `sca_declaration_only` 与运行时不证明限制。
+- 依赖 finding 的 `dependency_reachable_from_http_entrypoint` 假设：
+  - `supported`：`reachable`；证据引用入口/中间类的 `reachability_step`（文件 SHA-256 + 行号）与命中的 `dependency_import`。
+  - `unsupported`：`unreachable`；证据为一条 `reachability_scan`，说明有界图中无路径；不生成路径证据。
+  - `unverified`：`unknown` 或未提供 `--package-map`；原因为具体 reason（如 `package_mapping_missing`、`reflection_not_resolved`）。
+- 不改变 finding `status`（仍为 `inconclusive`）与 `runtime_status=not_run`；`reachable` 只是静态调用证据，不是可攻击性结论。原始 finding JSON 不回写运行时结果。
+- 验收：`python scripts/test-reachability.py` 断言 `java-maven` 的 commons-text 声明在 `jdbc-app` 内为 `unsupported`，无 package map 时为 `unverified`；`python scripts/test-findings.py` 的原有断言不变。

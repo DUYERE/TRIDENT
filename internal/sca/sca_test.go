@@ -153,7 +153,7 @@ func TestInspectFixtureDeclarationsAndExactAdvisoryCases(t *testing.T) {
 	if notAffected.VersionStatus != "not_affected" || notAffected.SupplyChainStatus != "not_affected" || notAffected.FindingStatus != "none" || !strings.Contains(notAffected.AssessmentScope, "CVE-2022-42889") {
 		t.Fatalf("control match: %+v", notAffected)
 	}
-	if report.Coverage.MavenExecuted || report.Coverage.TransitiveTree != "not_available" || report.Coverage.ArtifactHashes != "not_available" {
+	if report.Coverage.MavenExecuted || report.Coverage.TransitiveTree != "not_available" || report.Coverage.ArtifactHashes != "unavailable" {
 		t.Fatalf("execution coverage overclaimed: %+v", report.Coverage)
 	}
 	if len(report.Advisories) != 1 || report.Advisories[0].AllCVEsChecked {

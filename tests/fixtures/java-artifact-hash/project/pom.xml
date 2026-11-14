@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- [01] Synthetic artifact-hash fixture: one resolved direct dependency. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>example.synthetic.trident</groupId>
+    <artifactId>artifact-hash-fixture</artifactId>
+    <version>1.0.0</version>
+    <dependencies>
+        <!-- [02] Local repository fixture provides both the jar and the pom. -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-text</artifactId>
+            <version>1.9</version>
+        </dependency>
+    </dependencies>
+</project>

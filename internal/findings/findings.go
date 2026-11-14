@@ -22,12 +22,13 @@ import (
 	"trident/internal/authz"
 	"trident/internal/dataflow"
 	"trident/internal/project"
+	"trident/internal/reach"
 	"trident/internal/sca"
 )
 
 const (
 	SchemaVersion = 1
-	ToolVersion   = "0.2.0-p0.2+r4-finding-evidence"
+	ToolVersion   = "0.2.0-p0.2+r4-finding-evidence-v2-reachability"
 
 	MaxFindings = 20_000
 	MaxEvidence = 256
@@ -39,6 +40,9 @@ type Options struct {
 	// AdvisoryPath is an explicit local advisory catalog. Without it the report
 	// still unifies endpoint and dataflow evidence but contains no SCA findings.
 	AdvisoryPath string
+	// PackageMapPath enables the bounded entry call graph. Without it dependency
+	// reachability stays unverified instead of being guessed from imports.
+	PackageMapPath string
 }
 
 type Report struct {
@@ -164,6 +168,14 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 	if err != nil {
 		return Report{}, err
 	}
+	var reachReport *reach.Report
+	if opts.PackageMapPath != "" {
+		produced, err := reach.Inspect(ctx, snapshot, reach.Options{PackageMapPath: opts.PackageMapPath})
+		if err != nil {
+			return Report{}, err
+		}
+		reachReport = &produced
+	}
 
 	report := Report{
 		SchemaVersion: SchemaVersion,
@@ -188,7 +200,6 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 			"static_runtime_separation: finding.status is static evidence only; runtime_status stays not_run until a separate authorized runtime test",
 			"sca_declaration_only: POM declarations and exact advisory version cases; no resolved dependency tree, classpath or artifact hash",
 			"advisory_exact_version_only: ranges, aliases and repository resolution remain outside this slice",
-			"dependency_reachability_unverified: no dependency import graph or request-to-component call path is modeled",
 			"endpoint_inventory_annotation_only: routes are annotation-level, not deployed routes",
 			"dataflow_bounded_lexical: no Java AST, branch sensitivity, alias/points-to or external library implementation; non-SQL sink findings appear only when that sink is observed",
 			"authz_control_inventory_lexical: annotations, XML blocks and common Java config chains are matched textually; filter-chain order, custom AOP and external gateways are not evaluated",
@@ -198,6 +209,26 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 		},
 	}
 	report.Partial = scaReport.Partial || endpoints.Partial || flows.Partial || authzReport.Partial
+	reachability := map[string]reach.Reachability{}
+	if reachReport != nil {
+		report.Coverage.DependencyReachability = "bounded_entry_call_graph"
+		report.Partial = report.Partial || reachReport.Partial
+		report.Limitations = append(report.Limitations,
+			"reachability_bounded_call_graph: imports, same-package type references and bounded breadth-first traversal; no bytecode, framework wiring, AOP, async dispatch or dynamic proxy resolution",
+			"reflection_not_resolved: reflective class loading is unknown, not followed",
+		)
+		if reachReport.Partial {
+			report.Limitations = append(report.Limitations, "reachability_report_partial")
+		}
+		for _, item := range reachReport.Dependencies {
+			key := dependencyKey(item.Module, item.Dependency, item.Version)
+			if _, exists := reachability[key]; !exists {
+				reachability[key] = item
+			}
+		}
+	} else {
+		report.Limitations = append(report.Limitations, "dependency_reachability_unverified: no dependency import graph or request-to-component call path is modeled")
+	}
 	if scaReport.Partial {
 		report.Limitations = append(report.Limitations, "sca_report_partial")
 	}
@@ -242,7 +273,7 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 				report.Limitations = append(report.Limitations, "finding_limit")
 				continue
 			}
-			report.Findings = append(report.Findings, fromAdvisory(match, dependencies, entries, len(endpoints.Endpoints)))
+			report.Findings = append(report.Findings, fromAdvisory(match, dependencies, entries, len(endpoints.Endpoints), reachability))
 		case "none":
 			report.Coverage.ScaNotAffected++
 		default:
@@ -453,7 +484,7 @@ func fromAuthz(item authz.Finding, entries map[string]string) Finding {
 	}
 }
 
-func fromAdvisory(match sca.AdvisoryMatch, dependencies map[string]sca.Dependency, entries map[string]string, endpoints int) Finding {
+func fromAdvisory(match sca.AdvisoryMatch, dependencies map[string]sca.Dependency, entries map[string]string, endpoints int, reachability map[string]reach.Reachability) Finding {
 	dependency := dependencies[dependencyKey(match.Module, match.Dependency, match.DeclaredVersion)]
 	set := &evidenceSet{seen: map[string]string{}}
 	pomIDs := []string{}
@@ -486,7 +517,49 @@ func fromAdvisory(match sca.AdvisoryMatch, dependencies map[string]sca.Dependenc
 	limitations := []string{
 		"declaration_level_only: POM declaration and exact version case; no resolved dependency tree or runtime classpath",
 		"runtime_exploitation_not_verified: advisory version presence does not establish a vulnerable callsite",
-		"dependency_reachability_unverified: no import graph or request-to-component call path",
+	}
+	reachExplanation := fmt.Sprintf("no_dependency_import_or_call_graph; %d inventoried endpoints are context only", endpoints)
+	reachStatus := "unverified"
+	reachEvidence := []string{}
+	reach, hasReach := reachability[dependencyKey(match.Module, match.Dependency, match.DeclaredVersion)]
+	if hasReach {
+		limitations = append(limitations, "reachability_bounded_call_graph: static entry-to-import path only; no runtime class loading, framework wiring or reflection")
+		switch reach.Reachability {
+		case "reachable":
+			reachStatus = "supported"
+			reachExplanation = "bounded_entry_call_graph"
+			for _, item := range reach.Paths {
+				for _, step := range item.Steps {
+					if evidenceID := set.add(Evidence{
+						Kind: "reachability_step", File: step.File, SHA256: step.SHA256,
+						StartLine: step.Line, EndLine: step.Line,
+						Detail: step.Class + " " + step.Relation, Origin: "reach", OriginRef: item.Entry.Symbol,
+					}); evidenceID != "" {
+						reachEvidence = append(reachEvidence, evidenceID)
+					}
+				}
+				if evidenceID := set.add(Evidence{
+					Kind: "dependency_import", File: item.Import.File, SHA256: entries[item.Import.File],
+					StartLine: item.Import.Line, EndLine: item.Import.Line,
+					Detail: item.Import.Import, Origin: "reach", OriginRef: item.Entry.Symbol,
+				}); evidenceID != "" {
+					reachEvidence = append(reachEvidence, evidenceID)
+				}
+			}
+		case "unreachable":
+			reachStatus = "unsupported"
+			reachExplanation = "no_path_from_entrypoint_in_bounded_call_graph"
+			limitations = append(limitations, "reachability_unreachable_is_bounded: no path in the observed import/type graph; dynamic dispatch, reflection and external wiring stay outside this claim")
+			if evidenceID := set.add(Evidence{
+				Kind: "reachability_scan", Detail: reach.Reason, Origin: "reach", OriginRef: match.Dependency,
+			}); evidenceID != "" {
+				reachEvidence = append(reachEvidence, evidenceID)
+			}
+		default:
+			reachExplanation = "reachability_unknown:" + reach.Reason
+		}
+	} else {
+		limitations = append(limitations, "dependency_reachability_unverified: no import graph or request-to-component call path")
 	}
 	if set.truncated {
 		limitations = append(limitations, "evidence_truncated")
@@ -511,7 +584,10 @@ func fromAdvisory(match sca.AdvisoryMatch, dependencies map[string]sca.Dependenc
 		},
 		Evidence:       set.items,
 		SourceAnalyses: []string{"sca", "audit"},
-		Limitations:    limitations,
+		Limitations:    dedupe(limitations),
+	}
+	if hasReach {
+		finding.SourceAnalyses = append(finding.SourceAnalyses, "reach")
 	}
 	evidenceIDs := append([]string{}, pomIDs...)
 	if advisoryID != "" {
@@ -527,9 +603,10 @@ func fromAdvisory(match sca.AdvisoryMatch, dependencies map[string]sca.Dependenc
 		{
 			ID:               id + ":dependency_reachable_from_http_entrypoint",
 			Statement:        "the vulnerable dependency is reachable from an inventoried HTTP entrypoint",
-			Status:           "unverified",
-			RequiredEvidence: []string{"dependency_import_graph", "request_to_component_call_path"},
-			Reason:           fmt.Sprintf("no_dependency_import_or_call_graph; %d inventoried endpoints are context only", endpoints),
+			Status:           reachStatus,
+			EvidenceIDs:      nonEmpty(reachEvidence),
+			RequiredEvidence: nonEmpty([]string{"dependency_import_graph", "request_to_component_call_path"}),
+			Reason:           reachExplanation,
 		},
 		{
 			ID:               id + ":runtime_exploitation",

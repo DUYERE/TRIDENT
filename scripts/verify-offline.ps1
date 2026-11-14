@@ -10,7 +10,9 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $scripts = @(
     "test-project.py",
     "test-sca.py",
+    "test-artifact-hash.py",
     "test-intel.py",
+    "test-reachability.py",
     "test-audit.py",
     "test-authz.py",
     "test-dataflow.py",

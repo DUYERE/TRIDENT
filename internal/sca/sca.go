@@ -19,7 +19,7 @@ import (
 
 const (
 	SchemaVersion = 1
-	ToolVersion   = "0.2.0-p0.2+r2-sca-declarations-v2"
+	ToolVersion   = "0.2.0-p0.2+r2-sca-declarations-v3-artifact-hash"
 
 	MaxPOMBytes             = 512 << 10
 	MaxPOMCount             = 512
@@ -44,6 +44,13 @@ type Options struct {
 	// AdvisoryPath is an explicit local advisory JSON file supplied by the
 	// caller. Repository content is never treated as an advisory catalog.
 	AdvisoryPath string
+	// MavenRepo and GradleUserHome are explicit local artifact repositories
+	// used only to hash already-present jars/poms. Nothing is downloaded.
+	MavenRepo      string
+	GradleUserHome string
+	// HashCatalogPath is an explicit local SHA-256 catalog. A mismatch is
+	// reported as evidence, never as a vulnerability verdict.
+	HashCatalogPath string
 }
 
 type Report struct {
@@ -55,6 +62,7 @@ type Report struct {
 	Project         Project         `json:"project"`
 	Modules         []Module        `json:"modules"`
 	Dependencies    []Dependency    `json:"dependencies"`
+	Artifacts       []Artifact      `json:"artifacts"`
 	Advisories      []AdvisoryInfo  `json:"advisories"`
 	AdvisoryMatches []AdvisoryMatch `json:"advisory_matches"`
 	Coverage        Coverage        `json:"coverage"`
@@ -165,6 +173,7 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 		Project:       Project{BuildSystem: "unknown", RootPOMs: []string{}, RootGradleFiles: []string{}, ModuleCount: 0},
 		Modules:       []Module{},
 		Dependencies:  []Dependency{},
+		Artifacts:     []Artifact{},
 		Advisories:    []AdvisoryInfo{},
 		Coverage: Coverage{
 			TransitiveTree: "not_available",
@@ -175,7 +184,6 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 		Limitations: []string{
 			"build_tools_not_executed: declarations only; no effective dependency tree, profiles, BOM imports, conflict mediation or repository resolution",
 			"transitive_dependencies_unavailable: only direct declarations are reported",
-			"artifact_hashes_unavailable",
 			"runtime_status_not_run: declared versions do not prove classpath, reachability or exploitability",
 			"source_callsites_not_analyzed: no AST or taint analysis in this slice",
 		},
@@ -196,7 +204,7 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 	report.Project.POMCount = len(pomPaths)
 	report.Project.GradleFileCount = len(gradlePaths)
 	if len(pomPaths) == 0 && len(gradlePaths) == 0 {
-		report.Limitations = append(report.Limitations, "no_maven_pom_found", "no_gradle_build_file_found")
+		report.Limitations = append(report.Limitations, "no_maven_pom_found", "no_gradle_build_file_found", "artifact_hashes_unavailable")
 		sort.Strings(report.Limitations)
 		report.Limitations = dedupe(report.Limitations)
 		return report, nil
@@ -308,6 +316,16 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 			report.Coverage.DependenciesUnresolved++
 		}
 	}
+	artifacts, artifactStatus, artifactLimitations, artifactPartial, err := collectArtifacts(ctx, dependencies, ArtifactOptions{
+		MavenRepo: opts.MavenRepo, GradleUserHome: opts.GradleUserHome, HashCatalogPath: opts.HashCatalogPath,
+	})
+	if err != nil {
+		return Report{}, err
+	}
+	report.Artifacts = artifacts
+	report.Coverage.ArtifactHashes = artifactStatus
+	report.Partial = report.Partial || artifactPartial
+	report.Limitations = append(report.Limitations, artifactLimitations...)
 
 	advisories, err := loadAdvisories(opts.AdvisoryPath)
 	if err != nil {

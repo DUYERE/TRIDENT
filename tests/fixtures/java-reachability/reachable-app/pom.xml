@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- [01] Reachable case: controller calls a service that imports the dependency. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>example.synthetic.trident</groupId>
+    <artifactId>reachable-app</artifactId>
+    <version>1.0.0</version>
+    <dependencies>
+        <dependency>
+            <groupId>org.example</groupId>
+            <artifactId>lib</artifactId>
+            <version>1.0</version>
+        </dependency>
+    </dependencies>
+</project>

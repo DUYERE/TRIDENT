@@ -131,7 +131,7 @@ def main():
                 "Control advisory match mismatch")
         require(report["coverage"]["maven_executed"] is False
                 and report["coverage"]["transitive_tree"] == "not_available"
-                and report["coverage"]["artifact_hashes"] == "not_available"
+                and report["coverage"]["artifact_hashes"] == "unavailable"
                 and report["coverage"]["runtime_status"] == "not_run",
                 "SCA coverage overclaimed execution")
         require(report["advisories"][0]["all_cves_checked"] is False,

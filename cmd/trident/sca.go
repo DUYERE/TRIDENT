@@ -35,10 +35,13 @@ func runSCA(ctx context.Context, args []string, out io.Writer) error {
 	}
 	flags := flag.NewFlagSet("sca "+command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var snapshotDir, expectedHash, advisoryPath string
+	var snapshotDir, expectedHash, advisoryPath, mavenRepo, gradleUserHome, hashCatalog string
 	flags.StringVar(&snapshotDir, "snapshot", "", "existing trusted snapshot directory")
 	flags.StringVar(&expectedHash, "snapshot-hash", "", "trusted SHA-256 returned by import; keep outside snapshot")
 	flags.StringVar(&advisoryPath, "advisories", "", "explicit local advisory JSON file; never read from the snapshot implicitly")
+	flags.StringVar(&mavenRepo, "maven-repo", "", "optional absolute local Maven repository used only to hash existing artifacts")
+	flags.StringVar(&gradleUserHome, "gradle-user-home", "", "optional absolute Gradle user home used only to hash cached artifacts")
+	flags.StringVar(&hashCatalog, "hash-catalog", "", "optional local JSON catalog of expected artifact SHA-256 values")
 	if err := flags.Parse(args[1:]); err != nil {
 		return fmt.Errorf("invalid sca arguments: %w", err)
 	}
@@ -50,7 +53,10 @@ func runSCA(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer snapshot.Close()
-	report, err := sca.Inspect(ctx, snapshot, sca.Options{AdvisoryPath: advisoryPath})
+	report, err := sca.Inspect(ctx, snapshot, sca.Options{
+		AdvisoryPath: advisoryPath, MavenRepo: mavenRepo,
+		GradleUserHome: gradleUserHome, HashCatalogPath: hashCatalog,
+	})
 	if err != nil {
 		return err
 	}

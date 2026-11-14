@@ -88,7 +88,9 @@ python scripts/benchmark.py 3
 | 依赖升级验证 | `python scripts/test-upgrade.py` | 通过：commons-text 1.9→1.10.0，基线测试与升级后测试均通过，快照完整；Gradle 声明仅生成补丁 |
 | 权限/越权控制清单 | `python scripts/test-authz.py` | 通过：5 个控制/11 个入口，6 protected、2 public、2 unprotected、1 unknown；2 条 CWE-306 `inconclusive` finding |
 | 运行时 HTTP 验证自动化 | `python scripts/test-runtime.py` + 真实 Tomcat/MySQL | 通过：loopback 4/4；真实环境 15/15（登录页 200、未登录 302、登录后 200、跨会话 302、错误密码不建会话），`runtime_status=observed` |
-| 离线全量门禁 | `powershell -File scripts/verify-offline.ps1` | 通过（Go 测试/vet + 10 个离线 CLI 验收脚本） |
+| 本地制品哈希与来源核对 | `python scripts/test-artifact-hash.py` | 通过：fixture 本地仓库 jar/pom SHA-256 与字节命中；调用者清单 exact/mismatch/catalog-only 三态；空仓库 `unavailable`；非法清单/不存在仓库失败关闭；SBOM 同一组 observed 哈希；快照与仓库字节不变 |
+| 依赖到入口有界可达性 | `python scripts/test-reachability.py` | 通过：`java-reachability` 三模块 3 入口，`reachable` 路径 2 步且带 SHA-256/行号，仅声明未引用 `unreachable`，`Class.forName` 为 `unknown/reflection_not_resolved`；findings 假设 `supported/unsupported/unverified`；无 package map 全部 unknown |
+| 离线全量门禁 | `powershell -File scripts/verify-offline.ps1` | 通过（Go 测试/vet + 12 个离线 CLI 验收脚本） |
 | CI 工作流模板 | `.github/workflows/ci.yml` | 已提供并在本地核对 YAML/命令；未在 GitHub runner 实际执行 |
 | 部署/备份/升级文档 | `docs/deployment.md` | 已提供构建、迁移、备份恢复、凭据分权与版本矩阵；生产恢复演练仍待完成 |
 | 最小权限角色与迁移/运行分权 | `python scripts/test-db-governance.py` | 通过：一次性 PostgreSQL 18 容器；`migrate` 幂等、runtime/readonly 可 `check`、runtime 建表/建角色与 readonly 写入被拒绝、新表默认权限生效、`bootstrap` 与 `demo-offline` 在 runtime 账号下完成写入；未在独立生产库执行 |
@@ -99,7 +101,8 @@ python scripts/benchmark.py 3
 
 - Windows 11 与 Linux（`openat2`/`statx` Mount ID 5.8+）快照路径语义不同；不支持网络/FUSE/无法安全判断的文件系统。
 - `agent` 检查点 v2；v1 不自动恢复。模型适配只承诺 Chat Completions 子集，不支持所有供应商扩展。
-- 公告区间是调用者声明判据，不是 Maven 版本语义的完整实现；`import_reachable` 不是调用可达性。
+- 公告区间是调用者声明判据，不是 Maven 版本语义的完整实现；`reachable` 是本快照类级有界图的静态证据，`unreachable` 不排除反射、动态代理、框架装配或运行时生成代码。
+- 制品哈希只覆盖调用者显式本地仓库/缓存中已存在的字节；不验证 GPG/签名，不证明来源或未被篡改。
 - Gradle 有效树优先 `runtimeClasspath`、其次 `compileClasspath`，含 `*RuntimeClasspath`/`*CompileClasspath` 后缀回退；不解释 Android variant、version catalog、BOM/platform 或插件脚本副作用。
 - 静态 finding 的 `runtime_status` 恒为 `not_run`；R3 的 `runtime_status=isolated_validation_only`。
 - `runtime http` 的 `runtime_status=observed` 只覆盖调用者声明的请求与断言，不是漏洞利用或生产安全证明，也不自动回写 finding。

@@ -61,8 +61,8 @@
 1. 入口识别新增 JAX-RS `@Path` 类资源、`@GET/@POST/@PUT/@DELETE/@PATCH/@HEAD/@OPTIONS` 方法、`@Path` 方法子路径、`@Produces` 与 `@QueryParam/@PathParam/@FormParam/@HeaderParam/@CookieParam/@MatrixParam/@BeanParam` 参数；`@Path` 类默认 `response_body=true`。
 2. 入口识别新增 `@WebServlet` 类与 `doGet/doPost/doPut/doDelete/doHead/doOptions`；Servlet 参数不绑定 `HttpServletRequest.getParameter`，因此只进入入口清单、不产生请求 source。
 3. `audit sarif` 从统一 findings 导出确定性 SARIF 2.1.0；`static_confirmed=warning`、`inconclusive=note`、`refuted=none`，结果属性与 run 属性始终 `runtime_status=not_run`。
-4. `audit reachability` 解析 Java import，并用显式 `--package-map` 将 `group:artifact` 映射到包前缀；分类只有 `import_reachable/import_not_observed/unverified`。import 命中不是调用可达性，未配置映射时全部 `unverified`。
-5. 新增验收 `python scripts/test-intel.py`：SARIF 2.1.0、3 条结果、import 可达 2 条、无映射全部 unverified、错误哈希与不安全 package map 拒绝；`go test ./internal/audit` 覆盖 JAX-RS/Servlet 入口。
+4. `audit reachability` 用显式 `--package-map` 将 `group:artifact` 映射到包前缀，并在类级 import/同包类型引用图上做有界 BFS；三态 `reachable/unreachable/unknown` 的语义见第 7 节。import 命中本身不是调用证明，未配置映射时全部 `unknown`。
+5. 新增验收 `python scripts/test-intel.py`：SARIF 2.1.0、3 条结果、有界可达性三态计数、无映射全部 unknown、错误哈希与不安全 package map 拒绝；`go test ./internal/audit` 覆盖 JAX-RS/Servlet 入口。
 
 ## 6. 2026-11-14 权限/越权控制清单 `audit authz`
 
@@ -76,3 +76,16 @@
 - 输出：`controls[]`（kind/file/line/paths/excluded/requirement/source_class/status）、`endpoints[]`（path/decision/reason/matched_controls/runtime_status）、`findings[]`（CWE-306、`status=inconclusive`、`runtime_status=not_run`）与 `coverage`。`partial=true` 表示存在未解析控制或入口。
 - 限制：不评估 Spring EL 表达式、filter-chain 全局顺序、自定义 AOP/网关、context-path、重写规则或部署配置；`unprotected` 是静态缺省证据，不是未授权访问证明。
 - 验收：`go test ./internal/authz` 与 `python scripts/test-authz.py`。fixture 中 MVC interceptor、servlet filter（注解与 web.xml）、Spring Security Java/XML、方法注解分别覆盖 6 个 protected 入口，登录/permitAll 为 2 个 public，2 个无控制入口为 unprotected，手工 session 检查为 unknown；2 条 finding 均为 `inconclusive`、`CWE-306`、`runtime_status=not_run`，快照与 fixture 字节级不变。
+
+## 7. 2026-11-14 依赖到入口的有界可达性 `audit reachability`
+
+- 输入：可信快照 + 显式 `--package-map`（`{"schema_version":1,"dependencies":{"group:artifact":["pkg.prefix"]}}`，≤64 KiB、≤256 项、前缀不含路径分隔符）。没有映射时全部 `unknown`，不根据包名猜测。
+- 类级调用图：解析 `.java` 的 package、import、首个类型声明、大写类型标识符与反射标记；边只有 `import`（import 名精确匹配快照内 FQCN）与 `same_package`（同包类型名在源码中被引用）。不解析方法签名、重载、继承、接口分派、AOP、异步或字节码。
+- BFS 从 `audit.Inspect` 的入口文件出发，深度 ≤8、节点 ≤4000、边 ≤20000、路径 ≤5/依赖；任一上限触发 `partial=true`、`reachability_graph_limit`/`reachability_traversal_limit`，未证明项降为 `unknown`。
+- 三态：
+  - `reachable`：在入口所属模块内找到入口文件→中间类→依赖 import 的路径；`paths[]` 含入口符号/文件/行号、每一步的文件 SHA-256 与行号，以及命中的 import。
+  - `unreachable`：该模块存在入口、图未超限、版本已解析，且没有路径。它只是本快照有界静态图的结论，不排除反射、动态代理、框架装配或运行时生成代码。
+  - `unknown`：缺少映射、模块无入口、版本未解析、反射命中（`reflection_not_resolved`）或图超限。
+- 模块作用域：路径命中只归属于入口文件所在模块；跨模块调用视为边界外，避免把共享模块的 import 直接算到另一个模块。
+- 输出：`entrypoints[]`、`dependencies[]`（三态、reason、prefixes、matched_imports、paths）、`coverage{java_files_scanned,java_files_rejected,imports_parsed,entrypoints,classes_indexed,graph_edges,dependencies,reachable,unreachable,unknown}`、`limitations[]`；`runtime_status=not_run` 恒定。
+- 验收：`python scripts/test-reachability.py`。`java-reachability` fixture 三个模块共 3 个入口：经 service 使用依赖为 `reachable` 且路径为 2 步并带 SHA-256/行号，仅声明未引用为 `unreachable`，`Class.forName` 为 `unknown/reflection_not_resolved`；无映射全部 `unknown`；输出确定性、fixture 与快照不变。

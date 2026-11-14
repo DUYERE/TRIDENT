@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- [01] Unused case: dependency is declared but no controller path references it. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>example.synthetic.trident</groupId>
+    <artifactId>unused-app</artifactId>
+    <version>1.0.0</version>
+    <dependencies>
+        <dependency>
+            <groupId>org.example</groupId>
+            <artifactId>lib</artifactId>
+            <version>1.0</version>
+        </dependency>
+    </dependencies>
+</project>

@@ -15,7 +15,7 @@ import (
 
 const (
 	SchemaVersion = 1
-	ToolVersion   = "0.2.0-p0.2+r2-sbom-cyclonedx-1.5"
+	ToolVersion   = "0.2.0-p0.2+r2-sbom-cyclonedx-1.5-artifact-hash"
 	SpecVersion   = "1.5"
 	BOMFormat     = "CycloneDX"
 )
@@ -54,7 +54,16 @@ type Component struct {
 	Name       string     `json:"name"`
 	Version    string     `json:"version,omitempty"`
 	PURL       string     `json:"purl,omitempty"`
+	Hashes     []Hash     `json:"hashes,omitempty"`
 	Properties []Property `json:"properties,omitempty"`
+}
+
+// Hash is a CycloneDX hash object. Only locally observed SHA-256 values are
+// emitted; caller-catalog hashes remain evidence in the SCA report, not SBOM
+// provenance.
+type Hash struct {
+	Alg     string `json:"alg"`
+	Content string `json:"content"`
 }
 
 type Dependency struct {
@@ -164,8 +173,12 @@ func Build(report sca.Report, opts Options) (Document, error) {
 		refs = append(refs, ref)
 	}
 	sort.Strings(refs)
+	hashes := artifactHashes(report)
 	for _, ref := range refs {
 		component := components[ref]
+		if observed, ok := hashes[ref]; ok {
+			component.Hashes = observed
+		}
 		sortProperties(component.Properties)
 		document.Components = append(document.Components, *component)
 	}
@@ -211,6 +224,7 @@ func metadataProperties(report sca.Report, opts Options) []Property {
 		{Name: "trident:snapshot_hash", Value: opts.SnapshotHash},
 		{Name: "trident:runtime_status", Value: "not_run"},
 		{Name: "trident:sca_resolution", Value: "declaration_only"},
+		{Name: "trident:artifact_hashes", Value: report.Coverage.ArtifactHashes},
 		{Name: "trident:transitive_tree", Value: "not_available"},
 		{Name: "trident:dependency_reachability", Value: "unverified"},
 		{Name: "trident:partial", Value: fmt.Sprintf("%t", opts.Partial || report.Partial)},
@@ -223,10 +237,44 @@ func metadataProperties(report sca.Report, opts Options) []Property {
 }
 
 func componentRef(dependency sca.Dependency) string {
-	if dependency.Version != "" && safePURLPart(dependency.Version) {
-		return "pkg:maven/" + refPart(dependency.GroupID, dependency.ArtifactID) + "@" + dependency.Version
+	return mavenRef(dependency.GroupID, dependency.ArtifactID, dependency.Version)
+}
+
+func mavenRef(group, artifact, version string) string {
+	if version != "" && safePURLPart(version) {
+		return "pkg:maven/" + refPart(group, artifact) + "@" + version
 	}
-	return "trident:maven:" + refPart(dependency.GroupID, dependency.ArtifactID)
+	return "trident:maven:" + refPart(group, artifact)
+}
+
+// artifactHashes maps observed local artifact hashes onto component refs. A
+// component may have both jar and pom hashes; duplicates are removed and the
+// values are stable-ordered.
+func artifactHashes(report sca.Report) map[string][]Hash {
+	index := map[string][]Hash{}
+	for _, artifact := range report.Artifacts {
+		if artifact.Status != "observed" || artifact.SHA256 == "" {
+			continue
+		}
+		ref := mavenRef(artifact.GroupID, artifact.ArtifactID, artifact.Version)
+		hash := Hash{Alg: "SHA-256", Content: artifact.SHA256}
+		duplicate := false
+		for _, existing := range index[ref] {
+			if existing == hash {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			index[ref] = append(index[ref], hash)
+		}
+	}
+	for ref := range index {
+		sort.Slice(index[ref], func(i, j int) bool {
+			return index[ref][i].Content < index[ref][j].Content
+		})
+	}
+	return index
 }
 
 func purl(dependency sca.Dependency) string {

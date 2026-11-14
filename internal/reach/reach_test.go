@@ -2,6 +2,7 @@ package reach
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -58,7 +59,7 @@ func copyTree(t *testing.T, source, destination string) {
 	}
 }
 
-func TestInspectImportReachability(t *testing.T) {
+func TestInspectBoundedReachability(t *testing.T) {
 	snapshot := fixtureSnapshot(t)
 	mapPath := filepath.Join(t.TempDir(), "map.json")
 	if err := os.WriteFile(mapPath, []byte(`{"schema_version":1,"dependencies":{"org.apache.commons:commons-text":["org.apache.commons.text"]}}`), 0o600); err != nil {
@@ -68,20 +69,22 @@ func TestInspectImportReachability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Coverage.ImportsParsed == 0 || report.Coverage.ImportReachable < 2 {
-		t.Fatalf("import coverage: %+v", report.Coverage)
+	if report.Coverage.ImportsParsed == 0 || report.Coverage.ClassesIndexed == 0 || report.Coverage.Entrypoints == 0 {
+		t.Fatalf("call graph coverage: %+v", report.Coverage)
 	}
-	var matched int
+	// FixtureText imports commons-text but no controller reaches it; the
+	// advisory-control module has no entrypoint at all.
+	if report.Coverage.Reachable != 0 || report.Coverage.Unreachable == 0 || report.Coverage.Unknown == 0 {
+		t.Fatalf("bounded reachability coverage: %+v", report.Coverage)
+	}
+	states := map[string]string{}
 	for _, dependency := range report.Dependencies {
-		if dependency.Dependency != "org.apache.commons:commons-text" {
-			continue
-		}
-		if dependency.Classification == "import_reachable" && len(dependency.MatchedImports) > 0 {
-			matched++
+		if dependency.Dependency == "org.apache.commons:commons-text" {
+			states[dependency.Module] = dependency.Reachability
 		}
 	}
-	if matched < 2 {
-		t.Fatalf("commons-text import reachability: %+v", report.Dependencies)
+	if states["jdbc-app"] != "unreachable" || states["advisory-control"] != "unknown" {
+		t.Fatalf("commons-text reachability: %+v", report.Dependencies)
 	}
 	if report.RuntimeStatus != "not_run" {
 		t.Fatalf("runtime status: %s", report.RuntimeStatus)
@@ -91,8 +94,81 @@ func TestInspectImportReachability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unmapped.Coverage.Unverified != unmapped.Coverage.Dependencies || unmapped.Coverage.ImportReachable != 0 {
-		t.Fatalf("unmapped dependencies must stay unverified: %+v", unmapped.Coverage)
+	if unmapped.Coverage.Unknown != unmapped.Coverage.Dependencies || unmapped.Coverage.Reachable != 0 {
+		t.Fatalf("unmapped dependencies must stay unknown: %+v", unmapped.Coverage)
+	}
+}
+
+func TestReachabilityFixtureThreeStates(t *testing.T) {
+	source, err := filepath.Abs(filepath.Join("..", "..", "tests", "fixtures", "java-reachability"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied := filepath.Join(t.TempDir(), "source")
+	copyTree(t, source, copied)
+	destination := filepath.Join(t.TempDir(), "snapshot")
+	imported, err := project.Import(context.Background(), copied, destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := project.Open(context.Background(), destination, imported.Hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = snapshot.Close() })
+	mapPath := filepath.Join(t.TempDir(), "map.json")
+	if err := os.WriteFile(mapPath, []byte(`{"schema_version":1,"dependencies":{"org.example:lib":["org.example.lib"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Inspect(context.Background(), snapshot, Options{PackageMapPath: mapPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := map[string]Reachability{}
+	for _, item := range report.Dependencies {
+		if item.Dependency == "org.example:lib" {
+			states[item.Module] = item
+		}
+	}
+	reachable := states["reachable-app"]
+	if reachable.Reachability != "reachable" || len(reachable.Paths) == 0 {
+		t.Fatalf("reachable-app: %+v", reachable)
+	}
+	path := reachable.Paths[0]
+	if len(path.Steps) != 2 || path.Steps[0].Relation != "entry" || path.Steps[1].Relation != "same_package" {
+		t.Fatalf("reachability path steps: %+v", path.Steps)
+	}
+	for _, step := range path.Steps {
+		if len(step.SHA256) != 64 || step.Line < 1 {
+			t.Fatalf("reachability step lacks digest or line: %+v", step)
+		}
+	}
+	if path.Import.Import != "org.example.lib.LibApi" || path.Import.Line < 1 {
+		t.Fatalf("reachability import: %+v", path.Import)
+	}
+	if states["unused-app"].Reachability != "unreachable" {
+		t.Fatalf("unused-app: %+v", states["unused-app"])
+	}
+	if states["reflect-app"].Reachability != "unknown" || states["reflect-app"].Reason != "reflection_not_resolved" {
+		t.Fatalf("reflect-app: %+v", states["reflect-app"])
+	}
+	if report.Coverage.Reachable != 1 || report.Coverage.Unreachable != 1 || report.Coverage.Unknown != 1 {
+		t.Fatalf("fixture coverage: %+v", report.Coverage)
+	}
+	first, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := Inspect(context.Background(), snapshot, Options{PackageMapPath: mapPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := json.Marshal(repeated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatal("reachability report is not deterministic")
 	}
 }
 

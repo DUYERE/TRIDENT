@@ -45,8 +45,8 @@
 - 模块：`modules[]`（POM、目录、坐标、packaging、父 POM、aggregator、声明模块目录）。
 - 依赖：`dependencies[]`（模块、坐标、版本、scope/type/optional、直接声明、声明/管理/属性来源、`version_status`/`version_reason`、duplicate）。
 - 公告：`advisories[]` 与 `advisory_matches[]`。
-- 覆盖：`coverage` 明确 `poms_scanned/poms_rejected/dependencies_*`、`transitive_tree=not_available`、`artifact_hashes=not_available`、`maven_executed=false`、`runtime_status=not_run`。
-- `limitations[]` 固定说明未执行、无传递树、无制品 Hash、无 AST/污点、公告仅调用者声明判据。
+- 覆盖：`coverage` 明确 `poms_scanned/poms_rejected/dependencies_*`、`transitive_tree=not_available`、`artifact_hashes=observed|partial|unavailable`、`maven_executed=false`、`runtime_status=not_run`。
+- `limitations[]` 固定说明未执行、无传递树、制品哈希仅本地观测/未验证签名、无 AST/污点、公告仅调用者声明判据。
 
 输出排序固定（POM 路径、依赖坐标、公告 ID/模块），便于差异比较。CLI 参数错误、快照不可信、公告非法或完整性失败返回非零且不输出成功 JSON。
 
@@ -93,3 +93,13 @@
 - 提供 `--workspace` 时必须显式 `--approve-execution`：先在临时副本对未修改快照跑基线，再通过 R3 隔离副本应用补丁并跑同一 profile；输出 `baseline` 与 `verification`。基线失败为 `baseline_validation_failed`，升级后失败为 `validation_failed`，两者区分“项目原本不可用”和“升级导致回归”。
 - 限制：不自动选择目标版本、不验证制品哈希、不分析传递依赖升级、不证明生产兼容性；Gradle 升级目前只生成补丁，验证 profile 仍为 Maven/javac/JUnit。
 - 验收 `python scripts/test-upgrade.py`：`java-upgrade` fixture 从 commons-text 1.9 升到 1.10.0，基线 `mvn -o -B -q test` 通过，升级后 1 个测试通过，快照与 fixture 字节级不变，同版本目标被拒绝。
+
+## 10. 制品哈希与来源核对 `sca inspect`（2026-11-14）
+
+- 显式输入：`--maven-repo <dir>`（Maven 本地仓库布局）、`--gradle-user-home <dir>`（`caches/modules-2/files-2.1` 布局）、`--hash-catalog <file>`。均不默认推断、不下载、不执行构建工具；路径必须是存在的非符号链接目录，否则参数错误失败关闭。
+- 对每个已解析依赖（`version_status=resolved`）按未分类 GAV 生成 jar 与 pom 两条记录；`type=pom` 只生成 pom。Maven 路径为 `<group path>/<artifact>/<version>/<artifact>-<version>.<kind>`；Gradle 在版本目录下按哈希子目录查找同名文件（≤64 个文件）。坐标只允许 `[A-Za-z0-9._+-]`，并校验路径不逃逸仓库根。
+- `artifacts[]` 字段：`group_id/artifact_id/version/kind/classifier`、`status=observed|mismatch|catalog_only|missing|unavailable`、`source=local_repository|caller_catalog|unavailable`、`repository=maven_local|gradle_modules`、仓库相对 `path`、`sha256`（64 hex）、`bytes`、`catalog_sha256`、`catalog_match=matched|mismatch`、`reason`。只哈希普通文件，单文件上限 1 GiB。
+- 哈希清单格式：`{"schema_version":1,"artifacts":[{"group_id","artifact_id","version","kind":"jar|pom","classifier","sha256"}]}`，严格 JSON、≤128 KiB、≤4096 项、SHA-256 必须 64 hex、键唯一；未知字段或重复键失败关闭。清单只用于核对，不升级漏洞结论。
+- 聚合：全部预期文件本地命中且无 mismatch 为 `observed`；部分命中或存在 mismatch 为 `partial`（并写 `artifact_hash_mismatch:<g:a:v:kind>`）；没有命中为 `unavailable`。未配置任何本地仓库/清单时保持 `unavailable`。
+- 限制固定包含 `artifact_hash_local_only`（本地字节，不证明来源）与 `artifact_signature_not_verified`（不做 GPG/签名校验）；未配置或全部缺失时追加 `artifact_hashes_unavailable`。
+- 验收 `python scripts/test-artifact-hash.py`：fixture 本地仓库 jar/pom 命中并输出 SHA-256/字节；清单精确匹配、mismatch、仅有清单三种结果可复现；空仓库为 `unavailable`；非法清单与不存在仓库失败关闭；SBOM 写入同一组 observed 哈希；输出确定性且快照/仓库字节不变。
