@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"trident/internal/audit"
+	"trident/internal/authz"
 	"trident/internal/project"
 )
 
@@ -16,13 +17,16 @@ import (
 // or vulnerability claim.
 func runAudit(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: trident audit <endpoints|dataflow|findings|sarif|reachability> --snapshot <dir> --snapshot-hash <sha256>")
+		return fmt.Errorf("usage: trident audit <endpoints|dataflow|findings|authz|sarif|reachability> --snapshot <dir> --snapshot-hash <sha256>")
 	}
 	if args[0] == "dataflow" {
 		return runDataflow(ctx, args[1:], out)
 	}
 	if args[0] == "findings" {
 		return runFindings(ctx, args[1:], out)
+	}
+	if args[0] == "authz" {
+		return runAuthz(ctx, args[1:], out)
 	}
 	if args[0] == "sarif" {
 		return runSARIF(ctx, args[1:], out)
@@ -50,6 +54,30 @@ func runAudit(ctx context.Context, args []string, out io.Writer) error {
 	}
 	defer snapshot.Close()
 	report, err := audit.Inspect(ctx, snapshot)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(report)
+}
+
+func runAuthz(ctx context.Context, args []string, out io.Writer) error {
+	flags := flag.NewFlagSet("audit authz", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	var snapshotDir, expectedHash string
+	flags.StringVar(&snapshotDir, "snapshot", "", "existing trusted snapshot directory")
+	flags.StringVar(&expectedHash, "snapshot-hash", "", "trusted SHA-256 returned by import; keep outside snapshot")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("invalid audit authz arguments: %w", err)
+	}
+	if flags.NArg() != 0 || snapshotDir == "" || expectedHash == "" {
+		return fmt.Errorf("audit authz requires --snapshot and --snapshot-hash and no positional arguments")
+	}
+	snapshot, err := project.Open(ctx, snapshotDir, expectedHash)
+	if err != nil {
+		return err
+	}
+	defer snapshot.Close()
+	report, err := authz.Analyze(ctx, snapshot)
 	if err != nil {
 		return err
 	}

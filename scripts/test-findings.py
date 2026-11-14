@@ -104,21 +104,24 @@ def main():
                 and report["analysis_kind"] == "unified_finding_evidence_v1"
                 and report["snapshot_hash"] == snapshot_hash,
                 "Unexpected findings report identity")
-        require(report["partial"] is False and len(report["findings"]) == 4,
+        require(report["partial"] is False and len(report["findings"]) == 7,
                 "Finding count mismatch")
         coverage = report["coverage"]
         require(coverage["findings_static_confirmed"] == 1
                 and coverage["findings_refuted"] == 1
-                and coverage["findings_inconclusive"] == 2,
+                and coverage["findings_inconclusive"] == 5,
                 "Finding status coverage mismatch")
         require(coverage["hypotheses_supported"] == 3
                 and coverage["hypotheses_unsupported"] == 1
-                and coverage["hypotheses_unverified"] == 6,
+                and coverage["hypotheses_unverified"] == 12,
                 "Hypothesis coverage mismatch")
         require(coverage["sca_advisory_candidates"] == 1
                 and coverage["sca_advisory_not_affected"] == 1
                 and coverage["endpoints_inventoried"] == 3
-                and coverage["dataflow_findings"] == 3,
+                and coverage["dataflow_findings"] == 3
+                and coverage["authz_controls"] == 0
+                and coverage["authz_unprotected"] == 3
+                and coverage["authz_findings"] == 3,
                 "Linked analysis coverage mismatch")
         require(coverage["java_ast"] == "not_available"
                 and coverage["sca_resolution"] == "declaration_only"
@@ -185,8 +188,17 @@ def main():
                 and any(value.startswith("correlation_not_exploitation:") for value in report["limitations"]),
                 "Separation limitations missing")
 
+        authz_finding = finding(report, "missing_authentication_or_authorization", "/synthetic/customers/unsafe")
+        require(authz_finding["status"] == "inconclusive" and authz_finding["cwe"] == "CWE-306"
+                and authz_finding["runtime_status"] == "not_run",
+                "Authz finding status mismatch")
+        require(hypothesis(authz_finding, ":missing_control")["status"] == "unverified",
+                "Authz missing-control hypothesis not unverified")
+        require(hypothesis(authz_finding, ":runtime_exploitation")["status"] == "unverified",
+                "Authz runtime hypothesis not unverified")
+
         without = invoke("audit", "findings", *common, retries=3)
-        require(len(without["findings"]) == 3
+        require(len(without["findings"]) == 6
                 and without["coverage"]["sca_advisory_candidates"] == 0
                 and any(value.startswith("advisory_catalog_not_provided") for value in without["limitations"]),
                 "Missing optional-advisory behavior")

@@ -63,3 +63,16 @@
 3. `audit sarif` 从统一 findings 导出确定性 SARIF 2.1.0；`static_confirmed=warning`、`inconclusive=note`、`refuted=none`，结果属性与 run 属性始终 `runtime_status=not_run`。
 4. `audit reachability` 解析 Java import，并用显式 `--package-map` 将 `group:artifact` 映射到包前缀；分类只有 `import_reachable/import_not_observed/unverified`。import 命中不是调用可达性，未配置映射时全部 `unverified`。
 5. 新增验收 `python scripts/test-intel.py`：SARIF 2.1.0、3 条结果、import 可达 2 条、无映射全部 unverified、错误哈希与不安全 package map 拒绝；`go test ./internal/audit` 覆盖 JAX-RS/Servlet 入口。
+
+## 6. 2026-11-14 权限/越权控制清单 `audit authz`
+
+- 输入仍是同一个可信快照；`authz.Analyze` 复用 `audit.Inspect` 的入口清单，再扫描 `.java` 与 `.xml` 文本。不编译、不运行、不访问网络。
+- 识别的控制：
+  - Spring Security 方法/类注解：`@PreAuthorize`、`@PostAuthorize`、`@Secured`、`@RolesAllowed`、`@PermitAll`、`@DenyAll`、`@PreFilter`、`@PostFilter`。
+  - XML：`<mvc:interceptor>` 的 mapping/exclude-mapping/ref 与 bean class、`<security:intercept-url pattern/access>`、`web.xml` 的 filter-mapping 与 security-constraint。
+  - Java：`@WebFilter(urlPatterns)`、`WebMvcConfigurer.addInterceptor().addPathPatterns()/excludePathPatterns()`、`HttpSecurity.authorizeRequests()`/`authorizeHttpRequests()` 的 matcher 链与 `anyRequest()`。
+  - 控制类认证性：解析到源码后，仅当同时观察到 `HandlerInterceptor`/`Filter`/`OncePerRequestFilter` 或 `doFilter` 以及 session/redirect/SecurityContext 等 token 时，才把该类视为认证控制；否则为 `unknown`。
+- 决策：`protected`（唯一匹配的安全控制为 authenticated/role/deny）、`public`（permitAll/登录路径/显式放行）、`unprotected`（没有任何已识别控制）、`unknown`（控制类/路径无法解析、手工 session 检查或控制冲突）。Spring Security 匹配按声明顺序取第一个命中；独立 interceptor/filter 仍可把 permitAll 路由标为 protected。
+- 输出：`controls[]`（kind/file/line/paths/excluded/requirement/source_class/status）、`endpoints[]`（path/decision/reason/matched_controls/runtime_status）、`findings[]`（CWE-306、`status=inconclusive`、`runtime_status=not_run`）与 `coverage`。`partial=true` 表示存在未解析控制或入口。
+- 限制：不评估 Spring EL 表达式、filter-chain 全局顺序、自定义 AOP/网关、context-path、重写规则或部署配置；`unprotected` 是静态缺省证据，不是未授权访问证明。
+- 验收：`go test ./internal/authz` 与 `python scripts/test-authz.py`。fixture 中 MVC interceptor、servlet filter（注解与 web.xml）、Spring Security Java/XML、方法注解分别覆盖 6 个 protected 入口，登录/permitAll 为 2 个 public，2 个无控制入口为 unprotected，手工 session 检查为 unknown；2 条 finding 均为 `inconclusive`、`CWE-306`、`runtime_status=not_run`，快照与 fixture 字节级不变。

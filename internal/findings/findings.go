@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"trident/internal/audit"
+	"trident/internal/authz"
 	"trident/internal/dataflow"
 	"trident/internal/project"
 	"trident/internal/sca"
@@ -26,7 +27,7 @@ import (
 
 const (
 	SchemaVersion = 1
-	ToolVersion   = "0.2.0-p0.2+r2-finding-evidence"
+	ToolVersion   = "0.2.0-p0.2+r4-finding-evidence"
 
 	MaxFindings = 20_000
 	MaxEvidence = 256
@@ -130,6 +131,9 @@ type Coverage struct {
 	ScaNotAffected          int    `json:"sca_advisory_not_affected"`
 	EndpointsInventoried    int    `json:"endpoints_inventoried"`
 	DataflowFindings        int    `json:"dataflow_findings"`
+	AuthzControls           int    `json:"authz_controls"`
+	AuthzUnprotected        int    `json:"authz_unprotected"`
+	AuthzFindings           int    `json:"authz_findings"`
 	JavaAST                 string `json:"java_ast"`
 	ScaResolution           string `json:"sca_resolution"`
 	TaintAnalysis           string `json:"taint_analysis"`
@@ -156,6 +160,10 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 	if err != nil {
 		return Report{}, err
 	}
+	authzReport, err := authz.Analyze(ctx, snapshot)
+	if err != nil {
+		return Report{}, err
+	}
 
 	report := Report{
 		SchemaVersion: SchemaVersion,
@@ -167,6 +175,9 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 			ScaDependencies:        len(scaReport.Dependencies),
 			EndpointsInventoried:   len(endpoints.Endpoints),
 			DataflowFindings:       len(flows.Findings),
+			AuthzControls:          len(authzReport.Controls),
+			AuthzUnprotected:       authzReport.Coverage.Unprotected,
+			AuthzFindings:          len(authzReport.Findings),
 			JavaAST:                "not_available",
 			ScaResolution:          "declaration_only",
 			TaintAnalysis:          "bounded_lexical_multi_category",
@@ -180,11 +191,13 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 			"dependency_reachability_unverified: no dependency import graph or request-to-component call path is modeled",
 			"endpoint_inventory_annotation_only: routes are annotation-level, not deployed routes",
 			"dataflow_bounded_lexical: no Java AST, branch sensitivity, alias/points-to or external library implementation; non-SQL sink findings appear only when that sink is observed",
+			"authz_control_inventory_lexical: annotations, XML blocks and common Java config chains are matched textually; filter-chain order, custom AOP and external gateways are not evaluated",
+			"authz_unprotected_is_inconclusive: absence of a recognized control does not prove an endpoint is reachable without authentication",
 			"absence_is_not_safety: inconclusive means required evidence was not collected, not that the code is safe",
 			"correlation_not_exploitation: linking a dependency, an endpoint and a flow is context, not runtime proof",
 		},
 	}
-	report.Partial = scaReport.Partial || endpoints.Partial || flows.Partial
+	report.Partial = scaReport.Partial || endpoints.Partial || flows.Partial || authzReport.Partial
 	if scaReport.Partial {
 		report.Limitations = append(report.Limitations, "sca_report_partial")
 	}
@@ -193,6 +206,9 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 	}
 	if flows.Partial {
 		report.Limitations = append(report.Limitations, "dataflow_report_partial")
+	}
+	if authzReport.Partial {
+		report.Limitations = append(report.Limitations, "authz_report_partial")
 	}
 	if opts.AdvisoryPath == "" {
 		report.Limitations = append(report.Limitations, "advisory_catalog_not_provided")
@@ -206,6 +222,14 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 			break
 		}
 		report.Findings = append(report.Findings, fromDataflow(flow))
+	}
+	for _, authzFinding := range authzReport.Findings {
+		if len(report.Findings) >= MaxFindings {
+			report.Partial = true
+			report.Limitations = append(report.Limitations, "finding_limit")
+			break
+		}
+		report.Findings = append(report.Findings, fromAuthz(authzFinding, entries))
 	}
 
 	dependencies := dependencyIndex(scaReport.Dependencies)
@@ -380,6 +404,53 @@ func fromDataflow(flow dataflow.Finding) Finding {
 		})
 	}
 	return finding
+}
+
+func fromAuthz(item authz.Finding, entries map[string]string) Finding {
+	set := &evidenceSet{seen: map[string]string{}}
+	digest := entries[item.File]
+	routeID := set.add(Evidence{
+		Kind: "route", File: item.File, SHA256: digest, StartLine: item.StartLine, EndLine: item.EndLine,
+		Detail: strings.Join(item.HTTPMethods, ",") + " " + item.Path, Origin: "audit", OriginRef: item.Symbol,
+	})
+	methodID := set.add(Evidence{
+		Kind: "method", File: item.File, SHA256: digest, StartLine: item.MethodLine, EndLine: item.EndLine,
+		Detail: "controller method with no recognized authorization control", Origin: "authz", OriginRef: item.ID,
+	})
+	absenceID := set.add(Evidence{
+		Kind: "control_absence", Detail: item.Reason, Origin: "authz", OriginRef: item.ID,
+	})
+	limitations := []string{
+		"authz_control_inventory_lexical: no filter-chain order, custom AOP, Spring EL or external gateway evaluation",
+		"authz_unprotected_is_inconclusive: a custom or container-level control may still protect this route",
+		"runtime_not_verified: no HTTP request or deployed security configuration is exercised",
+	}
+	if set.truncated {
+		limitations = append(limitations, "evidence_truncated")
+	}
+	return Finding{
+		ID: item.ID, Kind: item.Kind, Category: "Broken access control", CWE: item.CWE,
+		Severity: "unknown", Status: "inconclusive", RuntimeStatus: "not_run",
+		Title:    "Missing authentication or authorization control on " + item.Path,
+		Endpoint: &EndpointRef{Path: item.Path, HTTPMethods: append([]string{}, item.HTTPMethods...), Symbol: item.Symbol, File: item.File, SHA256: digest, StartLine: item.StartLine, EndLine: item.EndLine},
+		Evidence: set.items, SourceAnalyses: []string{"audit", "authz"}, Limitations: limitations,
+		Hypotheses: []Hypothesis{
+			{
+				ID:        item.ID + ":missing_control",
+				Statement: "no authentication or authorization control covers this route",
+				Status:    "unverified", EvidenceIDs: nonEmpty([]string{routeID, methodID, absenceID}),
+				RequiredEvidence: []string{"controller_or_filter_chain", "deployed_security_chain", "runtime_unauthenticated_request"},
+				Reason:           "static control inventory only; custom or container-level protection is unverified",
+			},
+			{
+				ID:        item.ID + ":runtime_exploitation",
+				Statement: "an unauthenticated request can access the route in a deployed runtime",
+				Status:    "unverified", EvidenceIDs: nonEmpty([]string{routeID}),
+				RequiredEvidence: []string{"runtime_http_response", "authentication_context", "deployed_route"},
+				Reason:           "no HTTP request is executed",
+			},
+		},
+	}
 }
 
 func fromAdvisory(match sca.AdvisoryMatch, dependencies map[string]sca.Dependency, entries map[string]string, endpoints int) Finding {

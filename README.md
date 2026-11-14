@@ -81,6 +81,16 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit endpoints --snapshot "$
 
 契约见 [入口清单契约](docs/audit-contract.md)；真实 CLI 验收为 `python scripts/test-audit.py`。
 
+## R4 权限/越权控制清单
+
+`audit authz` 在同一边界内识别 Spring Security 方法/类注解（`@PreAuthorize`、`@Secured`、`@RolesAllowed`、`@PermitAll` 等）、XML `<mvc:interceptor>`、`<security:intercept-url>`、`web.xml` filter/security-constraint、Java `WebMvcConfigurer.addInterceptors`、`HttpSecurity` matcher 链和 `@WebFilter`，并按 Ant 风格路径为每个入口给出 `protected` / `public` / `unprotected` / `unknown`。无任何已识别控制的入口输出 `inconclusive` 的 CWE-306 finding；手工 session 检查只记为 `unknown`。**这是有界词法控制清单，不评估 filter-chain 顺序、SpEL、自定义 AOP、外部网关或运行时行为；`unprotected` 不等于已证明可未授权访问。**
+
+```bash
+go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit authz --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH"
+```
+
+契约见 [入口清单契约](docs/audit-contract.md)；验收为 `python scripts/test-authz.py`。
+
 ## R2 数据流：JDBC SQL 与非 SQL 注入类别 Source/Sink
 
 `audit dataflow` 复用入口清单，对请求绑定参数做有界方法内/跨方法追踪，识别 JDBC SQL sink（`Statement.execute*`、`prepareStatement`、`JdbcTemplate`/`NamedParameterJdbcTemplate` 查询更新家族、JPA/Hibernate `createQuery`/`createNativeQuery`）以及常量结构 `PreparedStatement` + 值绑定的负例；同一引擎还识别命令注入（`Runtime.exec`、`ProcessBuilder` command→start）、SSRF（`URL.openConnection/openStream`、`RestTemplate`、`HttpRequest.uri`、`WebClient.uri`）、路径遍历（文件流构造器、`Files.*`）、模板注入（SpEL `parseExpression`、模板引擎 `process`）、XSS（响应 `write`/`print`/`println`/`append`）、反序列化（`new ObjectInputStream`/`new XMLDecoder`、污点流 `readObject`、链式 `new ObjectInputStream(...).readObject()`）、XXE（`DocumentBuilder`/`SAXParser`/`SAXReader.parse`、`SAXReader`/`XMLReader.read`、`XMLInputFactory` 流/事件读取、`Unmarshaller`、`Transformer`、`SAXBuilder`、`Digester`、`DocumentHelper.parseText`）、LDAP 注入（`InitialDirContext`/`LdapTemplate` 的 `search`/`lookup`/`authenticate`）与上传（`MultipartFile.transferTo`、`Part.write`）。SQL 构造覆盖字符串 `+`、`StringBuilder`/`StringBuffer.append` + `toString()`、字面量 `String.format` 和构造器/静态工厂结果；跨方法还跟踪 resolved 方法的 tainted 返回值、builder 参数突变、接口/继承分派、重载选择（含 lambda、泛型方法、可变参数）、按类层级的字段污点和 import 感知的简单类型解析；容器传播覆盖 `List`/`Set`/`Map`/`Queue` 的 `add`/`put` 写入与 `get`/`values`/`keySet`/`entrySet`/`iterator` 读取、数组元素下标读写、字段容器写入与 `clear`，字面量下标 `set/add(index, value)`/`get(index)`/`remove(index)` 按元素跟踪，非字面量下标回退到容器聚合；resolved 方法可突变调用方集合/数组参数；聚合 `remove` 采用保守语义（保留容器污点并标记限制），不假装未知下标的元素级精度。响应体 `String`/`CharSequence` 返回按入口 `produces` 判定：`text/html`/`application/xhtml+xml` 静态确认 XSS，明确非 HTML 类型记录为 `refuted`，缺失/未解析仍为 `reflected_return` 边界；普通 `@Controller` 返回视图名不产生 XSS finding。仅常量 `append`、无转换符的 `format`、清洁返回值、常量命令/URL/路径/响应/反序列化流/XML/LDAP 或未触及的类别不产生 sink 证据；计算出的格式串、未知 builder 接收者、多实现分派、无法消解的重载、快照外父类型或未知 sink 接收者输出边界。每个参数始终有一个 SQL finding，其他类别仅在该参数观察到对应 sink/边界时附加 finding，均附 flow、文件 SHA、行号和 `fixture:*` 锚点。**这不是完整污点分析或运行时验证；动态/未解析边界和未观察到路径一律 inconclusive，不冒充安全。**
@@ -254,13 +264,13 @@ docker compose --project-directory 'E:/pentest agent/TRIDENT' -f 'E:/pentest age
 |---|---|
 | `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`dataflow.go`、`findings.go`、`reach.go`、`web.go`、`patch.go`、`agent.go` | version / project / sca / audit / web / patch / agent / migrate / check / bootstrap / demo-offline |
 | `internal/sca/` | 离线 Maven/Gradle 声明解析、属性/父 POM/依赖管理、公告精确/区间/别名匹配与模块树；Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准） |
-| `internal/audit/`、`internal/dataflow/` | Spring MVC/JAX-RS/Servlet 注解级入口清单；10 类 Source/Sink 有界数据流 |
+| `internal/audit/`、`internal/authz/`、`internal/dataflow/` | Spring MVC/JAX-RS/Servlet 注解级入口清单；权限/越权控制清单；10 类 Source/Sink 有界数据流 |
 | `internal/findings/`、`internal/sarif/`、`internal/reach/` | 统一 finding/假设/证据模型；SARIF 2.1.0；有界 import 可达性 |
 | `internal/webui/` | 只读 Web 控制台：令牌鉴权、JSON API、嵌入的暗色前端资源 |
 | `internal/sbom/` | 确定性 CycloneDX 1.5 序列化与 metadata/component/vulnerability 映射 |
 | `internal/r3/` | 快照工作区复制、统一 diff 应用、策略约束、离线 Maven/javac/JUnit（XML/JaCoCo）验证、质量评分、多轮修复与 Docker/gVisor |
 | `docs/sca-contract.md`、`docs/audit-contract.md`、`docs/dataflow-contract.md`、`docs/findings-contract.md`、`docs/web-console-contract.md`、`docs/sbom-contract.md`、`docs/patch-contract.md`、`docs/release-checklist.md` | SCA、入口清单、数据流、证据模型、Web、SBOM、R3 与发布检查表 |
-| `scripts/test-sca.py`、`test-audit.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-intel.py`、`test-patch.py`、`benchmark.py` | 真实 CLI 与官方 Schema/真实 Java/Maven 验收和可复现基准 |
+| `scripts/test-sca.py`、`test-audit.py`、`test-authz.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-intel.py`、`test-upgrade.py`、`test-patch.py`、`benchmark.py` | 真实 CLI 与官方 Schema/真实 Java/Maven 验收和可复现基准 |
 | `internal/agent/`、`internal/tools/` | 只读主循环、受控工具与检查点/证据 |
 | `internal/model/openai/` | 官方 Go SDK Chat Completions 薄适配，无隐式外发 |
 | `internal/store/agent_runs*.go` | Run 所有者权限、CAS、预算与恢复 |

@@ -75,10 +75,11 @@ public class App {
 	if err = json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Findings) != 2 || report.Coverage.FindingsStaticConfirmed != 1 || report.Coverage.ScaCandidates != 1 {
+	if len(report.Findings) != 3 || report.Coverage.FindingsStaticConfirmed != 1 || report.Coverage.ScaCandidates != 1 ||
+		report.Coverage.AuthzFindings != 1 {
 		t.Fatalf("finding coverage: %+v", report)
 	}
-	var sqlFinding, dependency bool
+	var sqlFinding, dependency, authzFinding bool
 	for _, finding := range report.Findings {
 		if finding.RuntimeStatus != "not_run" {
 			t.Fatalf("runtime status: %+v", finding)
@@ -88,9 +89,11 @@ public class App {
 			sqlFinding = finding.Status == "static_confirmed" && finding.Endpoint != nil && finding.Endpoint.Path == "/users"
 		case "vulnerable_dependency":
 			dependency = finding.Status == "inconclusive" && finding.Component != nil && finding.Component.DeclaredVersion == "1.9"
+		case "missing_authentication_or_authorization":
+			authzFinding = finding.Status == "inconclusive" && finding.CWE == "CWE-306" && finding.Endpoint != nil
 		}
 	}
-	if !sqlFinding || !dependency {
+	if !sqlFinding || !dependency || !authzFinding {
 		t.Fatalf("linked findings missing: %+v", report.Findings)
 	}
 	if !hasLimitation(report.Limitations, "static_runtime_separation:") {

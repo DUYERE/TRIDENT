@@ -97,13 +97,13 @@ func TestAnalyzeLinksFixtureEvidenceAndKeepsRuntimeSeparate(t *testing.T) {
 	if report.SchemaVersion != SchemaVersion || report.AnalysisKind != "unified_finding_evidence_v1" || report.SnapshotHash != snapshot.Hash() {
 		t.Fatalf("identity: %+v", report)
 	}
-	if report.Partial || len(report.Findings) != 4 {
+	if report.Partial || len(report.Findings) != 7 {
 		t.Fatalf("unexpected findings: partial=%v count=%d %+v", report.Partial, len(report.Findings), report.Findings)
 	}
-	if report.Coverage.FindingsStaticConfirmed != 1 || report.Coverage.FindingsRefuted != 1 || report.Coverage.FindingsInconclusive != 2 {
+	if report.Coverage.FindingsStaticConfirmed != 1 || report.Coverage.FindingsRefuted != 1 || report.Coverage.FindingsInconclusive != 5 {
 		t.Fatalf("status coverage: %+v", report.Coverage)
 	}
-	if report.Coverage.HypothesesSupported != 3 || report.Coverage.HypothesesUnsupported != 1 || report.Coverage.HypothesesUnverified != 6 {
+	if report.Coverage.HypothesesSupported != 3 || report.Coverage.HypothesesUnsupported != 1 || report.Coverage.HypothesesUnverified != 12 {
 		t.Fatalf("hypothesis coverage: %+v", report.Coverage)
 	}
 	if report.Coverage.ScaCandidates != 1 || report.Coverage.ScaNotAffected != 1 || report.Coverage.ScaUnknown != 0 {
@@ -111,6 +111,9 @@ func TestAnalyzeLinksFixtureEvidenceAndKeepsRuntimeSeparate(t *testing.T) {
 	}
 	if report.Coverage.EndpointsInventoried != 3 || report.Coverage.DataflowFindings != 3 || report.Coverage.DependencyReachability != "unverified" {
 		t.Fatalf("context coverage: %+v", report.Coverage)
+	}
+	if report.Coverage.AuthzControls != 0 || report.Coverage.AuthzUnprotected != 3 || report.Coverage.AuthzFindings != 3 {
+		t.Fatalf("authz coverage: %+v", report.Coverage)
 	}
 	for _, finding := range report.Findings {
 		if finding.RuntimeStatus != "not_run" {
@@ -194,6 +197,17 @@ func TestAnalyzeLinksFixtureEvidenceAndKeepsRuntimeSeparate(t *testing.T) {
 	if !hasPrefix(report.Limitations, "static_runtime_separation:") || !hasPrefix(report.Limitations, "correlation_not_exploitation:") {
 		t.Fatalf("missing separation limitations: %v", report.Limitations)
 	}
+	authzFinding := find(report, "missing_authentication_or_authorization", "/synthetic/customers/unsafe")
+	if authzFinding == nil || authzFinding.Status != "inconclusive" || authzFinding.CWE != "CWE-306" ||
+		authzFinding.RuntimeStatus != "not_run" || authzFinding.Endpoint == nil || authzFinding.Endpoint.SHA256 == "" {
+		t.Fatalf("authz finding: %+v", authzFinding)
+	}
+	if got := hypothesis(authzFinding, ":missing_control"); got == nil || got.Status != "unverified" || len(got.RequiredEvidence) == 0 {
+		t.Fatalf("authz missing-control hypothesis: %+v", got)
+	}
+	if got := hypothesis(authzFinding, ":runtime_exploitation"); got == nil || got.Status != "unverified" {
+		t.Fatalf("authz runtime hypothesis: %+v", got)
+	}
 }
 
 func TestAnalyzeWithoutAdvisoriesKeepsEndpointAndDataflowEvidence(t *testing.T) {
@@ -202,14 +216,18 @@ func TestAnalyzeWithoutAdvisoriesKeepsEndpointAndDataflowEvidence(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Findings) != 3 || report.Coverage.ScaCandidates != 0 || report.Coverage.ScaDependencies != 6 {
+	if len(report.Findings) != 6 || report.Coverage.ScaCandidates != 0 || report.Coverage.ScaDependencies != 6 {
 		t.Fatalf("unexpected no-advisory report: %+v", report.Coverage)
+	}
+	if report.Coverage.AuthzUnprotected != 3 || report.Coverage.AuthzFindings != 3 {
+		t.Fatalf("authz no-advisory coverage: %+v", report.Coverage)
 	}
 	if !hasPrefix(report.Limitations, "advisory_catalog_not_provided") {
 		t.Fatalf("missing advisory limitation: %v", report.Limitations)
 	}
 	for i := range report.Findings {
-		if report.Findings[i].Kind != "sql_injection" {
+		kind := report.Findings[i].Kind
+		if kind != "sql_injection" && kind != "missing_authentication_or_authorization" {
 			t.Fatalf("unexpected finding kind: %+v", report.Findings[i])
 		}
 	}

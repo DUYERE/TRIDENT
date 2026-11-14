@@ -34,6 +34,7 @@
 | `deserialization` | dataflow | CWE-502 | 同上；仅在该参数观察到反序列化读取 sink 或边界时出现 |
 | `xxe` | dataflow | CWE-611 | 同上；仅在该参数观察到 XML 解析 sink 或边界时出现 |
 | `ldap_injection` | dataflow | CWE-90 | 同上；仅在该参数观察到 LDAP 查询 sink 或边界时出现 |
+| `missing_authentication_or_authorization` | authz | CWE-306 | 固定 `inconclusive`；未识别到控制不等于可未授权访问 |
 | `vulnerable_dependency` | SCA candidate | CWE-1395 | 固定 `inconclusive`；版本命中不等于可利用 |
 
 共同字段：
@@ -47,6 +48,7 @@
 Finding ID：
 
 - 数据流：`dataflow:<CWE>:<endpoint-path>:<parameter>`（CWE-89/78/918/22/1336/79/502/611/90）。
+- 权限：`authz:<16-hex>`，由端点路径、符号与文件派生。
 - 依赖：`sca:<advisory-id>:<module>:<group:artifact>:<version>`。
 
 排序：`static_confirmed` → `inconclusive` → `refuted`，同一状态按 ID 升序。
@@ -68,6 +70,12 @@ Finding ID：
 2. `<id>:runtime_exploitation`：是否在部署环境可实际利用；恒为 `unverified`，要求 `runtime_reproduction`、`deployed_route`、`authentication_and_input_context`。
 3. `refuted` 额外输出 `<id>:value_binding`，仅陈述“该参数在该观察点通过值绑定，不改变 SQL 文本”，不扩大到全应用安全。
 
+### 权限 finding
+
+1. `<id>:missing_control`：`unverified`，陈述“该入口没有被已识别的认证/授权控制覆盖”；要求 `controller_or_filter_chain`、`deployed_security_chain`、`runtime_unauthenticated_request`。
+2. `<id>:runtime_exploitation`：`unverified`，要求 `runtime_http_response`、`authentication_context`、`deployed_route`。
+3. 证据：`route`、`method`、`control_absence`；`control_absence` 不含文件或摘要，因为缺少控制不是源码事实。
+
 ### 依赖 finding
 
 1. `<id>:declared_version_matches_advisory`：`supported`，证据为相关 POM 与公告版本 case。
@@ -81,6 +89,7 @@ Finding ID：
 `kind`：
 
 - 数据流：`route`、`source`、`flow_step`、`sink`、`protection`、`boundary`、`method`。
+- 权限：`route`、`method`、`control_absence`。
 - 依赖：`pom`、`advisory`。
 
 `id` 为 `origin + kind + file + 行范围 + anchor + detail` 的 SHA-256 前缀（`ev:<16 hex>`），同一 finding 内稳定且去重；每个 finding 最多 256 条证据，超出时不再追加并输出 `evidence_truncated` limitation。
@@ -92,6 +101,7 @@ Finding ID：
 3. 不跨分析提升状态：SCA `candidate` 不会因存在入口或数据流 finding 变成 `static_confirmed`；数据流 `static_confirmed` 不会变成 `runtime_confirmed`。
 4. `refuted` 只覆盖被观察的参数/值绑定/版本 case，不输出“应用安全”。
 5. XSS/反序列化/XXE/LDAP 注入沿用同一装配规则：finding ID、证据、假设与 limitations 结构不变，仅多出对应 `kind`；未观察到某类别时不出该 finding，`absence_is_not_safety` 仍适用。
+6. 权限 finding 只表示入口清单与已识别控制之间缺少覆盖关系；它不使用数据流，也不因存在认证注解而升级为 `static_confirmed`。
 
 ## 6. 输出契约
 
@@ -99,8 +109,8 @@ Finding ID：
 
 - 身份：`schema_version=1`、`tool_version`、`snapshot_hash`、`analysis_kind=unified_finding_evidence_v1`、`partial`。
 - `findings[]`：上述字段与假设。
-- `coverage`：finding/hypothesis 状态计数；SCA 依赖与 candidate/unknown/not_affected 计数；入口数；数据流 finding 数；`java_ast=not_available`、`sca_resolution=declaration_only`、`taint_analysis=bounded_lexical_multi_category`、`runtime_status=not_run`、`dependency_reachability=unverified`。
-- `limitations[]`：固定包含 `static_runtime_separation`、`sca_declaration_only`、`advisory_exact_version_only`、`dependency_reachability_unverified`、`endpoint_inventory_annotation_only`、`dataflow_bounded_lexical`、`absence_is_not_safety`、`correlation_not_exploitation`；子分析 partial 时追加 `sca_report_partial` / `endpoint_inventory_partial` / `dataflow_report_partial`。
+- `coverage`：finding/hypothesis 状态计数；SCA 依赖与 candidate/unknown/not_affected 计数；入口数；数据流 finding 数；权限控制数、`authz_unprotected` 与权限 finding 数；`java_ast=not_available`、`sca_resolution=declaration_only`、`taint_analysis=bounded_lexical_multi_category`、`runtime_status=not_run`、`dependency_reachability=unverified`。
+- `limitations[]`：固定包含 `static_runtime_separation`、`sca_declaration_only`、`advisory_exact_version_only`、`dependency_reachability_unverified`、`endpoint_inventory_annotation_only`、`dataflow_bounded_lexical`、`authz_control_inventory_lexical`、`authz_unprotected_is_inconclusive`、`absence_is_not_safety`、`correlation_not_exploitation`；子分析 partial 时追加 `sca_report_partial` / `endpoint_inventory_partial` / `dataflow_report_partial` / `authz_report_partial`。
 - 参数、快照或完整性错误返回非零且不输出成功 JSON。
 
 ## 7. 验收

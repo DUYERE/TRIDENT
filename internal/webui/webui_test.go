@@ -246,7 +246,7 @@ func TestConsoleOverviewAndFindings(t *testing.T) {
 	if overview.Snapshot.Hash != hash || overview.Snapshot.TotalFiles != 2 {
 		t.Fatalf("snapshot: %+v", overview.Snapshot)
 	}
-	if overview.Counts.Total != 2 || overview.Counts.Confirmed != 1 || overview.Counts.Inconclusive != 1 {
+	if overview.Counts.Total != 3 || overview.Counts.Confirmed != 1 || overview.Counts.Inconclusive != 2 {
 		t.Fatalf("counts: %+v", overview.Counts)
 	}
 	if overview.Analysis.RuntimeStatus != "not_run" || overview.Analysis.ToolVersions.Findings == "" {
@@ -256,7 +256,7 @@ func TestConsoleOverviewAndFindings(t *testing.T) {
 	for _, category := range overview.Categories {
 		categories[category.Key] = category
 	}
-	if categories["sql"].Confirmed != 1 || categories["dependency"].Total != 1 {
+	if categories["sql"].Confirmed != 1 || categories["dependency"].Total != 1 || categories["authz"].Total != 1 {
 		t.Fatalf("categories: %+v", categories)
 	}
 
@@ -411,7 +411,7 @@ func TestConsoleFilesSearchAndReport(t *testing.T) {
 	if err = json.Unmarshal(body, &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Coverage.FindingsTotal != 2 {
+	if report.Coverage.FindingsTotal != 3 {
 		t.Fatalf("report coverage: %+v", report.Coverage)
 	}
 

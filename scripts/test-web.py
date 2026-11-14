@@ -158,11 +158,12 @@ def main():
             require(overview["schema_version"] == 1 and overview["snapshot"]["hash"] == snapshot_hash,
                     "overview snapshot identity mismatch")
             require(overview["snapshot"]["total_files"] == 14, "overview file count mismatch")
-            require(overview["counts"]["total"] == 4 and overview["counts"]["static_confirmed"] == 1,
+            require(overview["counts"]["total"] == 7 and overview["counts"]["static_confirmed"] == 1,
                     "overview finding counts mismatch")
             require(overview["analysis"]["runtime_status"] == "not_run", "runtime status must stay not_run")
             categories = {item["key"]: item for item in overview["categories"]}
-            require(categories["sql"]["static_confirmed"] == 1 and categories["dependency"]["total"] == 1,
+            require(categories["sql"]["static_confirmed"] == 1 and categories["dependency"]["total"] == 1
+                    and categories["authz"]["total"] == 3,
                     "category counts mismatch")
 
             status, _, body = request(base, "/api/findings?status=static_confirmed&limit=10", headers=authorized)
@@ -205,7 +206,7 @@ def main():
             require(status == 200 and "attachment" in header(headers, "Content-Disposition"),
                     "report download headers missing")
             report = json.loads(body)
-            require(report["coverage"]["findings_total"] == 4, "report coverage mismatch")
+            require(report["coverage"]["findings_total"] == 7, "report coverage mismatch")
 
             status, headers, body = request(base, "/api/sbom", headers=authorized)
             require(status == 200 and "attachment" in header(headers, "Content-Disposition")

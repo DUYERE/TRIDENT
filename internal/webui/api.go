@@ -33,6 +33,7 @@ var categoryOrder = []categoryMeta{
 	{Key: "deserialization", Label: "不安全反序列化", CWE: "CWE-502"},
 	{Key: "xxe", Label: "XML 外部实体", CWE: "CWE-611"},
 	{Key: "ldap", Label: "LDAP 注入", CWE: "CWE-90"},
+	{Key: "authz", Label: "认证/授权缺失", CWE: "CWE-306"},
 	{Key: "dependency", Label: "依赖漏洞候选", CWE: "CWE-1395"},
 }
 
@@ -56,6 +57,8 @@ func categoryKey(kind string) string {
 		return "xxe"
 	case "ldap_injection":
 		return "ldap"
+	case "missing_authentication_or_authorization":
+		return "authz"
 	case "vulnerable_dependency":
 		return "dependency"
 	}

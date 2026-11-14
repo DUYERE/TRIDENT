@@ -923,6 +923,14 @@
 - 新增 `tests/fixtures/java-upgrade` 与 `python scripts/test-upgrade.py`：commons-text 1.9 → 1.10.0，基线 1 个测试通过，升级后 1 个测试通过，快照与 fixture 字节级不变，同版本目标被拒绝。
 - 限制：不自动选择目标版本、不验证制品哈希、不分析传递依赖升级；Gradle 升级目前只生成补丁，验证 profile 仍为 Maven/javac/JUnit。
 
+### 2026-11-14 续七：权限/越权控制清单
+
+- 新增 `internal/authz` 与 `audit authz`：复用入口清单，扫描 Java/XML 识别 Spring Security 方法/类注解、MVC interceptor、servlet filter（注解与 `web.xml`）、`security-constraint`、`WebMvcConfigurer.addInterceptors` 与 `HttpSecurity` matcher 链。
+- 决策与证据：Ant 路径匹配、control class 解析与认证 token 判定；输出 `protected`/`public`/`unprotected`/`unknown`、匹配控制、原因与 `coverage`。无控制入口生成 CWE-306、`status=inconclusive`、`runtime_status=not_run` 的 finding；手工 session 检查只记为 `unknown`。
+- 集成：`audit findings` 新增 `authz_controls`/`authz_unprotected`/`authz_findings`、`missing_authentication_or_authorization` kind、`route`/`method`/`control_absence` 证据与 `authz_*` limitations；Web 控制台新增“认证/授权缺失”分类。
+- 新增 `tests/fixtures/java-authz`、`go test ./internal/authz` 与 `python scripts/test-authz.py`：5 个控制、11 个入口，6 protected/2 public/2 unprotected/1 unknown；2 条 finding 均为 `inconclusive`、CWE-306、`runtime_status=not_run`，快照与 fixture 字节级不变。
+- 限制：不评估 Spring EL、filter-chain 全局顺序、自定义 AOP/网关、context-path、部署配置；`unprotected` 不是未授权访问证明。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

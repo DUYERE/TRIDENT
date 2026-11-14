@@ -102,7 +102,7 @@ func TestAnalysisToolsReturnObservedCitations(t *testing.T) {
 	if err := json.Unmarshal(execute(t, registry, "list_findings", map[string]any{"offset": 10}), &emptyPage); err != nil {
 		t.Fatal(err)
 	}
-	if emptyPage.Total != 1 || emptyPage.Citations != nil {
+	if emptyPage.Total != 2 || emptyPage.Citations != nil {
 		t.Fatalf("offset result: %+v", emptyPage)
 	}
 }

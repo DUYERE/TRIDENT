@@ -46,6 +46,7 @@
     deserialization: "不安全反序列化",
     xxe: "XML 外部实体",
     ldap_injection: "LDAP 注入",
+    missing_authentication_or_authorization: "认证/授权缺失",
     vulnerable_dependency: "依赖漏洞候选",
   };
   const evidenceLabels = {
@@ -55,6 +56,7 @@
     sink: "危险汇点",
     protection: "防护",
     boundary: "未决边界",
+    control_absence: "控制缺失",
     method: "方法",
     pom: "POM 声明",
     advisory: "公告",
@@ -128,7 +130,7 @@
   const fmtNum = (n) => (Number.isFinite(n) ? n.toLocaleString("en-US") : "—");
   const shortHash = (hash) => (hash ? String(hash).slice(0, 12) : "—");
   const catKey = (kind) =>
-    ({ sql_injection: "sql", command_injection: "command", path_traversal: "path", template_injection: "template", ldap_injection: "ldap", vulnerable_dependency: "dependency" }[kind] || kind);
+    ({ sql_injection: "sql", command_injection: "command", path_traversal: "path", template_injection: "template", ldap_injection: "ldap", missing_authentication_or_authorization: "authz", vulnerable_dependency: "dependency" }[kind] || kind);
   const statusPill = (status) => {
     const meta = statusMeta[status] || { label: status || "未知", cls: "muted", dot: "" };
     return `<span class="status ${meta.cls}">${meta.dot ? '<span class="dot ' + meta.dot + '"></span>' : ""}${esc(meta.label)}</span>`;
