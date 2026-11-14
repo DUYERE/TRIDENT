@@ -124,3 +124,4 @@ trident patch verify \
 - `patch repair` 在 1—5 轮内重复 propose→verify，每轮使用新的 workspace；模型失败立即停止、不重试，重复 patch SHA 停止；最终 JSON 包含每轮 proposal/validation/quality。
 - `quality` 为启发式 0—100 分（validation、tests、patch size、files、regression clean），不参与通过/失败判定。
 - 验收：`go test ./internal/r3` 覆盖 JUnit 摘要/XML/JaCoCo、policy、repair failure/bounds、quality、gVisor 参数；`python scripts/test-patch.py` 与 `test-patch-ai.py` 通过；真实项目 AI 补丁与硬件 VM 未验证。
+- 2026-11-14 实测：本机 Docker 未注册 `runsc` 时 `--sandbox gvisor` 在启动容器前失败关闭，不执行任何命令；该 setup error 的 `runtime_status` 现为 `not_run`，只有真正执行验证命令后才为 `isolated_validation_only`。

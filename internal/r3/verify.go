@@ -83,7 +83,7 @@ func Verify(ctx context.Context, opts VerifyOptions) (Report, error) {
 	}
 	report := Report{
 		SchemaVersion: SchemaVersion, Status: "setup_failed", SnapshotHash: opts.SnapshotHash,
-		RuntimeStatus: "isolated_validation_only", Limitations: limitations,
+		RuntimeStatus: "not_run", Limitations: limitations,
 	}
 	if !opts.ApproveExecution {
 		return report, fmt.Errorf("isolated execution requires explicit --approve-execution")
@@ -133,11 +133,15 @@ func Verify(ctx context.Context, opts VerifyOptions) (Report, error) {
 	if err != nil {
 		report.Status = ValidationError
 		report.Error = err.Error()
+		if len(validation.Commands) > 0 {
+			report.RuntimeStatus = "isolated_validation_only"
+		}
 		report.OriginalSnapshotIntact = snapshotIntact(ctx, opts.SnapshotDir, opts.SnapshotHash)
 		return report, err
 	}
 	report.Validation = &validation
 	report.Status = validation.Status
+	report.RuntimeStatus = "isolated_validation_only"
 	report.Quality = scorePatch(validation, patchResult)
 	report.OriginalSnapshotIntact = snapshotIntact(ctx, opts.SnapshotDir, opts.SnapshotHash)
 	if !report.OriginalSnapshotIntact {

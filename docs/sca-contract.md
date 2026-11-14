@@ -68,3 +68,12 @@
 3. `advisories[]`/`advisory_matches[]` 输出 `aliases`、`aliases_complete` 与 `range_case_count`；别名不改变版本判据。
 4. `trident sca tree` 只输出快照内模块边、Gradle `project()` 边和同快照 GAV 匹配；外部依赖是叶子，`coverage.transitive_tree=module_edges_only`，不是 Maven 有效依赖树，也不证明 classpath 或可达性。
 5. 新增验收 `python scripts/test-intel.py`：区间/别名、区间外负例、Gradle 5 条声明（4 resolved/1 dynamic unresolved）、Maven/Gradle 模块树、错误哈希与不安全 package map 均按预期。
+
+## 7. 有效依赖树 `sca resolve`（2026-11-14）
+
+- 仅支持 Maven root POM；在快照的临时副本上执行 `mvn -B dependency:tree -DoutputType=text`，默认 `-o` 离线，只有显式 `--approve-network` 才允许联网；必须显式 `--approve-maven`。
+- 输出 `resolution_mode=offline|online`、`maven.executed/duration_ms/repo_local`、`modules[]`（root coordinate、POM 映射、`dependencies[]`）与 `coverage`（direct/transitive/omitted）。
+- 解析 `+-`/`\-` 深度、scope、classifier、`version managed from`、`omitted for conflict`、`optional` 注记；无法解析时 `status=failed` 并输出有界 `[ERROR]` 摘要。
+- `runtime_status` 恒为 `not_run`、`artifact_hashes=not_available`、`classpath_verified=false`。有效树是构建解析观测，不证明类加载、调用可达性或运行时利用。
+- Maven POM 是不可信输入；`dependency:tree` 仍可能解析插件/扩展。实现使用临时副本、环境变量白名单与超时，但不是沙箱；高信任要求下应在一次性容器/VM 中运行。
+- 验收 `python scripts/test-resolve.py`：离线缓存可用时得到 3 个模块、31 条依赖、25 条传递依赖，commons-lang3 深度 2，快照与 fixture 字节级不变；缓存缺失时报告 skip，不伪造结果。

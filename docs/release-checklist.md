@@ -53,6 +53,7 @@ python scripts/benchmark.py 3
 | 样本 | 命令 | 中位耗时 |
 |---|---|---|
 | `java-maven` | `sca inspect` | 约 122 ms |
+| `java-maven` | `sca resolve`（离线 Maven，单次） | 约 2—4 s |
 | `java-maven` | `audit dataflow` | 约 229 ms |
 | `java-maven` | `audit findings` | 约 151 ms |
 | `java-advanced-sinks` | `audit dataflow` | 约 106 ms |
@@ -79,7 +80,7 @@ python scripts/benchmark.py 3
 | 真实模型只读 | Run 43/46/48 记录 | 已获准并通过，其他模型/快照需重新授权 |
 | 真实项目 AI 补丁 | — | 未执行，需逐次外发与执行授权 |
 | 硬件 VM/系统调用隔离 | — | 未实现；gVisor 是用户态内核 |
-| Maven/Gradle 在线有效依赖树 | — | 未实现 |
+| Maven/Gradle 在线有效依赖树 | `python scripts/test-resolve.py` | Maven 离线有效树通过（3 模块/31 依赖/25 传递）；Gradle 有效树未实现 |
 
 ## 5. 版本兼容与已知边界
 

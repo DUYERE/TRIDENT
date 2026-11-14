@@ -50,7 +50,11 @@ TRIDENT_HASH="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], en
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident sca inspect --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" --advisories 'E:/pentest agent/TRIDENT/tests/fixtures/java-maven/advisories/CVE-2022-42889.json'
 ```
 
-结果与限制见 [SCA 契约](docs/sca-contract.md)；真实 CLI 验收为 `python scripts/test-sca.py` 与 `python scripts/test-intel.py`。
+结果与限制见 [SCA 契约](docs/sca-contract.md)；真实 CLI 验收为 `python scripts/test-sca.py`、`python scripts/test-intel.py` 与 `python scripts/test-resolve.py`。
+
+### 有效依赖树（需显式批准）
+
+`trident sca resolve --snapshot ... --snapshot-hash ... --approve-maven` 在快照的临时副本上执行 Maven `dependency:tree`，默认离线；只有显式 `--approve-network` 才允许下载。它输出模块、直接/传递依赖、scope、冲突省略与版本管理注记，并把 `runtime_status` 固定为 `not_run`。这是构建解析结果，不是 classpath 加载证明，也不等于漏洞可达；Maven POM 是不可信输入，仍应在一次性环境中执行。Gradle 有效树未实现。
 
 ### SBOM：CycloneDX 1.5
 

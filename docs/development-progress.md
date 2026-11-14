@@ -853,6 +853,16 @@
 - 未运行：真实项目 AI 补丁、硬件 VM/系统调用沙箱、Maven 在线解析、传递依赖与制品哈希、其他真实模型/快照外发。
 - 工作区当前有未提交改动；本片记录的测试结果对应当前工作区内容，提交后在 Git 历史中复核。
 
+## 2026-11-14：Maven 有效依赖树与 gVisor 失败关闭实测
+
+- 用户明确“授权，执行”。已执行可离线复现且无需模型密钥的部分，未伪造真实模型结果。
+- 新增 `sca resolve`（`internal/sca/resolve.go`、`cmd/trident/sca.go`）：在快照临时副本上执行 Maven `dependency:tree`，默认离线、需 `--approve-maven`，联网需额外 `--approve-network`；输出直接/传递依赖、scope、depth、冲突省略与版本管理注记；`runtime_status=not_run`、`artifact_hashes=not_available`、`classpath_verified=false`。
+- 实测离线 `sca resolve`（java-maven 合成样本）：3 个模块、31 条依赖、25 条传递依赖；`jdbc-app` 下 `commons-lang3` 深度 2；快照与 fixture 字节级未变。Maven 依赖树插件首次在线解析成功，随后离线缓存可用。
+- 新增 `python scripts/test-resolve.py`，离线缓存缺失时报告 `skipped`，不伪造结果。
+- gVisor：本机 Docker 仅注册 `runc`/`nvidia`，`--sandbox gvisor` 按设计失败关闭，未执行容器；报告 `runtime_status` 已修正为 `not_run`（此前 setup error 会误标 `isolated_validation_only`）。
+- 仍阻塞：真实模型调用需要 `TRIDENT_MODEL_API_KEY`（当前环境与 `.env` 均未设置）；工作区内没有真实 Java 项目可供“真实项目 AI 补丁”验证；硬件 VM 隔离不在当前环境能力内。
+- 本片验证：`go test ./internal/sca ./cmd/trident`、`python scripts/test-resolve.py` 通过；未调用模型、未写数据库、未修改快照。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。
