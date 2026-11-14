@@ -95,6 +95,7 @@ python scripts/benchmark.py 3
 | 依赖到入口有界可达性 | `python scripts/test-reachability.py` | 通过：`java-reachability` 三模块 3 入口，`reachable` 路径 2 步且带 SHA-256/行号，仅声明未引用 `unreachable`，`Class.forName` 为 `unknown/reflection_not_resolved`；findings 假设 `supported/unsupported/unverified`；无 package map 全部 unknown |
 | 受限 Java 语义模型 | `python scripts/test-java-ast.py` | 通过：`java-ast-model` 5 文件（1 个语法错误单独拒绝）；嵌套类、泛型擦除重载、唯一实现接口分派、双实现歧义分派、注解常量/数组/枚举折叠、确定性、fixture 字节不变 |
 | Web 控制台多用户与审计 | `go test ./internal/webui ./cmd/trident` + `python scripts/test-web.py`（第二阶段） | 通过：`--tokens` JSON `[{id,role,token_hash}]` 仅存 SHA-256 并 mtime 热重载（轮换/撤销下一请求生效）；`--access-log` JSONL 记录 time/token_id/method/path/status 且不含令牌明文；`/export/report` 两次跨用户字节一致、无外部 URL/时间戳；TLS 反代说明未经真实域名/证书联调 |
+| 控制台可观测性（本地部分） | `go test ./internal/webui` + `python scripts/test-web.py` | 通过：`/healthz` 未认证探活（仅 status/product/version）；`/api/metrics` 令牌门禁只读计数器（requests/unauthorized/forbidden、analysis 冷热/失败/终态）单调；Prometheus 告警规则模板与响应手册见 `docs/deployment.md` §2.2（未接真实监控系统） |
 | 离线全量门禁 | `powershell -File scripts/verify-offline.ps1` | 通过（Go 测试/vet + 14 个离线 CLI 验收脚本） |
 | CI 工作流模板 | `.github/workflows/ci.yml` | 已提供并在本地核对 YAML/命令；未在 GitHub runner 实际执行 |
 | 部署/备份/升级文档 | `docs/deployment.md` | 已提供构建、迁移、备份恢复、凭据分权与版本矩阵；生产恢复演练仍待完成 |

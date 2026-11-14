@@ -137,7 +137,7 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit java-model --snapshot "
 
 ## R2 只读 Web 分析控制台
 
-`trident web` 为单个已 pin 的本地快照提供暗色分析控制台，视图包括概览、安全发现（含证据抽屉）、HTTP 入口、依赖与公告、源码浏览/检索和边界说明。它复用既有快照与四个分析包，不新增分析语义，不导入源码、不执行 Java/Maven、不调用模型或访问网络，也不提供 Agent 运行/审批/执行控制 API。控制台仅监听 loopback，支持单用户 `--token` 与多用户 `--tokens` 令牌文件（JSON `[{id, role, token_hash}]`，只存 SHA-256，mtime 热重载支持轮换/撤销）；`--access-log` 记录 JSONL 审计访问日志（time/token_id/method/path/status，永不记录令牌明文）。除登录页外所有 API 与 `/export/report` 都要求令牌与 `X-Trident-Request: console` 头，响应启用 CSP、`nosniff`、`DENY` 与 `no-store`。`/export/report` 输出确定性 HTML 审阅报告（无时间戳、无外部资源，同一快照同一二进制字节一致）。
+`trident web` 为单个已 pin 的本地快照提供暗色分析控制台，视图包括概览、安全发现（含证据抽屉）、HTTP 入口、依赖与公告、源码浏览/检索和边界说明。它复用既有快照与四个分析包，不新增分析语义，不导入源码、不执行 Java/Maven、不调用模型或访问网络，也不提供 Agent 运行/审批/执行控制 API。控制台仅监听 loopback，支持单用户 `--token` 与多用户 `--tokens` 令牌文件（JSON `[{id, role, token_hash}]`，只存 SHA-256，mtime 热重载支持轮换/撤销）；`--access-log` 记录 JSONL 审计访问日志（time/token_id/method/path/status，永不记录令牌明文）。除登录页外所有 API 与 `/export/report` 都要求令牌与 `X-Trident-Request: console` 头，响应启用 CSP、`nosniff`、`DENY` 与 `no-store`。`/export/report` 输出确定性 HTML 审阅报告（无时间戳、无外部资源，同一快照同一二进制字节一致）。运维信号：未认证 `GET /healthz` 探活与令牌门禁的 `GET /api/metrics` 只读计数器（请求/拒绝/分析冷热与失败），Prometheus 告警规则模板见 [部署指南](docs/deployment.md) §2.2。
 
 以下命令不连接数据库、不调用模型；令牌只打印在终端，不要写入共享日志：
 

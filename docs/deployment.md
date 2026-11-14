@@ -57,6 +57,55 @@ server {
 - 代理层访问日志可记录来源 IP，与应用层 JSONL 审计日志（无 IP、无令牌）互补。
 - 多用户令牌与审计日志不改变只读边界：控制台仍无写路由、无执行/修复入口。
 
+### 2.2 监控与告警规则模板（P2-3 本地部分）
+
+控制台提供两类可采集信号（未接真实监控系统，模板为文档形态）：
+
+1. **探活**：`GET /healthz`（未认证）返回 `{"status":"ok",...}`；代理探活路径指向它，非 200 或超时即视为实例不可用。
+2. **指标**：`GET /api/metrics`（令牌 + console 头门禁）返回进程生命周期计数器（字段见 [Web 控制台契约](web-console-contract.md) §6.1）。采集方以只读 reviewer 令牌轮询（建议 15–60s），不得在指标标签中附加令牌。
+3. **结构化日志**：`--access-log` JSONL（每行 time/token_id/method/path/status）+ stderr 告警行；JSONL 适合 filebeat/loki 等逐行采集。
+
+Prometheus 告警规则模板（`trident-console.rules.yml`，指标经导出器转换为同名 gauge；`threshold` 按环境调整）：
+
+```yaml
+groups:
+  - name: trident-console
+    rules:
+      - alert: TridentConsoleDown
+        expr: probe_success{job="trident-console"} == 0 or up{job="trident-console"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "TRIDENT 控制台 /healthz 连续 1 分钟不可达"
+      - alert: TridentConsoleUnauthorizedSpike
+        expr: increase(trident_console_requests_unauthorized_total[10m]) > 50
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "令牌拒绝激增（爆破或轮换失误）；先核对 --tokens 文件 mtime 与内容"
+      - alert: TridentConsoleForbiddenSpike
+        expr: increase(trident_console_requests_forbidden_total[10m]) > 50
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "console 头缺失激增（异常客户端或脚本未带 X-Trident-Request）"
+      - alert: TridentAnalysisFailure
+        expr: increase(trident_console_analysis_failures_total[15m]) > 0
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "分析终态失败（cached_ok=false；last_error 记录于 /api/metrics 与审计日志上下文）"
+      - alert: TridentAnalysisStale
+        expr: trident_console_analysis_cached == 0 and up{job="trident-console"} == 1
+        for: 30m
+        labels: {severity: info}
+        annotations:
+          summary: "控制台运行超过 30 分钟仍无缓存分析（无人访问或分析从未完成）"
+```
+
+- 告警响应手册要点：`ConsoleDown` → 检查进程与 loopback 端口；`UnauthorizedSpike` → 对照审计日志 `token_id` 分布与令牌文件轮换记录；`AnalysisFailure` → 复现 `trident audit findings --snapshot ...` CLI 侧失败原因（同一分析引擎）。
+- 指标不含令牌值、Cookie、路径查询串；`last_error` 采集中按敏感信息策略脱敏后再入告警注释。
+
 ## 3. 数据库迁移
 
 ```bash

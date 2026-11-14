@@ -61,7 +61,9 @@ trident web --snapshot <dir> --snapshot-hash <sha256> \
 | GET | `/api/search` | 快照内区分大小写字面量检索（`q`、`prefix`、`limit`、`cursor`） |
 | GET | `/api/report` | 下载与 `trident audit findings` 相同的统一证据 JSON |
 | GET | `/api/sbom` | 下载与 `trident sca sbom` 相同的 CycloneDX 1.5 JSON |
+| GET | `/api/metrics` | 只读运维指标（进程生命周期计数器，见 §6.1；令牌门禁） |
 | GET | `/export/report` | 下载确定性 HTML 审阅报告（见 §6；无时间戳、无外部资源） |
+| GET | `/healthz` | 未认证探活（负载均衡/反向代理用），仅返回 `status/product/version`，不含分析或令牌状态 |
 
 `limit` 默认 50、最大 200；`offset` 最大 1,000,000；查询串与路径长度有上限。错误响应为 `{"schema_version":1,"code":"...","error":"..."}`：
 
@@ -105,6 +107,23 @@ trident web --snapshot <dir> --snapshot-hash <sha256> \
 - **不含**：访问者身份、令牌、访问日志或任何会话信息。报告与 `/api/report` JSON 同源，不新增分析语义。
 - 非目标：PDF 导出、多快照对比、finding 状态流转（人工状态管理需要写入口，与只读边界冲突，明确不做）。
 
+### 6.1 只读运维指标（P2-3 本地部分）
+
+`GET /api/metrics` 返回 JSON 计数器快照（进程生命周期单调值；结构化日志为 §5 JSONL 审计日志与 stderr 告警）：
+
+```json
+{
+  "product": "TRIDENT", "version": "...", "uptime_seconds": 0,
+  "requests": {"total": 0, "unauthorized": 0, "forbidden": 0},
+  "analysis": {"runs_total": 0, "cache_hits_total": 0, "failures_total": 0,
+                "cached": false, "cached_ok": false, "last_duration_ms": 0, "last_error": ""}
+}
+```
+
+- `requests` 只统计门禁层 `/api/` 与 `/export/` 请求（含拒绝）；`unauthorized`/`forbidden` 仅计中间件拒绝，handler 内部错误（如 `/api/session` 401）不计入。
+- `analysis.runs_total` 为冷分析次数（含失败），`cache_hits_total` 为缓存命中次数，`cached`/`cached_ok` 反映终态缓存状态；`last_error` 为最后一次失败消息（与 API 错误同文，可能含快照内相对路径，不含令牌）。
+- 端点受令牌 + console 头门禁；告警规则模板与采集方式见 [部署指南](deployment.md) §2.2。
+
 ## 7. 前端视图
 
 | 路由 | 内容 |
@@ -138,8 +157,8 @@ trident web --snapshot <dir> --snapshot-hash <sha256> \
 
 ## 10. 验收
 
-1. `go test ./internal/webui ./cmd/trident -count=1`：令牌/头鉴权、Cookie 标志、CSP、资产目录拒绝、概览/发现/详情/入口/依赖/文件/检索/报告、路径遍历与缺失文件、并发缓存；多用户令牌文件（隔离、轮换、撤销、格式校验拒绝、互斥参数）、审计访问日志（字段、无令牌明文、未认证行）、导出确定性（两次字节一致、无外部 URL、无 ISO 时间戳）。
-2. `python scripts/test-web.py`：构建真实 CLI、导入合成快照、在随机 loopback 端口启动服务，验证登录与会话、全部只读 API、401/403/400/404 负例、报告下载、快照与样本字节级不变；第二阶段以 `--tokens` + `--access-log` 启动第二个服务，验证多用户隔离（不同令牌不同 `token_id`）、轮换（旧令牌 401/新令牌 200）、`/export/report` 两次字节一致且无外部 URL/时间戳、JSONL 审计日志存在且不含令牌明文；全程不连接数据库、不调用模型、不执行 Java/Maven。
+1. `go test ./internal/webui ./cmd/trident -count=1`：令牌/头鉴权、Cookie 标志、CSP、资产目录拒绝、概览/发现/详情/入口/依赖/文件/检索/报告、路径遍历与缺失文件、并发缓存；多用户令牌文件（隔离、轮换、撤销、格式校验拒绝、互斥参数）、审计访问日志（字段、无令牌明文、未认证行）、导出确定性（两次字节一致、无外部 URL、无 ISO 时间戳）、`/healthz` 未认证探活与 `/api/metrics` 门禁计数器单调性。
+2. `python scripts/test-web.py`：构建真实 CLI、导入合成快照、在随机 loopback 端口启动服务，验证登录与会话、全部只读 API、401/403/400/404 负例、报告下载、快照与样本字节级不变；`/healthz` 与 `/api/metrics` 字段与门禁断言；第二阶段以 `--tokens` + `--access-log` 启动第二个服务，验证多用户隔离（不同令牌不同 `token_id`）、轮换（旧令牌 401/新令牌 200）、`/export/report` 两次字节一致且无外部 URL/时间戳、JSONL 审计日志存在且不含令牌明文；全程不连接数据库、不调用模型、不执行 Java/Maven。
 3. 人工浏览器检查只用于视觉与交互，不作为安全验收的替代。
 
 ## 11. 实际结果
@@ -159,3 +178,9 @@ trident web --snapshot <dir> --snapshot-hash <sha256> \
 - `go build ./...`、`go vet ./internal/webui ./cmd/trident`、`go test ./internal/webui ./cmd/trident -count=1`：通过；`internal/webui` 新增 3 项测试（令牌文件轮换与审计日志、令牌文件格式校验拒绝、导出确定性）。
 - `python scripts/test-web.py`：通过，第二阶段（`--tokens` + `--access-log`）验证多用户隔离（alice/bob/carol 各自 `token_id`）、轮换（alice 换新哈希后旧令牌 401、新令牌 200）、撤销（bob 删除即 401）、`/export/report` 两次请求跨用户字节一致且无 `http://`/`https://`/ISO 时间戳、JSONL 审计日志字段固定且不含任何令牌明文；快照与 fixture 字节不变。
 - 未运行：真实 TLS 反向代理（nginx/Caddy）联调、OIDC 接入（仅预留 role 接口）、浏览器人工复核新按钮视觉（导出按钮复用既有下载管线与按钮样式）。
+
+### 2026-11-14（P2-3 本地部分：/healthz、只读指标与告警模板）
+
+- `go test ./internal/webui ./cmd/trident -count=1`：通过；新增 `metrics_test.go`（`/healthz` 未认证 JSON 探活、`/api/metrics` 401 门禁、请求/拒绝/分析冷热计数器单调性）。
+- `python scripts/test-web.py`：通过，新增 [04] 断言（`/healthz` 字段、`/api/metrics` 401 与字段集、`cached/cached_ok/runs_total`）；八项 PASS 全绿，快照与 fixture 字节不变。
+- 未运行：真实 Prometheus/Alertmanager 采集与告警触发（模板为文档形态）、生产备份演练与 RTO/RPO（需真实生产设施）、长时进程内存/句柄观测。

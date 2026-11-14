@@ -1033,6 +1033,15 @@
 - 验收：`go test ./internal/webui ./cmd/trident -count=1` 通过（新增令牌文件轮换+审计日志、格式校验拒绝、导出确定性 3 项）；`python scripts/test-web.py` 通过并在第二阶段以 `--tokens`+`--access-log` 启动第二个服务，验证多用户隔离（alice/bob/carol 各自 `token_id`）、轮换（旧令牌 401/新令牌 200）、撤销、导出两次跨用户字节一致且无 `http://`/`https://`/ISO 时间戳、审计日志字段固定且不含令牌明文；快照与 fixture 字节不变。
 - 限制：多用户令牌文件热重载依赖 mtime+size 签名（原子重写或整体重写场景）；role 当前仅为审计身份标注，不构成权限边界；TLS 反代说明未经真实域名/证书联调；多快照对比、finding 状态流转、PDF 导出明确不做（写入口与只读边界冲突）。
 
+### 2026-11-14 续十九：P2-3 本地部分——/healthz、只读指标与告警模板
+
+- `internal/webui/webui.go`：新增 `GET /healthz`（未认证探活，仅返回 `status/product/version`，供负载均衡/反向代理探活，不含分析或令牌状态）与 `GET /api/metrics`（令牌 + console 头门禁）。指标为进程生命周期单调计数器：`requests.total/unauthorized/forbidden`（仅中间件门禁层 `/api/` 与 `/export/` 计数，handler 内部错误不计）、`analysis.runs_total/cache_hits_total/failures_total/cached/cached_ok/last_duration_ms/last_error`（冷分析计数含失败终态、缓存命中、终态缓存状态与最后失败消息）。`analyze()` 插桩冷热计数与耗时/失败记录；拒绝路径（401/403）在中间件同步计数。
+- `internal/webui/metrics_test.go`（新增）：`/healthz` 未认证 JSON 探活字段断言、`/api/metrics` 无令牌 401、请求/拒绝/分析计数器单调性与轻量端点不触发分析的语义断言。
+- `scripts/test-web.py`：新增 [04] 断言（`/healthz` 字段、`/api/metrics` 401 门禁、字段集、`cached/cached_ok/runs_total`），八项 PASS 全绿。
+- 文档：`docs/web-console-contract.md` API 表新增 `/api/metrics` 与 `/healthz`、新增 §6.1 指标字段契约；`docs/deployment.md` 新增 §2.2 监控与告警规则模板（探活/指标/JSONL 结构化日志三类信号 + Prometheus `trident-console.rules.yml` 模板：ConsoleDown/UnauthorizedSpike/ForbiddenSpike/AnalysisFailure/AnalysisStale 与响应手册要点），并明确模板未经真实监控系统联调。
+- 验收：`go test ./internal/webui ./cmd/trident -count=1` 通过；`python scripts/test-web.py` 通过（8 项）。
+- 限制与 pending：Run 状态指标属 Agent Core（`agent status`），不在控制台进程内，本片指标覆盖控制台自身；生产备份演练与 RTO/RPO、容量/成本实测、真实 Prometheus/Alertmanager 联调待真实生产设施（P2-3 剩余项保持 pending）。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

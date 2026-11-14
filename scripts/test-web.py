@@ -219,9 +219,33 @@ def main():
 
             status, _, _ = request(base, "/api/findings?limit=0", headers=authorized)
             require(status == 400, "invalid limit must be rejected")
+
+            # Observability endpoints: unauthenticated liveness probe and a
+            # token-gated read-only metrics snapshot.
+            status, headers, body = request(base, "/healthz")
+            require(status == 200 and header(headers, "Content-Type").startswith("application/json"),
+                    f"/healthz must be an unauthenticated JSON probe: {status}")
+            health = json.loads(body)
+            require(health.get("status") == "ok" and health.get("product") == "TRIDENT" and health.get("version"),
+                    f"/healthz payload: {health}")
+            status, _, _ = request(base, "/api/metrics", headers=console)
+            require(status == 401, "metrics without token must be rejected")
+            status, headers, body = request(base, "/api/metrics", headers=authorized)
+            require(status == 200 and header(headers, "Content-Type").startswith("application/json"),
+                    f"metrics failed: {status}")
+            metrics = json.loads(body)
+            require(set(metrics) == {"product", "version", "uptime_seconds", "requests", "analysis"},
+                    f"unexpected metrics fields: {sorted(metrics)}")
+            require(metrics["requests"]["total"] >= 1 and metrics["requests"]["unauthorized"] >= 1,
+                    f"metrics request counters: {metrics['requests']}")
+            require(metrics["analysis"]["cached"] and metrics["analysis"]["cached_ok"]
+                    and metrics["analysis"]["runs_total"] >= 1,
+                    f"metrics analysis counters: {metrics['analysis']}")
+
             print("[01] console shell, token gate, session cookie and security headers: PASS")
             print("[02] overview, findings, endpoints, dependencies and file tools: PASS")
             print("[03] runtime_status=not_run, traversal rejection and evidence report: PASS")
+            print("[04] /healthz liveness probe and token-gated /api/metrics counters: PASS")
         finally:
             server.terminate()
             try:
@@ -324,9 +348,9 @@ def main():
             log_text = log_path.read_text(encoding="utf-8")
             for secret in (alice_token, bob_token, carol_token, "web-alice-token-rotated-123456", TOKEN):
                 require(secret not in log_text, "access log must never contain a token value")
-            print("[04] multi-user token file isolation, rotation and revocation: PASS")
-            print("[05] deterministic HTML export (byte-identical, no external URLs, no timestamps): PASS")
-            print("[06] JSONL access audit log with per-user ids and no token values: PASS")
+            print("[05] multi-user token file isolation, rotation and revocation: PASS")
+            print("[06] deterministic HTML export (byte-identical, no external URLs, no timestamps): PASS")
+            print("[07] JSONL access audit log with per-user ids and no token values: PASS")
         finally:
             server.terminate()
             try:
@@ -337,7 +361,7 @@ def main():
 
         require(tree_hashes(snapshot) == snapshot_before, "snapshot changed during console verification")
         require(tree_hashes(FIXTURE) == fixture_before, "fixture changed during console verification")
-        print("[07] snapshot and fixture are byte-identical; no database/model/Java execution: PASS")
+        print("[08] snapshot and fixture are byte-identical; no database/model/Java execution: PASS")
         print("TRIDENT web console acceptance passed.")
 
 

@@ -19,8 +19,11 @@
 > 构建未验证）；P1-4 派生索引缓存与相对基线性能门槛已实现并通过 `go test ./internal/cache`、
 > `scripts/test-cache.py` 与 `scripts/benchmark.py --baseline` 验收；P2-2 Web 控制台多用户令牌文件
 > （SHA-256 哈希 + mtime 热重载）、JSONL 审计访问日志、确定性 HTML 导出与 TLS 反代部署说明已实现
-> 并通过 `go test ./internal/webui ./cmd/trident` 与 `scripts/test-web.py` 第二阶段验收。
-> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六、续十七、续十八。其余项仍为计划。
+> 并通过 `go test ./internal/webui ./cmd/trident` 与 `scripts/test-web.py` 第二阶段验收；P2-3 本地部分
+> （`/healthz` 探活、`/api/metrics` 只读计数器、Prometheus 告警规则模板文档）已实现并通过
+> `go test ./internal/webui` 与 `scripts/test-web.py` 验收，生产备份演练/RTO-RPO 与真实监控系统
+> 联调仍待真实生产设施。
+> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六、续十七、续十八、续十九。其余项仍为计划。
 
 ## 1. 原则与约束
 
@@ -260,6 +263,9 @@
 
 ### P2-3 生产运维门槛
 
+- **状态**：本地部分已实现（控制台 `/healthz` 探活、`/api/metrics` 只读计数器、JSONL 审计日志作为
+  结构化日志、Prometheus 告警规则模板与响应手册要点进 `docs/deployment.md` §2.2）。生产级分权执行
+  记录、真实数据量备份演练与 RTO/RPO、容量/成本实测、真实监控系统联调仍待真实生产设施，保持 pending。
 - **目标**：把本地演练升级为可审计的生产准备证据。
 - **实现要点**：
   - 生产级分权执行记录（真实表 owner、密钥系统、审计审批）；生产数据量备份恢复演练与 RTO/RPO 记录。

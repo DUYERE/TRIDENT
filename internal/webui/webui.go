@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"trident/internal/audit"
@@ -80,8 +81,44 @@ type Console struct {
 	startedAt    time.Time
 	accessLog    *accessLogger
 
+	requestsTotal     atomic.Int64
+	unauthorizedTotal atomic.Int64
+	forbiddenTotal    atomic.Int64
+	analysisRuns      atomic.Int64
+	analysisCacheHits atomic.Int64
+	analysisFailures  atomic.Int64
+	lastDurationMS    atomic.Int64
+	lastAnalysisError atomic.Value // string
+
 	mu    sync.Mutex
 	state *analysisState
+}
+
+// metricsSnapshot is the JSON payload of GET /api/metrics. Counters are
+// monotonic process-lifetime values; the endpoint is read-only and token
+// gated. unauthorized/forbidden count middleware-level rejections only.
+type metricsSnapshot struct {
+	Product       string          `json:"product"`
+	Version       string          `json:"version"`
+	UptimeSeconds int64           `json:"uptime_seconds"`
+	Requests      metricsRequests `json:"requests"`
+	Analysis      metricsAnalysis `json:"analysis"`
+}
+
+type metricsRequests struct {
+	Total        int64 `json:"total"`
+	Unauthorized int64 `json:"unauthorized"`
+	Forbidden    int64 `json:"forbidden"`
+}
+
+type metricsAnalysis struct {
+	RunsTotal      int64  `json:"runs_total"`
+	CacheHitsTotal int64  `json:"cache_hits_total"`
+	FailuresTotal  int64  `json:"failures_total"`
+	Cached         bool   `json:"cached"`
+	CachedOK       bool   `json:"cached_ok"`
+	LastDurationMS int64  `json:"last_duration_ms"`
+	LastError      string `json:"last_error"`
 }
 
 type analysisState struct {
@@ -181,6 +218,7 @@ func (c *Console) analyze(ctx context.Context) (*analysisState, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.state != nil {
+		c.analysisCacheHits.Add(1)
 		return c.state, c.state.err
 	}
 	started := time.Now()
@@ -203,6 +241,12 @@ func (c *Console) analyze(ctx context.Context) (*analysisState, error) {
 	state.duration = time.Since(started)
 	state.at = time.Now().UTC()
 	c.state = state
+	c.analysisRuns.Add(1)
+	c.lastDurationMS.Store(state.duration.Milliseconds())
+	if state.err != nil {
+		c.analysisFailures.Add(1)
+		c.lastAnalysisError.Store(state.err.Error())
+	}
 	return state, state.err
 }
 
@@ -225,8 +269,55 @@ func (c *Console) Handler() http.Handler {
 	mux.HandleFunc("GET /api/search", c.handleSearch)
 	mux.HandleFunc("GET /api/sbom", c.handleSBOM)
 	mux.HandleFunc("GET /api/report", c.handleReport)
+	mux.HandleFunc("GET /api/metrics", c.handleMetrics)
 	mux.HandleFunc("GET /export/report", c.handleExportReport)
+	mux.HandleFunc("GET /healthz", c.handleHealthz)
 	return c.middleware(mux)
+}
+
+// handleHealthz serves an unauthenticated liveness probe for load balancers
+// and reverse proxies; it exposes only the product identity, never analysis or
+// token state.
+func (c *Console) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(struct {
+		Status  string `json:"status"`
+		Product string `json:"product"`
+		Version string `json:"version"`
+	}{Status: "ok", Product: Product, Version: c.version})
+}
+
+// handleMetrics serves the read-only observability counters.
+func (c *Console) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	c.mu.Lock()
+	state := c.state
+	c.mu.Unlock()
+	snapshot := metricsSnapshot{
+		Product:       Product,
+		Version:       c.version,
+		UptimeSeconds: int64(time.Since(c.startedAt).Seconds()),
+		Requests: metricsRequests{
+			Total:        c.requestsTotal.Load(),
+			Unauthorized: c.unauthorizedTotal.Load(),
+			Forbidden:    c.forbiddenTotal.Load(),
+		},
+		Analysis: metricsAnalysis{
+			RunsTotal:      c.analysisRuns.Load(),
+			CacheHitsTotal: c.analysisCacheHits.Load(),
+			FailuresTotal:  c.analysisFailures.Load(),
+			Cached:         state != nil,
+			CachedOK:       state != nil && state.err == nil,
+			LastDurationMS: c.lastDurationMS.Load(),
+		},
+	}
+	if state != nil && state.err != nil {
+		snapshot.Analysis.LastError = state.err.Error()
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(snapshot)
 }
 
 func (c *Console) middleware(next http.Handler) http.Handler {
@@ -240,10 +331,12 @@ func (c *Console) middleware(next http.Handler) http.Handler {
 		var entry TokenEntry
 		gated := auditPath(r.URL.Path)
 		if gated {
+			c.requestsTotal.Add(1)
 			h.Set("Cache-Control", "no-store")
 			if r.URL.Path != "/api/session" {
 				resolved, err := c.authorize(r)
 				if err != nil {
+					c.unauthorizedTotal.Add(1)
 					c.accessLog.record(entry, r, http.StatusUnauthorized)
 					writeError(w, http.StatusUnauthorized, "unauthorized", "a valid console token is required")
 					return
@@ -251,6 +344,7 @@ func (c *Console) middleware(next http.Handler) http.Handler {
 				entry = resolved
 			}
 			if r.Header.Get(RequestHeader) != "console" {
+				c.forbiddenTotal.Add(1)
 				c.accessLog.record(entry, r, http.StatusForbidden)
 				writeError(w, http.StatusForbidden, "missing_console_header", "API requests require the console request header")
 				return
