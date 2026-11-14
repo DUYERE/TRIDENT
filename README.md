@@ -50,11 +50,15 @@ TRIDENT_HASH="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], en
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident sca inspect --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" --advisories 'E:/pentest agent/TRIDENT/tests/fixtures/java-maven/advisories/CVE-2022-42889.json'
 ```
 
-结果与限制见 [SCA 契约](docs/sca-contract.md)；真实 CLI 验收为 `python scripts/test-sca.py`、`python scripts/test-intel.py`、`python scripts/test-resolve.py` 与 `python scripts/test-gradle-resolve.py`。
+结果与限制见 [SCA 契约](docs/sca-contract.md)；真实 CLI 验收为 `python scripts/test-sca.py`、`python scripts/test-intel.py`、`python scripts/test-resolve.py`、`python scripts/test-gradle-resolve.py` 与 `python scripts/test-upgrade.py`。
 
 ### 有效依赖树（需显式批准）
 
 `trident sca resolve --snapshot ... --snapshot-hash ... --tool maven --approve-maven` 在快照的临时副本上执行 Maven `dependency:tree`；`--tool gradle --approve-gradle` 执行 Gradle `dependencies`，优先 `runtimeClasspath`、其次 `compileClasspath`。两者默认离线；只有显式 `--approve-network` 才允许下载。输出模块、直接/传递依赖、scope、冲突省略、版本升级/约束/FAILED 注记，并把 `runtime_status` 固定为 `not_run`。这是构建解析结果，不是 classpath 加载证明，也不等于漏洞可达；POM 与 build.gradle 都是不可信输入，仍应在一次性环境中执行。Gradle 需要本机可执行文件（`--gradle` 绝对路径或 PATH），可用 `--gradle-user-home` 与 `--gradle-init-script` 指向离线仓库。
+
+### 依赖升级验证（需显式批准）
+
+`trident sca upgrade ... --module . --dependency org.apache.commons:commons-text --to 1.10.0 --out upgrade.patch` 从快照定位版本声明（Maven 属性、直接版本或 dependencyManagement；Gradle 字符串/map），生成只改版本的最小 diff。提供 `--workspace` 时，先在未修改副本跑基线，再应用补丁跑同一 validation profile，输出 `baseline` 与 `verification`；目标版本由调用者指定，不自动选版，不验证制品哈希、传递升级或生产兼容性。Gradle 声明目前只生成补丁，验证 profile 仍为 Maven/javac/JUnit。
 
 ### SBOM：CycloneDX 1.5
 

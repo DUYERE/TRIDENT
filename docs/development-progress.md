@@ -916,6 +916,13 @@
 - 验收：`python scripts/test-gradle-resolve.py`（Gradle 8.14.3 + JDK 17，离线 file 仓库）通过：3 个模块、5 条依赖、2 条传递；`jdbc-app` 含 `project :common`、`commons-text:1.9` 直接边与 `commons-lang3` 深度 2；快照与 fixture 字节级不变，`runtime_status=not_run`。
 - 限制：build.gradle 是可执行输入，`dependencies` 报告不是 classpath 加载；未解释 Android variant、version catalog、BOM/platform 语义与插件脚本副作用。
 
+### 2026-11-14 续六：依赖升级验证
+
+- 新增 `sca upgrade`：从声明清单中选择唯一已解析依赖，支持 Maven 属性/直接版本/dependencyManagement 与 Gradle 字符串/map，生成只改版本的最小 unified diff；目标版本由 `--to` 显式指定，计划阶段不执行构建工具。
+- 校验与隔离：补丁必须写到快照外的新文件；提供 `--workspace` 时要求 `--approve-execution`，先在临时副本跑基线，再用 R3 隔离副本应用补丁并跑同一 profile，输出 `baseline` 与 `verification`。基线失败与升级后失败分别标记为 `baseline_validation_failed` 和 `validation_failed`。
+- 新增 `tests/fixtures/java-upgrade` 与 `python scripts/test-upgrade.py`：commons-text 1.9 → 1.10.0，基线 1 个测试通过，升级后 1 个测试通过，快照与 fixture 字节级不变，同版本目标被拒绝。
+- 限制：不自动选择目标版本、不验证制品哈希、不分析传递依赖升级；Gradle 升级目前只生成补丁，验证 profile 仍为 Maven/javac/JUnit。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

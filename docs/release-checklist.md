@@ -85,6 +85,7 @@ python scripts/benchmark.py 3
 | 硬件 VM/系统调用隔离 | — | 未实现；gVisor 是用户态内核 |
 | Maven 有效依赖树（离线） | `python scripts/test-resolve.py` | 通过（3 模块/31 依赖/25 传递） |
 | Gradle 有效依赖树（离线） | `python scripts/test-gradle-resolve.py` | 通过（Gradle 8.14.3：3 模块/5 依赖/2 传递；需 `TRIDENT_GRADLE` 或 PATH，离线缓存 POM 缺失时 skip） |
+| 依赖升级验证 | `python scripts/test-upgrade.py` | 通过：commons-text 1.9→1.10.0，基线测试与升级后测试均通过，快照完整；Gradle 声明仅生成补丁 |
 
 ## 5. 版本兼容与已知边界
 

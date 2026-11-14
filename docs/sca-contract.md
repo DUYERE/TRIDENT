@@ -85,3 +85,11 @@
 - 解析 `+---`/`\---` 深度、`project :x` 边、`a:b:1.0 -> 1.2` 版本升级、`(*)` 省略、`(c)` 约束、`(n)` 未解析与 `FAILED`；依赖输出 `failed` 和 `note`。部分模块失败时 `status=partial`、`partial=true` 并保留已解析模块；全部失败时 `status=failed`。
 - `runtime_status` 恒为 `not_run`、`artifact_hashes=not_available`。Gradle 构建脚本是可执行输入，`dependencies` 报告不是 classpath 加载证明；不解释 Android variant、version catalog、BOM/platform 语义或插件脚本副作用。
 - 验收 `python scripts/test-gradle-resolve.py`：Gradle 8.14.3 + JDK 17 + 离线 file 仓库，3 个模块、5 条依赖、2 条传递；`jdbc-app` 含 `project :common`、`commons-text:1.9` 直接边与 `commons-lang3` 深度 2；快照与 fixture 字节级不变。
+
+## 9. 依赖升级验证 `sca upgrade`（2026-11-14）
+
+- 从 `sca inspect` 的已解析声明中选择唯一依赖，支持 Maven 属性、直接 `<version>`、`dependencyManagement` 版本，以及 Gradle 字符串/map 声明；目标版本由调用者用 `--to` 指定，必须是受限字面量，不接受与当前版本相同或未解析版本。
+- 生成只修改版本 token 的最小 unified diff，路径为快照相对路径；补丁写到快照外的新文件，包含 `patch`、`patch_sha256`、`patch_bytes`、`change{file,line,kind,before,after}`。计划阶段不执行构建工具，`status=prepared`、`runtime_status=not_run`。
+- 提供 `--workspace` 时必须显式 `--approve-execution`：先在临时副本对未修改快照跑基线，再通过 R3 隔离副本应用补丁并跑同一 profile；输出 `baseline` 与 `verification`。基线失败为 `baseline_validation_failed`，升级后失败为 `validation_failed`，两者区分“项目原本不可用”和“升级导致回归”。
+- 限制：不自动选择目标版本、不验证制品哈希、不分析传递依赖升级、不证明生产兼容性；Gradle 升级目前只生成补丁，验证 profile 仍为 Maven/javac/JUnit。
+- 验收 `python scripts/test-upgrade.py`：`java-upgrade` fixture 从 commons-text 1.9 升到 1.10.0，基线 `mvn -o -B -q test` 通过，升级后 1 个测试通过，快照与 fixture 字节级不变，同版本目标被拒绝。

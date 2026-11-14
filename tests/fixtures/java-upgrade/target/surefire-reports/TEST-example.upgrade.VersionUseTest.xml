@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="example.upgrade.VersionUseTest" time="0.047" tests="1" errors="0" skipped="0" failures="0">
+  <properties>
+    <property name="java.specification.version" value="17"/>
+    <property name="sun.cpu.isalist" value="amd64"/>
+    <property name="sun.jnu.encoding" value="GBK"/>
+    <property name="java.class.path" value="E:\pentest agent\TRIDENT\tests\fixtures\java-upgrade\target\test-classes;E:\pentest agent\TRIDENT\tests\fixtures\java-upgrade\target\classes;E:\Java\apache-maven-3.9.9\mvn-repo\org\apache\commons\commons-text\1.9\commons-text-1.9.jar;E:\Java\apache-maven-3.9.9\mvn-repo\org\apache\commons\commons-lang3\3.11\commons-lang3-3.11.jar;E:\Java\apache-maven-3.9.9\mvn-repo\junit\junit\4.12\junit-4.12.jar;E:\Java\apache-maven-3.9.9\mvn-repo\org\hamcrest\hamcrest-core\1.3\hamcrest-core-1.3.jar;"/>
+    <property name="java.vm.vendor" value="Eclipse Adoptium"/>
+    <property name="sun.arch.data.model" value="64"/>
+    <property name="user.variant" value=""/>
+    <property name="java.vendor.url" value="https://adoptium.net/"/>
+    <property name="user.timezone" value="Asia/Shanghai"/>
+    <property name="os.name" value="Windows 11"/>
+    <property name="java.vm.specification.version" value="17"/>
+    <property name="sun.java.launcher" value="SUN_STANDARD"/>
+    <property name="user.country" value="CN"/>
+    <property name="sun.boot.library.path" value="E:\Java\jdk-17.0.16+8\bin"/>
+    <property name="sun.java.command" value="C:\Users\zx\AppData\Local\Temp\surefire13380474026629308504\surefirebooter-20261114122448379_3.jar C:\Users\zx\AppData\Local\Temp\surefire13380474026629308504 2026-11-14T12-24-48_274-jvmRun1 surefire-20261114122448379_1tmp surefire_0-20261114122448379_2tmp"/>
+    <property name="jdk.debug" value="release"/>
+    <property name="surefire.test.class.path" value="E:\pentest agent\TRIDENT\tests\fixtures\java-upgrade\target\test-classes;E:\pentest agent\TRIDENT\tests\fixtures\java-upgrade\target\classes;E:\Java\apache-maven-3.9.9\mvn-repo\org\apache\commons\commons-text\1.9\commons-text-1.9.jar;E:\Java\apache-maven-3.9.9\mvn-repo\org\apache\commons\commons-lang3\3.11\commons-lang3-3.11.jar;E:\Java\apache-maven-3.9.9\mvn-repo\junit\junit\4.12\junit-4.12.jar;E:\Java\apache-maven-3.9.9\mvn-repo\org\hamcrest\hamcrest-core\1.3\hamcrest-core-1.3.jar;"/>
+    <property name="sun.cpu.endian" value="little"/>
+    <property name="user.home" value="C:\Users\zx"/>
+    <property name="user.language" value="zh"/>
+    <property name="java.specification.vendor" value="Oracle Corporation"/>
+    <property name="java.version.date" value="2025-07-15"/>
+    <property name="java.home" value="E:\Java\jdk-17.0.16+8"/>
+    <property name="file.separator" value="\"/>
+    <property name="basedir" value="E:\pentest agent\TRIDENT\tests\fixtures\java-upgrade"/>
+    <property name="java.vm.compressedOopsMode" value="Zero based"/>
+    <property name="line.separator" value="&#10;"/>
+    <property name="java.vm.specification.vendor" value="Oracle Corporation"/>
+    <property name="java.specification.name" value="Java Platform API Specification"/>
+    <property name="surefire.real.class.path" value="C:\Users\zx\AppData\Local\Temp\surefire13380474026629308504\surefirebooter-20261114122448379_3.jar"/>
+    <property name="user.script" value=""/>
+    <property name="sun.management.compiler" value="HotSpot 64-Bit Tiered Compilers"/>
+    <property name="java.runtime.version" value="17.0.16+8"/>
+    <property name="user.name" value="zx"/>
+    <property name="path.separator" value=";"/>
+    <property name="os.version" value="10.0"/>
+    <property name="java.runtime.name" value="OpenJDK Runtime Environment"/>
+    <property name="file.encoding" value="GBK"/>
+    <property name="java.vm.name" value="OpenJDK 64-Bit Server VM"/>
+    <property name="java.vendor.version" value="Temurin-17.0.16+8"/>
+    <property name="localRepository" value="E:\Java\apache-maven-3.9.9\mvn-repo"/>
+    <property name="java.vendor.url.bug" value="https://github.com/adoptium/adoptium-support/issues"/>
+    <property name="java.io.tmpdir" value="C:\Users\zx\AppData\Local\Temp\"/>
+    <property name="java.version" value="17.0.16"/>
+    <property name="user.dir" value="E:\pentest agent\TRIDENT\tests\fixtures\java-upgrade"/>
+    <property name="os.arch" value="amd64"/>
+    <property name="java.vm.specification.name" value="Java Virtual Machine Specification"/>
+    <property name="sun.os.patch.level" value=""/>
+    <property name="native.encoding" value="GBK"/>
+    <property name="java.library.path" value="E:\Java\jdk-17.0.16+8\bin;C:\WINDOWS\Sun\Java\bin;C:\WINDOWS\system32;C:\WINDOWS;d:\DevTools\Trae CN\resources\app\modules\ai-agent\bin;\\?\C:\Users\zx\.trae-cn\plugins\trae-remote-official\lark\1.0.7\bin;E:\Java\jdk-17.0.16+8\bin;E:\VMware\bin\;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\DevTools\Git\bin;D:\database\Redis\;E:\Java\apache-maven-3.9.9\bin;D:\DevTools\Python3.10\Scripts;D:\DevTools\Python3.10;D:\DevTools\Nodejs\;C:\Program Files\dotnet\;D:\DevTools\Mingw64\bin;C:\Program Files\Docker\Docker\resources\bin;D:\DevTools\Bochs-2.1.1;D:\DevTools\nasm-3.01;D:\DevTools\dd;D:\DevTools\phpstudy_pro\Extensions\MySQL5.7.26\bin;D:\software\pcsuite\;E:\tools\PersonalCmd;E:\Android\platform-tools;C:\Program Files (x86)\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\170\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\180\Tools\Binn\;C:\Program Files\Microsoft SQL Server\170\DTS\Binn\;E:\tools\metasploit-framework\bin;E:\tools\vulscan\nuclei\;C:\Program Files\Bandizip\;D:\DevTools\node.js\;E:\tools\metasploit-framework\metasploit-framework\bin\;D:\DevTools\Go\bin;D:\DevTools\yara;C:\Program Files\Vagrant\bin;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\Cloudflare\Cloudflare WARP\;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;D:\DevTools\AliyunCLI;C:\Users\zx\Documents\学校\学科作业\软件安全\实验\实验四\动态代码分析工具\x64\peach-3.1.124-win-x64-release;d:\DevTools\Trae CN\bin;C:\Users\zx\.local\bin;D:\MinGW\mingw64\bin;D:\PyCharm\PyCharm 2023.1.4\bin;D:\Anaconda3;D:\Anaconda3\Scripts;D:\Anaconda3\Library\bin;D:\modelsim_ase\win32aloem;D:\modelsim_ae\win32aloem;D:\intelFPGA\20.1\modelsim_ae\win32aloem;D:\intelFPGA_lite\20.1\modelsim_ase\win32aloem;D:\DataGrip 2024.3.5\bin;C:\Users\zx\AppData\Local\Muse Hub\lib;D:\Phpstorm\PhpStorm 2024.1.4\bin;E:\tools\;C:\Program Files\cpolar\;D:\software\IntelliJ IDEA 2025.1.3\bin;E:\tools\Nmap;E:\tools\Fiddler;C:\Users\zx\Downloads\nmap;C:\Users\zx\.bun\bin;D:\DevTools\cursor\resources\app\bin;C:\Users\zx\AppData\Local\Programs\Ollama;E:\Ollama;C:\Users\zx\AppData\Roaming\npm;C:\Users\zx\go\bin;D:\DevTools\Microsoft VS Code\bin;D:\DevTools\Microsoft VS Code\bin\copilot-shim;d:\DevTools\Trae CN\resources\app\node_modules\@vscode\ripgrep\bin;."/>
+    <property name="java.vm.info" value="mixed mode, sharing"/>
+    <property name="java.vendor" value="Eclipse Adoptium"/>
+    <property name="java.vm.version" value="17.0.16+8"/>
+    <property name="java.specification.maintenance.version" value="1"/>
+    <property name="sun.io.unicode.encoding" value="UnicodeLittle"/>
+    <property name="java.class.version" value="61.0"/>
+  </properties>
+  <testcase name="substitutesPlaceholder" classname="example.upgrade.VersionUseTest" time="0.014"/>
+</testsuite>
