@@ -269,6 +269,22 @@ def main():
 
             print("[01] console shell, token gate, session cookie and security headers: PASS")
             print("[02] overview, findings, endpoints, dependencies and file tools: PASS")
+
+            # Extended read-only views: dependency tree and SARIF download come
+            # from the same cached analysis; unconfigured optional sources answer
+            # 409 with actionable guidance instead of failing silently.
+            status, headers, body = request(base, "/api/tree", headers=authorized)
+            tree_text = body.decode("utf-8")
+            require(status == 200 and '"roots"' in tree_text and '"coverage"' in tree_text,
+                    f"tree failed: {status}")
+            status, _, body = request(base, "/api/sarif", headers=authorized)
+            sarif_text = body.decode("utf-8")
+            require(status == 200 and '"2.1.0"' in sarif_text and '"runs"' in sarif_text,
+                    f"sarif download failed: {status}")
+            for path in ("/api/reachability", "/api/runtime-report", "/api/agent/runs"):
+                status, _, body = request(base, path, headers=authorized)
+                require(status == 412, f"{path} without configuration must be 412: {status}")
+            print("[02b] dependency tree, SARIF download and 412 guidance for unconfigured views: PASS")
             print("[03] runtime_status=not_run, traversal rejection and evidence report: PASS")
             print("[04] /healthz liveness probe and token-gated /api/metrics counters: PASS")
         finally:

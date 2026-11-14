@@ -29,7 +29,9 @@ import (
 	"trident/internal/audit"
 	"trident/internal/findings"
 	"trident/internal/project"
+	"trident/internal/reach"
 	"trident/internal/sca"
+	"trident/internal/store"
 )
 
 const (
@@ -66,6 +68,12 @@ type Options struct {
 	TokensFile string
 	// AccessLog, when set, appends one JSONL audit line per API/export request.
 	AccessLog string
+	// PackageMap enables the reachability view (caller-supplied prefixes).
+	PackageMap string
+	// RuntimeReport is a caller-produced correlation report file to display.
+	RuntimeReport string
+	// AgentDSN opens a read-only observation database for the Agent view.
+	AgentDSN string
 	// Version is the product build string shown in the console footer.
 	Version string
 }
@@ -73,13 +81,18 @@ type Options struct {
 // Console owns the pinned snapshot and the cached analysis reports. It must be
 // closed by the caller; it is safe for concurrent HTTP handlers.
 type Console struct {
-	snapshot     *project.Snapshot
-	advisoryPath string
-	tokens       *tokenRegistry
-	singleToken  string // plaintext of the legacy single-token mode; empty in file mode
-	version      string
-	startedAt    time.Time
-	accessLog    *accessLogger
+	snapshot          *project.Snapshot
+	advisoryPath      string
+	tokens            *tokenRegistry
+	singleToken       string // plaintext of the legacy single-token mode; empty in file mode
+	version           string
+	startedAt         time.Time
+	accessLog         *accessLogger
+	packageMap        string
+	runtimeReportPath string
+	reachState        *reach.Report
+	reachMu           sync.Mutex
+	agentStore        *store.Store
 
 	requestsTotal     atomic.Int64
 	unauthorizedTotal atomic.Int64
@@ -169,7 +182,15 @@ func New(ctx context.Context, opts Options) (*Console, error) {
 	if version == "" {
 		version = Product
 	}
-	console := &Console{snapshot: snapshot, advisoryPath: opts.AdvisoryPath, tokens: registry, singleToken: token, version: version, startedAt: time.Now().UTC()}
+	console := &Console{snapshot: snapshot, advisoryPath: opts.AdvisoryPath, tokens: registry, singleToken: token, version: version, startedAt: time.Now().UTC(), packageMap: opts.PackageMap, runtimeReportPath: opts.RuntimeReport}
+	if opts.AgentDSN != "" {
+		observation, err := store.Open(ctx, opts.AgentDSN, false)
+		if err != nil {
+			_ = snapshot.Close()
+			return nil, err
+		}
+		console.agentStore = observation
+	}
 	if opts.AccessLog != "" {
 		logger, err := newAccessLogger(opts.AccessLog)
 		if err != nil {
@@ -207,6 +228,9 @@ func (c *Console) Close() error {
 	err := c.snapshot.Close()
 	if logErr := c.accessLog.Close(); logErr != nil && err == nil {
 		err = logErr
+	}
+	if c.agentStore != nil {
+		c.agentStore.Close()
 	}
 	return err
 }
@@ -271,6 +295,12 @@ func (c *Console) Handler() http.Handler {
 	mux.HandleFunc("GET /api/report", c.handleReport)
 	mux.HandleFunc("GET /api/metrics", c.handleMetrics)
 	mux.HandleFunc("GET /metrics", c.handleMetricsText)
+	mux.HandleFunc("GET /api/tree", c.handleTree)
+	mux.HandleFunc("GET /api/sarif", c.handleSARIF)
+	mux.HandleFunc("GET /api/reachability", c.handleReachability)
+	mux.HandleFunc("GET /api/runtime-report", c.handleRuntimeReport)
+	mux.HandleFunc("GET /api/agent/runs", c.handleAgentRuns)
+	mux.HandleFunc("GET /api/agent/steps", c.handleAgentSteps)
 	mux.HandleFunc("GET /export/report", c.handleExportReport)
 	mux.HandleFunc("GET /healthz", c.handleHealthz)
 	return c.middleware(mux)

@@ -63,6 +63,12 @@ trident web --snapshot <dir> --snapshot-hash <sha256> \
 | GET | `/api/sbom` | 下载与 `trident sca sbom` 相同的 CycloneDX 1.5 JSON |
 | GET | `/api/metrics` | 只读运维指标（进程生命周期计数器，见 §6.1；令牌门禁） |
 | GET | `/metrics` | Prometheus 文本格式 0.0.4 抓取端点（同一组计数器；令牌门禁，接受 `Authorization: Bearer`，豁免 console 头；指标名与 `docs/deployment.md` §2.2 告警规则对齐） |
+| GET | `/api/tree` | 声明级依赖树（`sca.Tree`，与 CLI `sca tree` 同源） |
+| GET | `/api/sarif` | 下载 SARIF 2.1.0（与 `audit sarif` 同源，GitHub code scanning 映射一致） |
+| GET | `/api/reachability` | 有界可达性三态（需启动参数 `--package-map`；结果进程内缓存；未配置返回 412 + 启用指引） |
+| GET | `/api/runtime-report` | 只读展示调用者提供的 `runtime http correlate --out` 报告（需启动参数 `--runtime-report`；≤64 MiB，JSON 校验失败 422；控制台不执行任何运行时验证） |
+| GET | `/api/agent/runs` | Agent Run 列表（需启动参数 `--agent-dsn` 只读观察库；无会话认证，可见范围由连接账号权限兜底；未配置 412） |
+| GET | `/api/agent/steps` | 单个 Run 的 step 时间线（`run_id` 参数；limit ≤1000） |
 | GET | `/export/report` | 下载确定性 HTML 审阅报告（见 §6；无时间戳、无外部资源） |
 | GET | `/healthz` | 未认证探活（负载均衡/反向代理用），仅返回 `status/product/version`，不含分析或令牌状态 |
 

@@ -12,6 +12,7 @@
     findings: { items: [], total: 0, filtered: 0, counts: null, offset: 0, limit: 50, status: "all", category: "all", q: "", seq: 0, loading: false },
     endpoints: { items: [], total: 0, offset: 0, limit: 50, q: "", coverage: null, seq: 0, loading: false },
     source: { mode: "files", prefix: "", files: [], cursor: "", total: 0, path: "", line: 0, file: null, search: null, searchQ: "" },
+    agent: { runs: [], openId: null, steps: [] },
     drawerId: null,
   };
 
@@ -20,6 +21,10 @@
     findings: { title: "安全发现", eyebrow: "TRIDENT / FINDINGS" },
     endpoints: { title: "HTTP 入口", eyebrow: "TRIDENT / ENDPOINTS" },
     dependencies: { title: "依赖与公告", eyebrow: "TRIDENT / DEPENDENCIES" },
+    tree: { title: "依赖树", eyebrow: "TRIDENT / DEPENDENCY TREE" },
+    reachability: { title: "可达性", eyebrow: "TRIDENT / REACHABILITY" },
+    runtime: { title: "运行时关联", eyebrow: "TRIDENT / RUNTIME CORRELATION" },
+    agent: { title: "Agent 活动", eyebrow: "TRIDENT / AGENT OBSERVATION" },
     source: { title: "源码浏览", eyebrow: "TRIDENT / SOURCE" },
     about: { title: "边界与关于", eyebrow: "TRIDENT / SYSTEM" },
   };
@@ -268,6 +273,15 @@
     }
   }
 
+  async function exportSARIF() {
+    try {
+      await downloadArtifact("/api/sarif", "trident.sarif");
+      toast("SARIF 已导出", "ok");
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  }
+
   async function exportHtmlReport() {
     try {
       await downloadArtifact("/export/report", "trident-report.html");
@@ -317,6 +331,10 @@
       else if (name === "findings") await viewFindings();
       else if (name === "endpoints") await viewEndpoints();
       else if (name === "dependencies") await viewDependencies();
+      else if (name === "tree") await viewTree();
+      else if (name === "reachability") await viewReachability();
+      else if (name === "runtime") await viewRuntime();
+      else if (name === "agent") await viewAgent();
       else if (name === "source") await viewSource(params);
       else if (name === "about") await viewAbout();
     } catch (error) {
@@ -874,6 +892,7 @@
           <h3><svg class="icon"><use href="#i-package"/></svg>依赖声明</h3>
           <div class="card-head-actions">
             <span class="card-sub">仅 POM 声明级 · CycloneDX 1.5</span>
+            <button class="btn sm ghost" id="exportSarifBtn" type="button" title="与 trident audit sarif 相同的 SARIF 2.1.0"><svg class="icon"><use href="#i-download"/></svg>SARIF</button>
             <button class="btn sm ghost" id="exportSbomBtn" type="button"><svg class="icon"><use href="#i-download"/></svg>导出 SBOM</button>
           </div>
         </div>
@@ -899,6 +918,144 @@
       </section>
     `;
     $("#exportSbomBtn").addEventListener("click", exportSBOM);
+    $("#exportSarifBtn").addEventListener("click", exportSARIF);
+  }
+
+  // ── tree / reachability / runtime / agent（只读扩展视图）────────────────
+
+  async function viewTree() {
+    const tree = await api("/api/tree");
+    const renderNode = (node) => {
+      if (node.external) {
+        return `<li class="tree-leaf"><span class="chip mono" title="${esc(node.pom || "")}">${esc(node.name)}${node.version ? "@" + esc(node.version) : ""}</span>${node.cycle ? '<span class="status warn">环</span>' : ""}</li>`;
+      }
+      const children = (node.children || []).map(renderNode).join("");
+      return `<li><div class="tree-node"><strong>${esc(node.name)}</strong>${node.version ? `<span class="chip mono">${esc(node.version)}</span>` : ""}${node.scope ? `<span class="chip">${esc(node.scope)}</span>` : ""}${node.cycle ? '<span class="status warn">循环依赖</span>' : ""}</div>${children ? `<ul class="tree-children">${children}</ul>` : ""}</li>`;
+    };
+    const cov = tree.coverage || {};
+    $("#view").innerHTML = `
+      <div class="card"><div class="card-head"><h3><svg class="icon"><use href="#i-layer"/></svg>声明级依赖树</h3>
+        <span class="card-sub">${fmtNum(cov.modules || 0)} 模块 · ${fmtNum(cov.nodes || 0)} 节点 · ${fmtNum(cov.external_leaves || 0)} 外部依赖</span></div>
+        <div class="card-body tight"><ul class="tree">${(tree.roots || []).map(renderNode).join("") || '<li class="code-empty">没有模块。</li>'}</ul></div></div>
+      <div class="card section-gap"><div class="card-head"><h3><svg class="icon"><use href="#i-info"/></svg>树覆盖与限制</h3></div><div class="card-body">
+        <div class="kv">
+          <div class="kv-row"><span class="kv-key">传递依赖树</span><span class="kv-val">${esc(cov.transitive_tree || "not_available")}</span></div>
+          <div class="kv-row"><span class="kv-key">制品哈希</span><span class="kv-val">${esc(cov.artifact_hashes || "unavailable")}</span></div>
+          <div class="kv-row"><span class="kv-key">循环依赖</span><span class="kv-val ${cov.cycles ? "warn" : "good"}">${fmtNum(cov.cycles || 0)}</span></div>
+          <div class="kv-row"><span class="kv-key">runtime_status</span><span class="kv-val">${esc(tree.runtime_status || "not_run")}</span></div>
+        </div>
+        ${limitationList(tree.limitations || [])}
+      </div></div>`;
+  }
+
+  async function viewReachability() {
+    let report;
+    try {
+      report = await api("/api/reachability");
+    } catch (error) {
+      if (error.status === 412) {
+        $("#view").innerHTML = `<div class="card"><div class="empty"><svg class="icon"><use href="#i-info"/></svg><h4>可达性视图未启用</h4><p>${esc(error.message)}</p><code class="mono">trident web ... --package-map package-map.json</code></div></div>`;
+        return;
+      }
+      throw error;
+    }
+    const cov = report.coverage || {};
+    const rows = (report.dependencies || []).map((item) => `
+      <tr><td class="strong">${esc(item.module)}</td><td class="mono">${esc(item.dependency)}${item.version ? "@" + esc(item.version) : ""}</td>
+      <td><span class="status ${item.reachability === "reachable" ? "ok" : item.reachability === "unreachable" ? "muted" : "warn"}">${esc(item.reachability)}</span></td>
+      <td class="wrap">${esc(item.reason || "")}${(item.paths || []).length ? ` · ${item.paths.length} 条路径` : ""}</td></tr>`).join("");
+    $("#view").innerHTML = `
+      <div class="hero"><div class="hero-copy"><span class="eyebrow">BOUNDED ENTRY CALL GRAPH</span>
+        <h2>依赖到入口有界可达性</h2>
+        <p>入口 ${fmtNum(cov.entrypoints || 0)} · 类 ${fmtNum(cov.classes_indexed || 0)} · reachable ${fmtNum(cov.reachable || 0)} / unreachable ${fmtNum(cov.unreachable || 0)} / unknown ${fmtNum(cov.unknown || 0)}。三态都不证明类加载或运行时利用。</p></div></div>
+      <div class="card section-gap"><div class="card-body tight"><div class="table-wrap"><table>
+        <thead><tr><th>模块</th><th>依赖</th><th>可达性</th><th>依据</th></tr></thead><tbody>${rows}</tbody>
+      </table></div></div></div>
+      <div class="card section-gap"><div class="card-head"><h3><svg class="icon"><use href="#i-info"/></svg>限制</h3></div><div class="card-body">${limitationList(report.limitations || [])}</div></div>`;
+  }
+
+  async function viewRuntime() {
+    let report;
+    try {
+      report = await api("/api/runtime-report");
+    } catch (error) {
+      if (error.status === 412 || error.status === 404 || error.status === 422) {
+        $("#view").innerHTML = `<div class="card"><div class="empty"><svg class="icon"><use href="#i-info"/></svg><h4>暂无运行时关联报告</h4><p>${esc(error.message)}</p><code class="mono">trident runtime http correlate --findings findings.json --runtime runtime.json --out correlate.json</code><p>然后在启动控制台时附加 --runtime-report correlate.json</p></div></div>`;
+        return;
+      }
+      throw error;
+    }
+    const cov = report.coverage || {};
+    $("#view").innerHTML = `
+      <div class="hero"><div class="hero-copy"><span class="eyebrow">RUNTIME CORRELATION</span>
+        <h2>静态发现 × 运行时结果关联</h2>
+        <p>runtime_status=${esc(report.runtime_status || "not_run")} · 发现 ${fmtNum(cov.findings_total || 0)} · 运行时结果 ${fmtNum(cov.runtime_results || 0)} · 已关联 ${fmtNum(cov.correlated || 0)} / 歧义 ${fmtNum(cov.ambiguous || 0)} / 未关联 ${fmtNum(cov.not_correlated || 0)}。</p></div></div>
+      <div class="card section-gap"><div class="card-head"><h3><svg class="icon"><use href="#i-hash"/></svg>关联报告原文</h3>
+        <div class="card-head-actions"><button class="btn sm ghost" id="copyRuntimeJson" type="button"><svg class="icon"><use href="#i-copy"/></svg>复制 JSON</button></div></div>
+        <div class="card-body"><pre class="code-view mono p-12" style="max-height:520px">${esc(JSON.stringify(report, null, 2))}</pre></div></div>`;
+    $("#copyRuntimeJson").addEventListener("click", async () => {
+      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+      toast("报告 JSON 已复制", "ok");
+    });
+  }
+
+  async function viewAgent() {
+    let payload;
+    try {
+      payload = await api("/api/agent/runs");
+    } catch (error) {
+      if (error.status === 412) {
+        $("#view").innerHTML = `<div class="card"><div class="empty"><svg class="icon"><use href="#i-server"/></svg><h4>Agent 观察未启用</h4><p>${esc(error.message)}</p><code class="mono">trident web ... --agent-dsn "postgres://trident_readonly:...@127.0.0.1:5432/trident?sslmode=disable"</code><p>Run 仍通过 CLI 启动；控制台只读观察，无执行入口。</p></div></div>`;
+        return;
+      }
+      throw error;
+    }
+    const runState = (value) => ({cls: value === "running" ? "ok" : value === "done" ? "info" : value === "failed" || value === "timeout" ? "bad" : "muted", label: value});
+    state.agent = {runs: payload.runs || [], openId: state.agent && state.agent.openId, steps: null};
+    const rows = state.agent.runs.map((run) => `
+      <tr class="clickable" data-run="${run.id}"><td class="strong mono">#${run.id}</td>
+      <td class="wrap">${esc((run.goal || "").slice(0, 120))}</td>
+      <td><span class="status ${runState(run.state).cls}">${esc(run.state)}</span></td>
+      <td class="num">${fmtNum(run.model_calls)}/${fmtNum(run.limits && run.limits.max_model_calls)}</td>
+      <td class="num">${fmtNum(run.tool_calls)}/${fmtNum(run.limits && run.limits.max_tool_calls)}</td>
+      <td class="num">${fmtNum(run.tokens_used)}/${fmtNum(run.limits && run.limits.max_tokens)}</td>
+      <td class="file">${esc((run.updated_at || "").replace("T", " ").slice(0, 19))}</td></tr>`).join("");
+    $("#view").innerHTML = `
+      <div class="hero"><div class="hero-copy"><span class="eyebrow">AGENT OBSERVATION (READ-ONLY)</span>
+        <h2>Agent 活动时间线</h2>
+        <p>最近 ${fmtNum(payload.total)} 个 Run 的只读观察视图；Run 通过 CLI 启动，控制台无任何执行入口。点击行查看 step 时间线。</p></div></div>
+      <div class="card section-gap"><div class="card-body tight"><div class="table-wrap"><table>
+        <thead><tr><th>Run</th><th>目标</th><th>状态</th><th class="right">模型调用</th><th class="right">工具调用</th><th class="right">Token</th><th>更新时间</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="7" class="code-empty">暂无 Agent Run。先用 CLI 启动一个：trident agent run --goal ... --snapshot ...</td></tr>'}</tbody>
+      </table></div></div></div>
+      <div id="agentRunDetail"></div>`;
+    $$("tr[data-run]").forEach((row) => row.addEventListener("click", () => openAgentRun(Number(row.dataset.run))));
+    if (state.agent.openId) await openAgentRun(state.agent.openId);
+  }
+
+  async function openAgentRun(runID) {
+    const payload = await api("/api/agent/steps?run_id=" + runID);
+    state.agent.openId = runID;
+    state.agent.steps = payload.steps || [];
+    const run = payload.run || {};
+    const steps = state.agent.steps.map((step) => `
+      <li><div class="tree-node"><span class="status info mono">#${step.seq}</span>
+        <span class="chip mono">${esc(String(step.kind))}</span>
+        <span class="chip">${esc((step.created_at || "").replace("T", " ").slice(0, 19))}</span></div>
+      <div class="flow-detail mono" style="margin-top:4px">${esc(JSON.stringify(step.payload).slice(0, 300))}${JSON.stringify(step.payload).length > 300 ? "…" : ""}</div></li>`).join("");
+    $("#agentRunDetail").innerHTML = `
+      <div class="card mt-14"><div class="card-head"><h3><svg class="icon"><use href="#i-clock"/></svg>Run #${run.id} 时间线</h3>
+        <span class="card-sub">${esc((run.goal || "").slice(0, 90))}</span></div>
+        <div class="card-body"><div class="kv">
+          <div class="kv-row"><span class="kv-key">状态 / 原因</span><span class="kv-val">${esc(run.state)} ${esc(run.reason || "")}</span></div>
+          <div class="kv-row"><span class="kv-key">快照</span><span class="kv-val">${esc(shortHash(run.snapshot_hash || ""))}</span></div>
+          <div class="kv-row"><span class="kv-key">预算消耗（模型/工具/Token）</span><span class="kv-val">${fmtNum(run.model_calls)}/${fmtNum(run.tool_calls)}/${fmtNum(run.tokens_used)}</span></div>
+          <div class="kv-row"><span class="kv-key">最后事件序号</span><span class="kv-val">${fmtNum(run.last_seq)}</span></div>
+        </div>
+        <ul class="flow mt-14">${steps || '<li class="code-empty">该 Run 还没有 step。</li>'}</ul></div></div>`;
+    const row = $(`tr[data-run="${runID}"]`);
+    if (row) { $$("tr[data-run]").forEach((r) => r.classList.remove("active-row")); row.classList.add("active-row"); }
+    $("#agentRunDetail").scrollIntoView({behavior: "smooth"});
   }
 
   // ── source workspace ───────────────────────────────────────────────────
@@ -1249,6 +1406,15 @@
           ${apiRow("GET", "/api/files · /api/file", "清单与逐行源码读取")}
           ${apiRow("GET", "/api/search", "快照内字面量检索")}
           ${apiRow("GET", "/api/report", "下载统一证据 JSON")}
+          ${apiRow("GET", "/api/sbom", "下载 CycloneDX 1.5 JSON")}
+          ${apiRow("GET", "/api/tree", "声明级依赖树")}
+          ${apiRow("GET", "/api/reachability", "有界可达性（需 --package-map）")}
+          ${apiRow("GET", "/api/sarif", "下载 SARIF 2.1.0")}
+          ${apiRow("GET", "/api/runtime-report", "运行时关联报告（需 --runtime-report）")}
+          ${apiRow("GET", "/api/agent/runs", "Agent Run 列表（需 --agent-dsn，只读观察）")}
+          ${apiRow("GET", "/api/agent/steps", "Run step 时间线（只读观察）")}
+          ${apiRow("GET", "/api/metrics", "只读运维计数器")}
+          ${apiRow("GET", "/metrics", "Prometheus 文本格式抓取端点")}
           ${apiRow("GET", "/export/report", "下载确定性 HTML 审阅报告")}
         </div>
       </section>

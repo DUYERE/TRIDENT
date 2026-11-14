@@ -21,7 +21,7 @@ const webUsage = "usage: trident web --snapshot <dir> --snapshot-hash <sha256> [
 func runWeb(ctx context.Context, args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("web", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var snapshotDir, expectedHash, advisoryPath, addr, token, tokensFile, accessLog string
+	var snapshotDir, expectedHash, advisoryPath, addr, token, tokensFile, accessLog, packageMap, runtimeReport, agentDSN string
 	flags.StringVar(&snapshotDir, "snapshot", "", "existing trusted snapshot directory")
 	flags.StringVar(&expectedHash, "snapshot-hash", "", "trusted SHA-256 returned by import; keep outside snapshot")
 	flags.StringVar(&advisoryPath, "advisories", "", "optional explicit local advisory catalog JSON")
@@ -29,6 +29,9 @@ func runWeb(ctx context.Context, args []string, out io.Writer) error {
 	flags.StringVar(&token, "token", "", "single access token; generated when omitted")
 	flags.StringVar(&tokensFile, "tokens", "", "multi-user token file JSON [{id, role, token_hash=sha256(token) hex}]")
 	flags.StringVar(&accessLog, "access-log", "", "append-only JSONL access log path; token values are never recorded")
+	flags.StringVar(&packageMap, "package-map", "", "optional JSON map from group:artifact to package prefixes; enables the reachability view")
+	flags.StringVar(&runtimeReport, "runtime-report", "", "optional correlation report file from 'runtime http correlate --out'; displayed read-only")
+	flags.StringVar(&agentDSN, "agent-dsn", "", "optional read-only observation database DSN; enables the Agent runs view")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("invalid web arguments: %w", err)
 	}
@@ -39,7 +42,7 @@ func runWeb(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	console, err := webui.New(ctx, webui.Options{SnapshotDir: snapshotDir, SnapshotHash: expectedHash, AdvisoryPath: advisoryPath, Token: token, TokensFile: tokensFile, AccessLog: accessLog, Version: productVersion})
+	console, err := webui.New(ctx, webui.Options{SnapshotDir: snapshotDir, SnapshotHash: expectedHash, AdvisoryPath: advisoryPath, Token: token, TokensFile: tokensFile, AccessLog: accessLog, PackageMap: packageMap, RuntimeReport: runtimeReport, AgentDSN: agentDSN, Version: productVersion})
 	if err != nil {
 		return err
 	}
