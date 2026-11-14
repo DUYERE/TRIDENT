@@ -84,6 +84,9 @@ func Verify(ctx context.Context, opts VerifyOptions) (Report, error) {
 	if opts.Profile == "maven-compile" {
 		limitations = append(limitations, "maven_compile_profile_compiles_only: no application entry point, tests or runtime behavior are executed")
 	}
+	if opts.Profile == "maven-test" {
+		limitations = append(limitations, "maven_test_profile_runs_tests_only: Maven Surefire tests are executed, but no application entry point or HTTP request is run")
+	}
 	report := Report{
 		SchemaVersion: SchemaVersion, Status: "setup_failed", SnapshotHash: opts.SnapshotHash,
 		RuntimeStatus: "not_run", Limitations: limitations,
@@ -168,15 +171,15 @@ func scorePatch(validation ValidationResult, patch PatchResult) QualityScore {
 	default:
 		dimensions = append(dimensions, "validation_not_passed=0")
 	}
-	tests := validation.TestSummary
-	if validation.JUnitXML != nil {
-		if tests == nil {
-			tests = &TestRunSummary{}
+	var tests *TestRunSummary
+	if validation.TestSummary != nil {
+		copied := *validation.TestSummary
+		tests = &copied
+	} else if validation.JUnitXML != nil {
+		tests = &TestRunSummary{
+			Tests: validation.JUnitXML.Tests, Failures: validation.JUnitXML.Failures,
+			Errors: validation.JUnitXML.Errors, Skipped: validation.JUnitXML.Skipped,
 		}
-		tests.Tests += validation.JUnitXML.Tests
-		tests.Failures += validation.JUnitXML.Failures
-		tests.Errors += validation.JUnitXML.Errors
-		tests.Skipped += validation.JUnitXML.Skipped
 	}
 	if tests != nil && tests.Tests > 0 {
 		if tests.Failures == 0 && tests.Errors == 0 {

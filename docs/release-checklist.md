@@ -80,6 +80,7 @@ python scripts/benchmark.py 3
 | 真实模型只读 | Run 43/46/48 记录 | 已获准并通过，其他模型/快照需重新授权 |
 | 真实模型 AI 补丁（合成目标） | `patch repair` + `patch verify`（2026-11-14） | 通过：`deepseek-v4-pro` 补丁，Maven 与 JUnit 各一轮 `validation_passed`，快照完整；仅合成 fixture |
 | 真实项目 AI 补丁 | `patch repair` + `patch verify`（`D:\Code\Java\market`，2026-11-14） | 通过（编译级）：`deepseek-v4-pro` 访问控制补丁，`maven-compile` 通过，quality 80/B；无测试、无运行时验证 |
+| 真实项目集中式访问控制补丁 | `patch verify --profile maven-test`（2026-11-14） | 通过：LoginInterceptor 全量拦截 manager/staff 路由，4 个 JUnit 测试通过，offline `mvn test` 退出 0，quality 75/B，快照完整 |
 | 硬件 VM/系统调用隔离 | — | 未实现；gVisor 是用户态内核 |
 | Maven/Gradle 在线有效依赖树 | `python scripts/test-resolve.py` | Maven 离线有效树通过（3 模块/31 依赖/25 传递）；Gradle 有效树未实现 |
 

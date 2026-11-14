@@ -1,0 +1,247 @@
+﻿diff --git a/pom.xml b/pom.xml
+index ea1a22b..8c9b061 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -165,6 +165,18 @@
+ 		    <artifactId>mybatis-generator-core</artifactId>
+ 		    <version>1.3.5</version>
+ 		</dependency>
++		<dependency>
++		    <groupId>junit</groupId>
++		    <artifactId>junit</artifactId>
++		    <version>4.12</version>
++		    <scope>test</scope>
++		</dependency>
++		<dependency>
++		    <groupId>javax.servlet</groupId>
++		    <artifactId>javax.servlet-api</artifactId>
++		    <version>4.0.1</version>
++		    <scope>test</scope>
++		</dependency>
+ 				
+   </dependencies>
+   <build>
+@@ -180,6 +192,16 @@
+           <encoding>UTF-8</encoding>
+         </configuration>
+       </plugin>
++      <plugin>
++        <groupId>org.apache.maven.plugins</groupId>
++        <artifactId>maven-surefire-plugin</artifactId>
++        <version>3.2.5</version>
++        <configuration>
++          <classpathDependencyExcludes>
++            <classpathDependencyExclude>javax:javaee-api</classpathDependencyExclude>
++          </classpathDependencyExcludes>
++        </configuration>
++      </plugin>
+     </plugins>
+      <resources>
+ 			<resource>
+diff --git a/src/main/java/com/hbh/interceptor/LoginInterceptor.java b/src/main/java/com/hbh/interceptor/LoginInterceptor.java
+new file mode 100644
+index 0000000..87c58c7
+--- /dev/null
++++ b/src/main/java/com/hbh/interceptor/LoginInterceptor.java
+@@ -0,0 +1,43 @@
++package com.hbh.interceptor;
++
++import javax.servlet.http.HttpServletRequest;
++import javax.servlet.http.HttpServletResponse;
++import javax.servlet.http.HttpSession;
++
++import org.springframework.web.servlet.HandlerInterceptor;
++
++/**
++ * Centralized login guard for manager/staff URL trees. Public login endpoints
++ * are excluded in spring-mvc.xml.
++ */
++public class LoginInterceptor implements HandlerInterceptor {
++
++    private final String sessionKey;
++    private final String loginPath;
++
++    public LoginInterceptor(String sessionKey, String loginPath) {
++        this.sessionKey = sessionKey;
++        this.loginPath = loginPath;
++    }
++
++    @Override
++    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
++        HttpSession session = request.getSession(false);
++        if (session != null && session.getAttribute(sessionKey) != null) {
++            return true;
++        }
++        response.sendRedirect(request.getContextPath() + loginPath);
++        return false;
++    }
++
++    @Override
++    public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler,
++            org.springframework.web.servlet.ModelAndView modelAndView) {
++        // No post-processing is required.
++    }
++
++    @Override
++    public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
++        // No request-scoped resources are retained.
++    }
++}
+diff --git a/src/main/resources/spring-mvc.xml b/src/main/resources/spring-mvc.xml
+index b73a482..c9c069b 100644
+--- a/src/main/resources/spring-mvc.xml
++++ b/src/main/resources/spring-mvc.xml
+@@ -46,4 +46,28 @@
+         <property name="prefix" value="/WEB-INF/jsp/" />  
+         <property name="suffix" value=".jsp" />  
+     </bean>  
++
++    <!-- 管理员/员工登录拦截：/manager/** 与 /staff/** 除登录外均要求对应会话 -->
++    <bean id="managerLoginInterceptor" class="com.hbh.interceptor.LoginInterceptor">
++        <constructor-arg value="managerSession" />
++        <constructor-arg value="/manager/login" />
++    </bean>
++    <bean id="staffLoginInterceptor" class="com.hbh.interceptor.LoginInterceptor">
++        <constructor-arg value="staffSession" />
++        <constructor-arg value="/staff/login" />
++    </bean>
++    <mvc:interceptors>
++        <mvc:interceptor>
++            <mvc:mapping path="/manager/**" />
++            <mvc:exclude-mapping path="/manager/login" />
++            <mvc:exclude-mapping path="/manager/dologin" />
++            <ref bean="managerLoginInterceptor" />
++        </mvc:interceptor>
++        <mvc:interceptor>
++            <mvc:mapping path="/staff/**" />
++            <mvc:exclude-mapping path="/staff/login" />
++            <mvc:exclude-mapping path="/staff/dologin" />
++            <ref bean="staffLoginInterceptor" />
++        </mvc:interceptor>
++    </mvc:interceptors>
+ </beans>
+\ No newline at end of file
+diff --git a/src/test/java/com/hbh/interceptor/LoginInterceptorTest.java b/src/test/java/com/hbh/interceptor/LoginInterceptorTest.java
+new file mode 100644
+index 0000000..a9bf6d4
+--- /dev/null
++++ b/src/test/java/com/hbh/interceptor/LoginInterceptorTest.java
+@@ -0,0 +1,118 @@
++package com.hbh.interceptor;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertNull;
++import static org.junit.Assert.assertTrue;
++
++import java.lang.reflect.InvocationHandler;
++import java.lang.reflect.Method;
++import java.lang.reflect.Proxy;
++import java.util.HashMap;
++import java.util.Map;
++
++import javax.servlet.http.HttpServletRequest;
++import javax.servlet.http.HttpServletResponse;
++import javax.servlet.http.HttpSession;
++
++import org.junit.Test;
++
++import com.hbh.tools.Constants;
++
++public class LoginInterceptorTest {
++
++    @Test
++    public void managerWithoutSessionIsRedirected() throws Exception {
++        LoginInterceptor interceptor = new LoginInterceptor(Constants.Manager_SESSION, "/manager/login");
++        TestRequest request = new TestRequest(null);
++        TestResponse response = new TestResponse();
++        assertFalse(interceptor.preHandle(request.proxy(), response.proxy(), new Object()));
++        assertEquals("/market/manager/login", response.redirect);
++    }
++
++    @Test
++    public void managerWithSessionPasses() throws Exception {
++        LoginInterceptor interceptor = new LoginInterceptor(Constants.Manager_SESSION, "/manager/login");
++        TestRequest request = new TestRequest(session(Constants.Manager_SESSION, new Object()));
++        TestResponse response = new TestResponse();
++        assertTrue(interceptor.preHandle(request.proxy(), response.proxy(), new Object()));
++        assertNull(response.redirect);
++    }
++
++    @Test
++    public void wrongSessionKindIsRejected() throws Exception {
++        LoginInterceptor manager = new LoginInterceptor(Constants.Manager_SESSION, "/manager/login");
++        TestRequest request = new TestRequest(session(Constants.Staff_SESSION, new Object()));
++        TestResponse response = new TestResponse();
++        assertFalse(manager.preHandle(request.proxy(), response.proxy(), new Object()));
++        assertEquals("/market/manager/login", response.redirect);
++    }
++
++    @Test
++    public void staffWithSessionPasses() throws Exception {
++        LoginInterceptor staff = new LoginInterceptor(Constants.Staff_SESSION, "/staff/login");
++        TestRequest request = new TestRequest(session(Constants.Staff_SESSION, new Object()));
++        TestResponse response = new TestResponse();
++        assertTrue(staff.preHandle(request.proxy(), response.proxy(), new Object()));
++        assertNull(response.redirect);
++    }
++
++    private static HttpSession session(String key, Object value) {
++        Map<String, Object> attributes = new HashMap<String, Object>();
++        attributes.put(key, value);
++        InvocationHandler handler = new InvocationHandler() {
++            @Override
++            public Object invoke(Object proxy, Method method, Object[] args) {
++                if ("getAttribute".equals(method.getName())) {
++                    return attributes.get(args[0]);
++                }
++                return null;
++            }
++        };
++        return (HttpSession) Proxy.newProxyInstance(LoginInterceptorTest.class.getClassLoader(),
++                new Class<?>[]{HttpSession.class}, handler);
++    }
++
++    private static final class TestRequest {
++        private final HttpSession session;
++
++        TestRequest(HttpSession session) {
++            this.session = session;
++        }
++
++        HttpServletRequest proxy() {
++            InvocationHandler handler = new InvocationHandler() {
++                @Override
++                public Object invoke(Object proxy, Method method, Object[] args) {
++                    if ("getSession".equals(method.getName())) {
++                        return session;
++                    }
++                    if ("getContextPath".equals(method.getName())) {
++                        return "/market";
++                    }
++                    return null;
++                }
++            };
++            return (HttpServletRequest) Proxy.newProxyInstance(LoginInterceptorTest.class.getClassLoader(),
++                    new Class<?>[]{HttpServletRequest.class}, handler);
++        }
++    }
++
++    private static final class TestResponse {
++        private String redirect;
++
++        HttpServletResponse proxy() {
++            InvocationHandler handler = new InvocationHandler() {
++                @Override
++                public Object invoke(Object proxy, Method method, Object[] args) {
++                    if ("sendRedirect".equals(method.getName())) {
++                        redirect = (String) args[0];
++                    }
++                    return null;
++                }
++            };
++            return (HttpServletResponse) Proxy.newProxyInstance(LoginInterceptorTest.class.getClassLoader(),
++                    new Class<?>[]{HttpServletResponse.class}, handler);
++        }
++    }
++}

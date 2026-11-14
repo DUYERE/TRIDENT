@@ -15,7 +15,7 @@
 | R2 只读 Web 分析控制台 | 已实现并完成本地验收；单快照、loopback、令牌鉴权、只读 JSON API 与嵌入前端；不改变分析语义，不提供 Agent 控制 API | `web-console-contract.md`、`internal/webui/`、`cmd/trident/web.go` |
 | R2 Agent 分析工具 | 已实现并完成本地验收与真实模型/真实项目使用；5 个分析工具、分析缓存、Run 公告配置、实际读取行引用与证据账本桥接 | `agent-contract.md`、`internal/tools/analysis.go`、`internal/agent/` |
 | R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射；无传递树/制品哈希/可达性 | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
-| R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/maven-compile/javac/JUnit（多测试类、JUnit XML、可选 JaCoCo）、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；真实 Java/Maven/JUnit、真实模型合成补丁、真实项目编译级补丁与 loopback/Docker 已验收；硬件 VM、真实项目运行时权限测试与生产验证未实现 | `patch-contract.md`、`internal/r3/`、`cmd/trident/patch.go` |
+| R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/maven-compile/maven-test/javac/JUnit、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；支持新文件/BOM/多文件补丁；真实 Java/Maven/JUnit、真实模型合成补丁、真实项目编译级补丁与集中式访问控制运行时单测已验收；硬件 VM、真实 Tomcat/MySQL HTTP 权限测试与生产验证未实现 | `patch-contract.md`、`internal/r3/`、`cmd/trident/patch.go`、`docs/evidence/2026-11-14-market-access-control.patch` |
 
 ## 2026-11-12：已完成快照切片（上轮基线）
 
@@ -882,6 +882,18 @@
 - 补丁 SHA-256 `cecacc06…`，单文件 `ManagerController.java`，+12/-3：三个方法增加 `HttpSession` 参数，并在任何 service 调用前检查 `Constants.Manager_SESSION`，缺失时重定向 `/manager/login`。
 - 验证：`mvn -o -B -q -DskipTests compile` 退出 0；`validation_passed`、quality 80/B、`original_snapshot_intact=true`、`runtime_status=isolated_validation_only`。项目无测试，未做运行时访问控制验证；其他管理员接口仍未覆盖。
 - 仍阻塞：真实项目运行时行为/权限测试、硬件 VM 隔离、Gradle 有效依赖树。
+
+### 2026-11-14 续三：真实项目集中式访问控制补丁与运行时测试
+
+- 复核发现全部业务 controller 都挂在 `/manager/flatform/**` 或 `/staff/flatform/**` 下，方法级逐个加检查会遗漏。最终采用集中式方案：新增 `LoginInterceptor`，在 `spring-mvc.xml` 对 `/manager/**` 与 `/staff/**` 全量拦截，仅排除 `/manager/login`、`/manager/dologin`、`/staff/login`、`/staff/dologin`。该方法覆盖 20 个 controller 的业务入口，替代此前 AI 生成的 3 个方法级 guard（后者仍作为 AI 补丁样例保留在记录中）。
+- 新增 4 个 JUnit 运行时测试：无会话重定向、正确会话放行、错误会话类型拒绝、员工会话放行。`mvn test` 结果 `Tests run: 4, Failures: 0, Errors: 0`。
+- 为工具补齐真实项目所需能力：
+  - `Apply` 支持新文件创建（`--- /dev/null`）、UTF-8 BOM 和 git 多文件 diff；仍拒绝覆盖、删除、重命名与越界路径，并新增单测。
+  - 新增 `maven-test` profile：离线执行 `mvn -o -B -q test`，自动解析 Surefire XML；不需要 main class。
+  - 修复 `scorePatch` 同时读取 `TestSummary` 与 `JUnitXML` 时的测试数重复计数。
+- 最终补丁通过 TRIDENT 自身验证：`patch verify --profile maven-test --patch docs/evidence/2026-11-14-market-access-control.patch` → `validation_passed`、`mvn -o -B -q test` 退出 0、tests=4/failures=0/errors=0、quality 75/B、`original_snapshot_intact=true`、`runtime_status=isolated_validation_only`。
+- 补丁工件：`docs/evidence/2026-11-14-market-access-control.patch`（4 个文件，+207/-0：POM 测试依赖、LoginInterceptor、spring-mvc.xml 拦截配置、JUnit 测试）。
+- 未覆盖：真实 Tomcat/MySQL 部署下的 HTTP 权限验证、其他安全缺陷、Gradle 有效树、硬件 VM。原项目目录未被修改。
 
 ## 维护规则
 

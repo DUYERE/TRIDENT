@@ -4,6 +4,7 @@
 package r3
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -50,13 +51,15 @@ type hunk struct {
 }
 
 type filePatch struct {
-	path  string
-	hunks []hunk
+	path   string
+	create bool
+	hunks  []hunk
 }
 
-// Apply validates and applies one or more text-only unified diffs to files that
-// already exist inside the workspace. Context must match exactly; there is no
-// fuzz factor, binary patch, rename, creation or deletion support.
+// Apply validates and applies one or more text-only unified diffs to files
+// inside the workspace. Existing-file hunks require exact context; new files
+// may be created but never overwrite, rename or delete. Binary patches are not
+// supported.
 func Apply(workspace string, patch []byte) (PatchResult, error) {
 	sum := sha256.Sum256(patch)
 	result := PatchResult{SHA256: hex.EncodeToString(sum[:]), Files: []FileChange{}}
@@ -66,7 +69,7 @@ func Apply(workspace string, patch []byte) (PatchResult, error) {
 	if !utf8.Valid(patch) {
 		return result, fmt.Errorf("patch is not valid UTF-8")
 	}
-	patches, err := parsePatch(string(patch))
+	patches, err := parsePatch(string(bytes.TrimPrefix(patch, []byte{0xEF, 0xBB, 0xBF})))
 	if err != nil {
 		return result, err
 	}
@@ -108,19 +111,28 @@ func parsePatch(content string) ([]filePatch, error) {
 			if i+1 >= len(lines) || !strings.HasPrefix(strings.TrimSuffix(lines[i+1], "\r"), "+++ ") {
 				return nil, fmt.Errorf("patch header without +++ line")
 			}
-			oldPath, err := patchPath(strings.TrimPrefix(line, "--- "))
+			oldValue := strings.TrimSpace(strings.TrimPrefix(line, "--- "))
+			newValue := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSuffix(lines[i+1], "\r"), "+++ "), "\r"))
+			if newValue == "/dev/null" {
+				return nil, fmt.Errorf("deletion patches are not supported")
+			}
+			newPath, err := patchPath(newValue)
 			if err != nil {
 				return nil, err
 			}
-			newPath, err := patchPath(strings.TrimPrefix(strings.TrimSuffix(lines[i+1], "\r"), "+++ "))
-			if err != nil {
-				return nil, err
-			}
-			if oldPath != newPath {
-				return nil, fmt.Errorf("rename, creation and deletion patches are not supported")
+			create := oldValue == "/dev/null"
+			oldPath := ""
+			if !create {
+				oldPath, err = patchPath(oldValue)
+				if err != nil {
+					return nil, err
+				}
+				if oldPath != newPath {
+					return nil, fmt.Errorf("rename patches are not supported")
+				}
 			}
 			i += 2
-			file := filePatch{path: oldPath}
+			file := filePatch{path: newPath, create: create}
 			for i < len(lines) && strings.HasPrefix(strings.TrimSuffix(lines[i], "\r"), "@@") {
 				parsed, next, err := parseHunk(lines, i)
 				if err != nil {
@@ -170,10 +182,7 @@ func parseHunk(lines []string, start int) (hunk, int, error) {
 	i := start + 1
 	for i < len(lines) {
 		line := strings.TrimSuffix(lines[i], "\r")
-		if strings.HasPrefix(line, "@@") {
-			break
-		}
-		if line == "" {
+		if strings.HasPrefix(line, "@@") || line == "" || isPatchHeaderLine(line) {
 			break
 		}
 		if strings.HasPrefix(line, "\\ No newline at end of file") {
@@ -202,6 +211,15 @@ func parseHunk(lines []string, start int) (hunk, int, error) {
 	return current, i, nil
 }
 
+func isPatchHeaderLine(line string) bool {
+	for _, prefix := range []string{"diff --git ", "index ", "new file mode ", "deleted file mode ", "similarity index ", "rename from ", "rename to ", "--- "} {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func patchPath(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if tab := strings.IndexByte(value, '\t'); tab >= 0 {
@@ -224,6 +242,9 @@ func applyFile(root string, file filePatch) (FileChange, error) {
 	target, err := safeWorkspacePath(root, file.path)
 	if err != nil {
 		return FileChange{}, err
+	}
+	if file.create {
+		return createPatchFile(root, target, file)
 	}
 	info, err := os.Lstat(target)
 	if err != nil || !info.Mode().IsRegular() {
@@ -291,6 +312,46 @@ func applyFile(root string, file filePatch) (FileChange, error) {
 	return FileChange{
 		Path: file.path, Additions: additions, Deletions: deletions,
 		SHA256Before: hex.EncodeToString(beforeSum[:]), SHA256After: hex.EncodeToString(afterSum[:]),
+	}, nil
+}
+
+func createPatchFile(root, target string, file filePatch) (FileChange, error) {
+	if _, err := os.Lstat(target); err == nil {
+		return FileChange{}, fmt.Errorf("new file %q already exists", file.path)
+	} else if !os.IsNotExist(err) {
+		return FileChange{}, err
+	}
+	var out []string
+	additions := 0
+	for _, current := range file.hunks {
+		if current.oldStart != 0 || current.oldCount != 0 || current.newStart < 1 {
+			return FileChange{}, fmt.Errorf("new file %q has an invalid hunk range", file.path)
+		}
+		for _, line := range current.lines {
+			if line.kind != '+' {
+				return FileChange{}, fmt.Errorf("new file %q contains non-addition lines", file.path)
+			}
+			out = append(out, line.text)
+			additions++
+		}
+	}
+	if len(out) == 0 {
+		return FileChange{}, fmt.Errorf("new file %q is empty", file.path)
+	}
+	after := []byte(strings.Join(out, "\n") + "\n")
+	if len(after) > MaxFileBytes || !utf8.Valid(after) {
+		return FileChange{}, fmt.Errorf("new file %q exceeds size or encoding bounds", file.path)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return FileChange{}, err
+	}
+	if err := writePatchFile(root, file.path, after); err != nil {
+		return FileChange{}, err
+	}
+	afterSum := sha256.Sum256(after)
+	return FileChange{
+		Path: file.path, Additions: additions, Deletions: 0,
+		SHA256Before: "", SHA256After: hex.EncodeToString(afterSum[:]),
 	}, nil
 }
 

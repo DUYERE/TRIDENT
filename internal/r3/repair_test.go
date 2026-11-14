@@ -51,6 +51,17 @@ func TestScorePatchHeuristics(t *testing.T) {
 	if quality.Score != 100 || quality.Grade != "A" || len(quality.Dimensions) == 0 {
 		t.Fatalf("quality: %+v", quality)
 	}
+	if validation.TestSummary.Tests != 1 {
+		t.Fatalf("scorePatch mutated test summary: %+v", validation.TestSummary)
+	}
+	combined := ValidationResult{
+		Status: ValidationPassed, TestSummary: &TestRunSummary{Tests: 4},
+		JUnitXML: &JUnitXMLSummary{Tests: 4},
+	}
+	_ = scorePatch(combined, patch)
+	if combined.TestSummary.Tests != 4 {
+		t.Fatalf("scorePatch double-counted tests: %+v", combined.TestSummary)
+	}
 	failed := scorePatch(ValidationResult{Status: ValidationFailed}, PatchResult{Files: []FileChange{{Path: "A.java", Additions: 100, Deletions: 100}}})
 	if failed.Score >= quality.Score || failed.Grade == "A" {
 		t.Fatalf("failed validation quality: %+v", failed)

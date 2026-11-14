@@ -128,3 +128,6 @@ trident patch verify \
 - 2026-11-14 真实模型补丁：`deepseek-flash` 在 2048 输出上限下被截断，随后返回 hunk 行数不匹配的 diff；`deepseek-v4-pro` 返回严格可应用补丁（SHA `69aee83e…`，1 行），process Maven `validation_passed`（quality 85）、JUnit 4.12 `OK (1 test)`（quality 100），原快照完整。模型失败时 `patch repair` 停止而不自动重试；以上仅为合成 fixture 结果。
 - 2026-11-14 真实项目：`D:\Code\Java\market`（快照 `3de9c6c4…`），`maven-compile` profile 验证 `ManagerController` 访问控制补丁（SHA `cecacc06…`，+12/-3），`mvn -o -B -q -DskipTests compile` 通过，quality 80/B，原快照完整。项目无测试，只证明编译通过，不证明运行时权限或业务语义。
 - `maven-compile` profile 只执行离线编译，不需要 `--main-class`；适合无入口/Web 项目。`Apply` 现保留 CRLF 行尾，避免 Windows 真实项目上下文误匹配。
+- 2026-11-14 真实项目集中式补丁：`LoginInterceptor` + `spring-mvc.xml` 全量拦截 `/manager/**` 与 `/staff/**`（排除登录地址），4 个 JUnit 运行时测试通过；通过 `patch verify --profile maven-test` 验证为 `validation_passed`、tests=4、quality 75/B、原快照完整。
+- `Apply` 现支持新文件创建（`--- /dev/null`）、UTF-8 BOM 与 git 多文件补丁；仍拒绝覆盖、删除、重命名、越界路径和二进制内容。新增 `maven-test` profile：离线 `mvn test` 并自动解析 Surefire XML，不需要 main class。
+- 补丁工件：`docs/evidence/2026-11-14-market-access-control.patch`（+207/-0，4 文件）。这只是隔离副本上的编译+单元测试结果，不代表生产部署或所有接口的运行时权限。

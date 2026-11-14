@@ -111,6 +111,46 @@ func TestApplyPreservesCRLF(t *testing.T) {
 	}
 }
 
+func TestApplyAcceptsUTF8BOM(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "A.java"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := "\ufeff--- a/A.java\n+++ b/A.java\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+	if _, err := Apply(workspace, []byte(patch)); err != nil {
+		t.Fatalf("UTF-8 BOM patch rejected: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(workspace, "A.java"))
+	if err != nil || string(content) != "y\n" {
+		t.Fatalf("BOM patch result: %q %v", content, err)
+	}
+}
+
+func TestApplyCreatesNewFileAndRejectsOverwrite(t *testing.T) {
+	workspace := t.TempDir()
+	patch := "--- /dev/null\n+++ b/src/main/java/demo/New.java\n@@ -0,0 +1,2 @@\n+package demo;\n+public class New {}\n"
+	result, err := Apply(workspace, []byte(patch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "src/main/java/demo/New.java" || result.Files[0].Additions != 2 || result.Files[0].Deletions != 0 {
+		t.Fatalf("creation result: %+v", result)
+	}
+	content, err := os.ReadFile(filepath.Join(workspace, "src/main/java/demo/New.java"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "package demo;\npublic class New {}\n" {
+		t.Fatalf("created content: %q", content)
+	}
+	if _, err = Apply(workspace, []byte(patch)); err == nil {
+		t.Fatal("overwriting an existing file was accepted")
+	}
+	if _, err = Apply(workspace, []byte("--- a/src/main/java/demo/New.java\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-package demo;\n-public class New {}\n")); err == nil {
+		t.Fatal("deletion patch was accepted")
+	}
+}
+
 func TestWorkspaceRejectsUnsafeDestinations(t *testing.T) {
 	snapshot, imported, _ := testSnapshot(t, map[string]string{"a.txt": "a\n"})
 	if _, err := CreateWorkspace(context.Background(), snapshot, imported.Path, filepath.Join(imported.Path, "workspace")); err == nil {
@@ -136,8 +176,15 @@ func TestPatchRejectsTraversalAndMismatch(t *testing.T) {
 	if _, err := Apply(workspace, []byte(mismatch)); err == nil {
 		t.Fatal("context mismatch accepted")
 	}
-	if _, err := Apply(workspace, []byte("--- /dev/null\n+++ b/new.java\n@@ -0,0 +1,1 @@\n+x\n")); err == nil {
-		t.Fatal("file creation accepted")
+	created, err := Apply(workspace, []byte("--- /dev/null\n+++ b/new.java\n@@ -0,0 +1,1 @@\n+x\n"))
+	if err != nil {
+		t.Fatalf("file creation rejected: %v", err)
+	}
+	if len(created.Files) != 1 || created.Files[0].Path != "new.java" {
+		t.Fatalf("creation result: %+v", created)
+	}
+	if content, err := os.ReadFile(filepath.Join(workspace, "new.java")); err != nil || string(content) != "x\n" {
+		t.Fatalf("created file: %q %v", content, err)
 	}
 	after, err := os.ReadFile(filepath.Join(workspace, "src/main/java/demo/A.java"))
 	if err != nil || string(after) != originalJava {

@@ -116,8 +116,8 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 	if !opts.ApproveExecution {
 		return result, fmt.Errorf("isolated execution requires explicit approval")
 	}
-	if opts.Profile != "maven" && opts.Profile != "maven-compile" && opts.Profile != "javac" && opts.Profile != "junit" {
-		return result, fmt.Errorf("profile must be maven, maven-compile, javac or junit")
+	if opts.Profile != "maven" && opts.Profile != "maven-compile" && opts.Profile != "maven-test" && opts.Profile != "javac" && opts.Profile != "junit" {
+		return result, fmt.Errorf("profile must be maven, maven-compile, maven-test, javac or junit")
 	}
 	var testClasses []string
 	if opts.Profile == "junit" {
@@ -140,7 +140,7 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 				return result, fmt.Errorf("jacoco agent must be an absolute regular jar file")
 			}
 		}
-	} else if opts.Profile != "maven-compile" && (!mainClassPattern.MatchString(opts.MainClass) || len(opts.MainClass) > 256) {
+	} else if opts.Profile != "maven-compile" && opts.Profile != "maven-test" && (!mainClassPattern.MatchString(opts.MainClass) || len(opts.MainClass) > 256) {
 		return result, fmt.Errorf("main class must be a dotted Java identifier")
 	}
 	root, err := filepath.Abs(workspace)
@@ -215,6 +215,33 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 				result.Commands[last].Status = "start_error"
 				result.Commands[last].ErrorMessage = "maven compile did not produce target/classes"
 				status = ValidationError
+			}
+		}
+	case "maven-test":
+		if info, statErr := os.Stat(filepath.Join(root, "pom.xml")); statErr != nil || info.IsDir() {
+			return result, fmt.Errorf("maven-test profile requires pom.xml in the workspace")
+		}
+		var step CommandResult
+		if sandbox.Kind == SandboxDocker || sandbox.Kind == SandboxGVisor {
+			step = runDockerCommand(runCtx, sandbox, root, dockerDisplay(sandbox, "mvn -o -B -q test"), "mvn", "-o", "-B", "-q", "test")
+		} else {
+			step = runCommand(runCtx, exec.CommandContext(runCtx, "mvn", "-o", "-B", "-q", "test"), "mvn -o -B -q test", root)
+		}
+		appendStep(step)
+		if step.Status == "ok" {
+			reportDir := filepath.Join(root, "target", "surefire-reports")
+			if info, statErr := os.Stat(reportDir); statErr == nil && info.IsDir() {
+				summary, summaryErr := parseJUnitXMLDir(reportDir)
+				if summaryErr != nil {
+					result.Error = summaryErr.Error()
+				} else if summary != nil {
+					result.JUnitXML = summary
+					result.TestSummary = &TestRunSummary{
+						Tests: summary.Tests, Failures: summary.Failures,
+						Errors: summary.Errors, Skipped: summary.Skipped,
+						Raw: "surefire:" + strings.Join(summary.Files, ","),
+					}
+				}
 			}
 		}
 	case "javac":
