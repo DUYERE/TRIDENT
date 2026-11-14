@@ -186,6 +186,13 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident patch verify \
 
 `trident runtime http --plan <plan.json> --approve-target <origin> [--allow-loopback]` 按调用者提供的请求计划顺序执行 HTTP 断言，支持每个 session 的 cookie 复用、状态码、`Location` 前缀、响应体包含/不包含与响应头包含。默认不跟随重定向、不并发、不使用代理、响应体上限 64 KiB；`form`/`json`/`header` 值不会写入报告。只有显式 `--approve-target` 的 origin 会被访问，loopback 还需 `--allow-loopback`。输出 `runtime_status=observed`，但只证明这些请求的实际响应，不构成漏洞利用、数据泄露或授权绕过的完整证明，也不自动修改静态 finding 的 `runtime_status`。契约见 [运行时验证契约](docs/runtime-contract.md)；本机验收为 `python scripts/test-runtime.py`。
 
+### 发布、CI 与部署
+
+- 构建、迁移、备份恢复、凭据分权与版本矩阵：[部署指南](docs/deployment.md)。
+- 离线 CI 模板：[.github/workflows/ci.yml](.github/workflows/ci.yml)；本地等价门禁：`powershell -File scripts/verify-offline.ps1`。
+- 最小权限角色模板：[db/roles.example.sql](db/roles.example.sql)（示例，未在独立生产库执行）。
+- 合成样本基准：[基准报告](docs/benchmark-report.md)；只测 wall-clock，不含数据库、模型、Java/Maven。
+
 ## 已实现的历史基础（P0.1 / P0.2）
 
 - Go + PostgreSQL，显式、按文件校验和验证的前向迁移；普通启动不建库、不自动迁移。
@@ -286,8 +293,8 @@ docker compose --project-directory 'E:/pentest agent/TRIDENT' -f 'E:/pentest age
 | `internal/webui/` | 只读 Web 控制台：令牌鉴权、JSON API、嵌入的暗色前端资源 |
 | `internal/sbom/` | 确定性 CycloneDX 1.5 序列化与 metadata/component/vulnerability 映射 |
 | `internal/r3/` | 快照工作区复制、统一 diff 应用、策略约束、离线 Maven/javac/JUnit（XML/JaCoCo）验证、质量评分、多轮修复与 Docker/gVisor |
-| `docs/sca-contract.md`、`docs/audit-contract.md`、`docs/dataflow-contract.md`、`docs/findings-contract.md`、`docs/web-console-contract.md`、`docs/sbom-contract.md`、`docs/patch-contract.md`、`docs/runtime-contract.md`、`docs/release-checklist.md` | SCA、入口清单、数据流、证据模型、Web、SBOM、R3、运行时验证与发布检查表 |
-| `scripts/test-sca.py`、`test-audit.py`、`test-authz.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-intel.py`、`test-upgrade.py`、`test-runtime.py`、`test-patch.py`、`benchmark.py` | 真实 CLI 与官方 Schema/真实 Java/Maven/运行时验收和可复现基准 |
+| `docs/sca-contract.md`、`docs/audit-contract.md`、`docs/dataflow-contract.md`、`docs/findings-contract.md`、`docs/web-console-contract.md`、`docs/sbom-contract.md`、`docs/patch-contract.md`、`docs/runtime-contract.md`、`docs/deployment.md`、`docs/benchmark-report.md`、`docs/release-checklist.md` | SCA、入口清单、数据流、证据模型、Web、SBOM、R3、运行时验证、部署、基准与发布检查表 |
+| `scripts/test-sca.py`、`test-audit.py`、`test-authz.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-intel.py`、`test-upgrade.py`、`test-runtime.py`、`test-patch.py`、`verify-offline.ps1`、`benchmark.py` | 真实 CLI 与官方 Schema/真实 Java/Maven/运行时验收、离线门禁和可复现基准 |
 | `internal/agent/`、`internal/tools/` | 只读主循环、受控工具与检查点/证据 |
 | `internal/model/openai/` | 官方 Go SDK Chat Completions 薄适配，无隐式外发 |
 | `internal/store/agent_runs*.go` | Run 所有者权限、CAS、预算与恢复 |

@@ -939,6 +939,15 @@
 - 新增 `python scripts/test-runtime.py`：loopback 服务 4 条请求全部通过，覆盖 session 复用、302 不跟随、凭据不落报告、错误断言失败、未批准 origin 与未授权 loopback 拒绝。
 - 真实环境复测：Tomcat 9.0.106 + MySQL 8.0.46 部署 `D:\Code\Java\market` 补丁，15 条请求覆盖登录页、未登录 302、管理员/员工登录后 200、跨会话 302 与错误密码不建立会话，结果 `status=passed`、15/15、`runtime_status=observed`。该结果只证明这些请求的响应，不证明其他漏洞或生产安全。
 
+### 2026-11-14 续九：R5/R6 发布治理
+
+- 新增 GitHub Actions 离线工作流模板 `.github/workflows/ci.yml`：Go 测试/vet、10 个离线 CLI 验收、SARIF 生成与 artifact 上传；不调用模型、数据库、Java/Maven/Gradle。
+- 新增 `scripts/verify-offline.ps1`，串联 Go 测试/vet 与离线验收脚本，作为本地可复现门禁。
+- 新增 `docs/deployment.md`：构建、环境变量/凭据、迁移、`pg_dump`/`pg_restore`、CI/SARIF、版本矩阵与未完成生产门槛。
+- 新增 `db/roles.example.sql`：`trident_migrator`/`trident_runtime`/`trident_readonly` 的 DDL/DML/只读分离模板；未在独立生产库执行。
+- 新增 `docs/benchmark-report.md`：`python scripts/benchmark.py 3`，4 个合成 fixture × 7 条只读命令，仅 wall-clock；不含 DB/模型/Java/Maven。
+- 仍未完成：CI 的 Java/Maven/Gradle、模型与运行时 job 需专用 runner 和授权；生产凭据分权/备份恢复演练、多用户/TLS、硬件 VM 与完整 AST/调用图仍未验证。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

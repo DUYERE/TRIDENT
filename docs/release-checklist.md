@@ -88,6 +88,11 @@ python scripts/benchmark.py 3
 | 依赖升级验证 | `python scripts/test-upgrade.py` | 通过：commons-text 1.9→1.10.0，基线测试与升级后测试均通过，快照完整；Gradle 声明仅生成补丁 |
 | 权限/越权控制清单 | `python scripts/test-authz.py` | 通过：5 个控制/11 个入口，6 protected、2 public、2 unprotected、1 unknown；2 条 CWE-306 `inconclusive` finding |
 | 运行时 HTTP 验证自动化 | `python scripts/test-runtime.py` + 真实 Tomcat/MySQL | 通过：loopback 4/4；真实环境 15/15（登录页 200、未登录 302、登录后 200、跨会话 302、错误密码不建会话），`runtime_status=observed` |
+| 离线全量门禁 | `powershell -File scripts/verify-offline.ps1` | 通过（Go 测试/vet + 10 个离线 CLI 验收脚本） |
+| CI 工作流模板 | `.github/workflows/ci.yml` | 已提供并在本地核对 YAML/命令；未在 GitHub runner 实际执行 |
+| 部署/备份/升级文档 | `docs/deployment.md` | 已提供构建、迁移、备份恢复、凭据分权与版本矩阵；未做生产恢复演练 |
+| 最小权限角色模板 | `db/roles.example.sql` | 已提供 migrator/runtime/readonly 分离模板；未在独立生产库执行 |
+| 基准报告 | `python scripts/benchmark.py 3` + `docs/benchmark-report.md` | 通过：4 个合成 fixture、7 条只读命令；仅 wall-clock，不含 DB/模型/Java/Maven |
 
 ## 5. 版本兼容与已知边界
 

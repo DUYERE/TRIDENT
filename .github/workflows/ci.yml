@@ -1,0 +1,61 @@
+name: trident-offline
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python test dependency
+        run: python -m pip install --disable-pip-version-check jsonschema
+
+      - name: Go tests and vet
+        run: |
+          go test -count=1 ./...
+          go vet ./...
+
+      - name: Offline CLI acceptance
+        run: |
+          python scripts/test-project.py
+          python scripts/test-sca.py
+          python scripts/test-intel.py
+          python scripts/test-audit.py
+          python scripts/test-authz.py
+          python scripts/test-dataflow.py
+          python scripts/test-findings.py
+          python scripts/test-sbom.py
+          python scripts/test-web.py
+          python scripts/test-runtime.py
+
+      - name: Build CLI
+        run: go build -o trident ./cmd/trident
+
+      - name: Generate SARIF artifact
+        run: |
+          mkdir -p artifacts
+          ./trident project import --source tests/fixtures/java-maven --snapshot artifacts/snapshot > artifacts/import.json
+          HASH=$(python -c 'import json; print(json.load(open("artifacts/import.json", encoding="utf-8"))["snapshot_hash"])')
+          ./trident audit sarif --snapshot artifacts/snapshot --snapshot-hash "$HASH" > artifacts/trident.sarif
+          python -c 'import json; json.load(open("artifacts/trident.sarif", encoding="utf-8"))'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trident-sarif
+          path: artifacts/trident.sarif
