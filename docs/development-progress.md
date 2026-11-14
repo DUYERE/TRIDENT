@@ -987,6 +987,15 @@
 - 验收：`python scripts/test-authz.py` 通过（2 条链；5 protected/3 public/1 unknown/0 unprotected；`ROLE_ADMIN`；`/ctx/hello` 的 `external_path=/app/ctx/hello`；`partial=false`、`runtime_status=not_run`、快照与 fixture 字节不变）；`go test ./internal/authz` 覆盖同一场景；旧 `java-authz` 的 6/2/2/1 与 2 条 finding 不变。
 - 限制：不执行 `addFilterBefore/After` 或过滤器体，不解析自定义 AOP、外部网关/反向代理、重写规则；`unprotected` 仍是静态缺省证据，不是未授权访问证明。
 
+### 2026-11-14 续十四：P1-1 运行时多角色矩阵与 CSRF
+
+- `internal/httpverify` 升级到 `0.2.0-p1.1+r1-http-runtime-v2`：计划新增可选 `roles`（`id`/`session`/`login`/`csrf`）与 `matrix`（角色 × 请求 × 期望）；不同角色必须使用不同 session，`(role, request)` 不得重复。
+- 登录步骤先解析 `${ENV:NAME}` 凭据占位符（未设置则 `credential_placeholder_unresolved` 并停止该角色），再按需注入 CSRF；CSRF 仅从显式 `meta[name=...]`/`input[name=...]` 提取（≤512 字节），非 `GET/HEAD/OPTIONS` 注入表单字段或请求头；提取失败为 `inconclusive` + `csrf_token_not_found`，矩阵单元为 `role_login_incomplete`。
+- 输出新增 `results[].role/matrix/csrf`、`coverage.roles{requests,passed,failed,inconclusive,login_status}`；新 limitation `roles_caller_defined`、`csrf_token_extraction_bounded`；凭据解析值、Cookie 与 token 均不写入报告。
+- 验收：`go test ./internal/httpverify` 通过（矩阵 10 次执行全 passed、每角色 4/4、`token_injected`、缺失 token inconclusive、共享 session/非法 selector 拒绝）；`python scripts/test-runtime.py` 通过（基础 4/4；矩阵 admin/guest 各 4/4、`login_status=complete`、admin /reports 200 与 guest 403；`secret-runtime`/`token-csrf` 不出现在 stdout；缺失 token、未设置占位符、共享 session 均失败关闭）。
+- 真实环境 15 条 Tomcat/MySQL 计划未纳入仓库，本次变更未重跑；该结果仅覆盖当时的声明请求，不是生产安全证明。
+- 限制：不渲染浏览器、不自动发现账号或密码、不绕过验证码；token 仅来自登录响应 HTML 的显式选择器，不做 JS 计算或多次刷新；`runtime_status=observed` 不回写静态 finding。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

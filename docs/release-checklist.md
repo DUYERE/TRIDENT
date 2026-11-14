@@ -87,7 +87,7 @@ python scripts/benchmark.py 3
 | Gradle 有效依赖树（离线） | `python scripts/test-gradle-resolve.py` | 通过（Gradle 8.14.3：3 模块/5 依赖/2 传递；需 `TRIDENT_GRADLE` 或 PATH，离线缓存 POM 缺失时 skip） |
 | 依赖升级验证 | `python scripts/test-upgrade.py` | 通过：commons-text 1.9→1.10.0，基线测试与升级后测试均通过，快照完整；Gradle 声明仅生成补丁 |
 | 权限/越权控制清单 | `python scripts/test-authz.py` | 通过：旧 fixture 5 控制/11 入口，6 protected、2 public、2 unprotected、1 unknown，2 条 CWE-306 `inconclusive` finding；`java-authz-chain` 2 条有序链、5 protected/3 public/1 unknown、`ROLE_ADMIN` 归一化、context-path 外部路径 |
-| 运行时 HTTP 验证自动化 | `python scripts/test-runtime.py` + 真实 Tomcat/MySQL | 通过：loopback 4/4；真实环境 15/15（登录页 200、未登录 302、登录后 200、跨会话 302、错误密码不建会话），`runtime_status=observed` |
+| 运行时 HTTP 验证自动化 | `python scripts/test-runtime.py` + 真实 Tomcat/MySQL | 通过（本机）：基础 loopback 4/4；角色矩阵 2 角色 × (2 登录 + 2 单元) 共 10/10、每角色 4/4、`login_status=complete`、`csrf=token_injected`；缺失 token/未设置占位符/共享 session 失败关闭；凭据与 token 不落报告。真实环境 15/15 为既有结果，本次未重跑 |
 | 本地制品哈希与来源核对 | `python scripts/test-artifact-hash.py` | 通过：fixture 本地仓库 jar/pom SHA-256 与字节命中；调用者清单 exact/mismatch/catalog-only 三态；空仓库 `unavailable`；非法清单/不存在仓库失败关闭；SBOM 同一组 observed 哈希；快照与仓库字节不变 |
 | 依赖到入口有界可达性 | `python scripts/test-reachability.py` | 通过：`java-reachability` 三模块 3 入口，`reachable` 路径 2 步且带 SHA-256/行号，仅声明未引用 `unreachable`，`Class.forName` 为 `unknown/reflection_not_resolved`；findings 假设 `supported/unsupported/unverified`；无 package map 全部 unknown |
 | 受限 Java 语义模型 | `python scripts/test-java-ast.py` | 通过：`java-ast-model` 5 文件（1 个语法错误单独拒绝）；嵌套类、泛型擦除重载、唯一实现接口分派、双实现歧义分派、注解常量/数组/枚举折叠、确定性、fixture 字节不变 |

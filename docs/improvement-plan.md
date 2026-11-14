@@ -10,8 +10,10 @@
 > （受限 Java 语义模型 `audit java-model`、方法级调用图、v13 coverage 接入）已实现并通过
 > `scripts/test-java-ast.py`、`go test ./internal/javaast` 验收，AST 尚未接入 sink/source 匹配；
 > P0-4 权限链语义（`SecurityFilterChain` 顺序与 `securityMatcher` 作用域、受限方法注解 SpEL、
-> context-path 外部路径）已实现并通过 `scripts/test-authz.py` 与 `go test ./internal/authz` 验收。
-> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三。其余项仍为计划。
+> context-path 外部路径）已实现并通过 `scripts/test-authz.py` 与 `go test ./internal/authz` 验收；
+> P1-1 运行时角色矩阵与 CSRF（`roles`/`matrix`、`${ENV:NAME}` 凭据占位符、有界 token 提取与注入）
+> 已实现并通过 `scripts/test-runtime.py` 与 `go test ./internal/httpverify` 验收。
+> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四。其余项仍为计划。
 
 ## 1. 原则与约束
 
@@ -38,7 +40,7 @@
 | 权限 | 方法注解/拦截器/filter/Security matcher 链，Ant 匹配 | 无 filter-chain 顺序语义、无 context-path/网关 |
 | 统一证据 | Finding/Hypothesis、SARIF 2.1.0、SBOM 1.5 | 依赖到入口为 import 级；无 VEX |
 | 补丁闭环 | 调用者/AI 补丁、隔离副本、Maven/javac/JUnit/Docker/gVisor、质量评分、5 轮修复 | 无硬件 VM、Gradle 不跑验证、无回滚/冲突处理 |
-| 运行时验证 | 显式 origin、cookie session、有界断言、64 KiB 响应 | 无多角色矩阵、无 CSRF 自动化、不跟随重定向 |
+| 运行时验证 | 显式 origin、cookie session、有界断言、64 KiB 响应、角色矩阵与 CSRF 注入 | 无浏览器渲染/验证码、不自动发现账号、不跟随重定向 |
 | 平台 | CLI、只读 Web 控制台、PostgreSQL Run 存储、离线 CI 模板 | CI runner 未确认、无 TLS/多用户、无监控告警 |
 
 ## 3. 改进项清单
@@ -123,18 +125,27 @@
 
 ### P1-1 运行时多角色矩阵与 CSRF 自动化
 
+- **状态**：已实现（`internal/httpverify` `0.2.0-p1.1+r1-http-runtime-v2`）。
 - **目标**：把现有“单计划顺序请求”扩展为可复用的多角色、多断言矩阵。
 - **实现要点**：
   - 计划 schema 增加 `roles`（登录步骤、凭据占位符引用）与 `matrix`（角色 × 请求 × 期望），
-    仍限制单计划请求总数与响应体上限。
+    仍限制单计划请求总数与响应体上限（顶层请求 + 登录步骤 + 矩阵单元 ≤ 64）。
   - 支持有界 CSRF token 提取：从登录页 HTML `meta`/隐藏表单字段按显式选择器取值，
-    在后续请求注入；提取失败标记 `inconclusive`，不猜测。
+    在后续非 `GET/HEAD/OPTIONS` 请求注入；提取失败标记 `inconclusive`，不猜测。
   - 报告按角色聚合覆盖数，凭据与 token 一律不落报告。
+- **实现结果**：
+  - `roles[].login` ≤ 16 步；`${ENV:NAME}` 未设置时 `credential_placeholder_unresolved` 并停止该角色；
+    角色必须使用不同 `session`，`(role, request)` 不得重复。
+  - `csrf.selector` 仅接受 `meta[name=...]`/`input[name=...]`，token ≤ 512 字节，注入 `field` 或 `header`；
+    缺失时 `csrf_token_not_found`，矩阵单元 `role_login_incomplete`。
+  - 输出 `results[].role/matrix/csrf` 与 `coverage.roles[].login_status`；新 limitation
+    `roles_caller_defined`、`csrf_token_extraction_bounded`。
+  - 新增 `scripts/test-runtime.py` 矩阵/CSRF/占位符/会话隔离场景；`go test ./internal/httpverify` 覆盖同类断言。
 - **验收标准**：
-  - 本地测试服务新增 CSRF 端点；`scripts/test-runtime.py` 增加矩阵与 token 场景。
-  - 现有 Tomcat/MySQL 15 条请求计划保持通过（回归）。
+  - 本地测试服务新增 CSRF 端点；`scripts/test-runtime.py` 增加矩阵与 token 场景（已通过：矩阵 10/10、基础 4/4）。
+  - Tomcat/MySQL 15 条请求计划未纳入仓库，本次未重跑；旧计划 schema 兼容，建议在具备环境时回归。
   - 契约更新 `docs/runtime-contract.md`；新增 limitation
-    `csrf_token_extraction_bounded`、`roles_caller_defined`。
+    `csrf_token_extraction_bounded`、`roles_caller_defined`（已完成）。
 - **非目标**：不做浏览器渲染、不自动发现账号、不绕过验证码。
 
 ### P1-2 运行时证据与静态 finding 的关联报告

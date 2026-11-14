@@ -194,7 +194,7 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident patch verify \
 
 ### 运行时 HTTP 验证（显式目标授权）
 
-`trident runtime http --plan <plan.json> --approve-target <origin> [--allow-loopback]` 按调用者提供的请求计划顺序执行 HTTP 断言，支持每个 session 的 cookie 复用、状态码、`Location` 前缀、响应体包含/不包含与响应头包含。默认不跟随重定向、不并发、不使用代理、响应体上限 64 KiB；`form`/`json`/`header` 值不会写入报告。只有显式 `--approve-target` 的 origin 会被访问，loopback 还需 `--allow-loopback`。输出 `runtime_status=observed`，但只证明这些请求的实际响应，不构成漏洞利用、数据泄露或授权绕过的完整证明，也不自动修改静态 finding 的 `runtime_status`。契约见 [运行时验证契约](docs/runtime-contract.md)；本机验收为 `python scripts/test-runtime.py`。
+`trident runtime http --plan <plan.json> --approve-target <origin> [--allow-loopback]` 按调用者提供的请求计划顺序执行 HTTP 断言，支持每个 session 的 cookie 复用、状态码、`Location` 前缀、响应体包含/不包含与响应头包含。可选 `roles` 声明多角色登录步骤（凭据用 `${ENV:NAME}` 占位符，不写入计划）与 CSRF token 来源（`meta[name=...]`/`input[name=...]`，注入表单字段或请求头）；`matrix` 按角色 × 请求 × 期望执行并聚合每角色覆盖。默认不跟随重定向、不并发、不使用代理、响应体上限 64 KiB；`form`/`json`/`header` 值、解析后的凭据与 token 不会写入报告。只有显式 `--approve-target` 的 origin 会被访问，loopback 还需 `--allow-loopback`。输出 `runtime_status=observed`，但只证明这些请求的实际响应，不构成漏洞利用、数据泄露或授权绕过的完整证明，也不自动修改静态 finding 的 `runtime_status`。契约见 [运行时验证契约](docs/runtime-contract.md)；本机验收为 `python scripts/test-runtime.py`。
 
 ### 发布、CI 与部署
 

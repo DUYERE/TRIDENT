@@ -29,28 +29,47 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
-    def _send(self, status, body=b"", location=None, cookie=None):
+    def _send(self, status, body=b"", location=None, cookie=None, content_type="text/plain; charset=utf-8"):
         self.send_response(status)
         if location:
             self.send_header("Location", location)
         if cookie:
             self.send_header("Set-Cookie", cookie)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if body:
             self.wfile.write(body)
 
+    def _session(self):
+        cookie = self.headers.get("Cookie", "")
+        for part in cookie.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == "session":
+                return value
+        return ""
+
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         if path == "/login":
             self._send(200, b"login page")
+        elif path == "/csrf-login":
+            self._send(200, b'<html><head><meta name="_csrf" content="token-csrf"></head>'
+                            b'<body><form><input type="hidden" name="_csrf" value="token-csrf">'
+                            b'</form></body></html>', content_type="text/html; charset=utf-8")
         elif path == "/admin":
-            cookie = self.headers.get("Cookie", "")
-            if "session=ok" not in cookie:
+            session = self._session()
+            if not session:
                 self._send(302, location="/login")
+            elif session == "guest":
+                self._send(403, b"denied")
             else:
                 self._send(200, b"admin page")
+        elif path == "/reports":
+            if self._session() == "admin":
+                self._send(200, b"reports page")
+            else:
+                self._send(403, b"denied")
         elif path == "/large":
             self._send(200, b"x" * (70 * 1024) + b"needle")
         else:
@@ -62,6 +81,10 @@ class Handler(BaseHTTPRequestHandler):
         form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
         if path == "/dologin" and form.get("user") == ["admin"] and form.get("pass") == ["secret"]:
             self._send(302, location="/admin", cookie="session=ok; Path=/")
+        elif path == "/secure-login" and form.get("_csrf") == ["token-csrf"] \
+                and form.get("user") in (["admin"], ["guest"]) \
+                and form.get("pass") == ["secret-runtime"]:
+            self._send(302, location="/reports", cookie=f"session={form['user'][0]}; Path=/")
         else:
             self._send(403, b"denied")
 
@@ -108,7 +131,8 @@ def run_cli(binary, env, plan, approved, allow_loopback=True):
 def main():
     env = os.environ.copy()
     for name in ("TRIDENT_DATABASE_URL", "TRIDENT_TOKEN", "TRIDENT_MODEL_API_KEY",
-                 "TRIDENT_TEST_DATABASE_URL", "TRIDENT_TEST_ADMIN_TOKEN"):
+                 "TRIDENT_TEST_DATABASE_URL", "TRIDENT_TEST_ADMIN_TOKEN",
+                 "TRIDENT_TEST_PASS", "TRIDENT_MISSING_PASS"):
         env.pop(name, None)
     with loopback_server() as origin, temporary_work() as work:
         parent = Path(work)
@@ -149,6 +173,107 @@ def main():
                 "redirect was followed or location lost")
         require(by_id["admin-auth"]["observed_status"] == 200, "session cookie was not reused")
 
+        env["TRIDENT_TEST_PASS"] = "secret-runtime"
+        login_steps = lambda user: [
+            {"id": "page", "method": "GET", "path": "/csrf-login",
+             "expect": {"status": 200}},
+            {"id": "submit", "method": "POST", "path": "/secure-login",
+             "form": {"user": user, "pass": "${ENV:TRIDENT_TEST_PASS}"},
+             "expect": {"status": 302, "location_prefix": "/reports"}},
+        ]
+        matrix_plan = {
+            "schema_version": 1,
+            "name": "role-matrix",
+            "base_url": origin,
+            "roles": [
+                {"id": "admin", "session": "role-admin", "login": login_steps("admin"),
+                 "csrf": {"selector": "meta[name=_csrf]", "field": "_csrf"}},
+                {"id": "guest", "session": "role-guest", "login": login_steps("guest"),
+                 "csrf": {"selector": "input[name=_csrf]", "field": "_csrf"}},
+            ],
+            "requests": [
+                {"id": "admin-page", "method": "GET", "path": "/admin",
+                 "expect": {"status": 302}},
+                {"id": "reports", "method": "GET", "path": "/reports",
+                 "expect": {"status": 403}},
+            ],
+            "matrix": [
+                {"role": "admin", "request": "admin-page",
+                 "expect": {"status": 200, "body_contains": "admin page"}},
+                {"role": "admin", "request": "reports",
+                 "expect": {"status": 200, "body_contains": "reports page"}},
+                {"role": "guest", "request": "admin-page", "expect": {"status": 403}},
+                {"role": "guest", "request": "reports", "expect": {"status": 403}},
+            ],
+        }
+        matrix_path = parent / "matrix.json"
+        matrix_path.write_text(json.dumps(matrix_plan, ensure_ascii=False), encoding="utf-8")
+        matrix_run = run_cli(binary, env, matrix_path, origin)
+        require(matrix_run.returncode == 0, matrix_run.stderr.strip() or "role matrix failed")
+        for secret in ("secret-runtime", "token-csrf"):
+            require(secret not in matrix_run.stdout, "credentials or CSRF token leaked into evidence")
+        matrix_report = json.loads(matrix_run.stdout)
+        require(matrix_report["status"] == "passed"
+                and matrix_report["runtime_status"] == "observed",
+                f"matrix status mismatch: {matrix_report['status']}")
+        require(matrix_report["coverage"]["requests"] == 10
+                and matrix_report["coverage"]["passed"] == 10,
+                f"matrix coverage mismatch: {matrix_report['coverage']}")
+        for role in ("admin", "guest"):
+            entry = matrix_report["coverage"]["roles"][role]
+            require(entry["requests"] == 4 and entry["passed"] == 4
+                    and entry["login_status"] == "complete",
+                    f"role coverage mismatch for {role}: {entry}")
+        cells = {item["id"]: item for item in matrix_report["results"]}
+        require(cells["role:admin:submit"].get("csrf") == "token_injected",
+                f"csrf injection not reported: {cells['role:admin:submit']}")
+        require(cells["matrix:admin:reports"]["observed_status"] == 200
+                and cells["matrix:guest:reports"]["observed_status"] == 403
+                and cells["matrix:guest:admin-page"]["observed_status"] == 403,
+                "role matrix responses do not match the declared roles")
+
+        missing_csrf = {
+            "schema_version": 1, "name": "csrf-missing", "base_url": origin,
+            "roles": [{"id": "broken", "login": login_steps("admin"),
+                       "csrf": {"selector": "input[name=absent]", "field": "_csrf"}}],
+            "requests": [{"id": "admin-page", "method": "GET", "path": "/admin",
+                          "expect": {"status": 302}}],
+            "matrix": [{"role": "broken", "request": "admin-page",
+                        "expect": {"status": 200}}],
+        }
+        missing_path = parent / "csrf-missing.json"
+        missing_path.write_text(json.dumps(missing_csrf), encoding="utf-8")
+        missing = run_cli(binary, env, missing_path, origin)
+        require(missing.returncode != 0, "missing CSRF token did not fail verification")
+        missing_report = json.loads(missing.stdout)
+        require(missing_report["status"] == "inconclusive"
+                and missing_report["coverage"]["roles"]["broken"]["login_status"] == "incomplete",
+                f"missing CSRF report mismatch: {missing_report['status']}")
+        missing_cells = {item["id"]: item for item in missing_report["results"]}
+        require(missing_cells["role:broken:submit"].get("error") == "csrf_token_not_found"
+                and missing_cells["matrix:broken:admin-page"].get("error") == "role_login_incomplete",
+                "missing CSRF error codes mismatch")
+
+        unresolved_env = json.loads(json.dumps(missing_csrf))
+        unresolved_env["name"] = "unresolved-env"
+        unresolved_env["roles"][0]["login"][1]["form"]["pass"] = "${ENV:TRIDENT_MISSING_PASS}"
+        unresolved_env["roles"][0]["csrf"] = {"selector": "meta[name=_csrf]", "field": "_csrf"}
+        unresolved_path = parent / "unresolved-env.json"
+        unresolved_path.write_text(json.dumps(unresolved_env), encoding="utf-8")
+        unresolved = run_cli(binary, env, unresolved_path, origin)
+        require(unresolved.returncode != 0, "unresolved credential placeholder was accepted")
+        unresolved_report = json.loads(unresolved.stdout)
+        unresolved_cells = {item["id"]: item for item in unresolved_report["results"]}
+        require(unresolved_cells["role:broken:submit"].get("error") == "credential_placeholder_unresolved",
+                "unresolved credential placeholder was not reported")
+
+        unsafe_matrix = json.loads(json.dumps(matrix_plan))
+        unsafe_matrix["roles"][1]["session"] = "role-admin"
+        unsafe_path = parent / "unsafe-matrix.json"
+        unsafe_path.write_text(json.dumps(unsafe_matrix), encoding="utf-8")
+        unsafe = run_cli(binary, env, unsafe_path, origin)
+        require(unsafe.returncode != 0, "roles sharing a session were accepted")
+
         failed_plan = {
             "schema_version": 1, "name": "wrong-expectation", "base_url": origin,
             "requests": [{"id": "wrong", "method": "GET", "path": "/admin",
@@ -171,7 +296,9 @@ def main():
             "result": "passed", "origin": origin, "requests": report["coverage"]["requests"],
             "checks": ["runtime_observed", "session_cookie", "redirect_not_followed",
                        "credentials_redacted", "failing_assertion", "origin_allowlist",
-                       "loopback_approval"],
+                       "loopback_approval", "role_matrix", "csrf_token_injection",
+                       "csrf_missing_inconclusive", "credential_placeholder_required",
+                       "role_session_isolation"],
         }))
 
 

@@ -21,19 +21,23 @@ import (
 
 const (
 	SchemaVersion   = 1
-	ToolVersion     = "0.2.0-p0.2+r4-http-runtime-v1"
+	ToolVersion     = "0.2.0-p1.1+r1-http-runtime-v2"
 	MaxPlanBytes    = 1 << 20
 	MaxRequests     = 64
+	MaxRoleLogins   = 16
+	MaxCSRFTokenLen = 512
 	MaxBodyBytes    = 64 << 10
 	DefaultTimeoutS = 10
 	MaxTimeoutS     = 60
 )
 
 type Plan struct {
-	SchemaVersion int       `json:"schema_version"`
-	Name          string    `json:"name"`
-	BaseURL       string    `json:"base_url"`
-	Requests      []Request `json:"requests"`
+	SchemaVersion int          `json:"schema_version"`
+	Name          string       `json:"name"`
+	BaseURL       string       `json:"base_url"`
+	Roles         []Role       `json:"roles,omitempty"`
+	Requests      []Request    `json:"requests"`
+	Matrix        []MatrixCase `json:"matrix,omitempty"`
 }
 
 type Request struct {
@@ -89,6 +93,9 @@ type Result struct {
 	BodyBytes      int         `json:"body_bytes"`
 	BodyTruncated  bool        `json:"body_truncated,omitempty"`
 	Assertions     []Assertion `json:"assertions"`
+	Role           string      `json:"role,omitempty"`
+	Matrix         string      `json:"matrix,omitempty"`
+	CSRF           string      `json:"csrf,omitempty"`
 	Error          string      `json:"error,omitempty"`
 }
 
@@ -101,11 +108,12 @@ type Assertion struct {
 }
 
 type Coverage struct {
-	Requests     int    `json:"requests"`
-	Passed       int    `json:"passed"`
-	Failed       int    `json:"failed"`
-	Inconclusive int    `json:"inconclusive"`
-	RuntimeState string `json:"runtime_status"`
+	Requests     int                     `json:"requests"`
+	Passed       int                     `json:"passed"`
+	Failed       int                     `json:"failed"`
+	Inconclusive int                     `json:"inconclusive"`
+	Roles        map[string]RoleCoverage `json:"roles,omitempty"`
+	RuntimeState string                  `json:"runtime_status"`
 }
 
 // ParsePlan strictly decodes one bounded HTTP verification plan.
@@ -153,6 +161,9 @@ func ParsePlan(data []byte) (Plan, error) {
 			return plan, fmt.Errorf("request %q must declare an expected HTTP status", request.ID)
 		}
 	}
+	if err := validateRolesAndMatrix(&plan); err != nil {
+		return plan, err
+	}
 	return plan, nil
 }
 
@@ -168,7 +179,9 @@ func Execute(ctx context.Context, plan Plan, opts Options) (Report, error) {
 			"runtime_observed_not_exploit_proof: passing assertions only prove the observed responses for the supplied requests",
 			"redirects_not_followed: 3xx responses are recorded without executing the target",
 			"body_bounded_to_64KiB: body assertions beyond the bound are reported as inconclusive",
-			"credentials_caller_supplied_and_not_echoed: form/json/header values are never written to the report",
+			"credentials_caller_supplied_and_not_echoed: form/json/header values, tokens and resolved env placeholders are never written to the report",
+			"roles_caller_defined: role ids, login steps and matrix expectations are caller supplied; accounts are not discovered",
+			"csrf_token_extraction_bounded: tokens are read only from explicit meta/input selectors and injected into form fields or headers; extraction failure is inconclusive",
 			"no_proxy_or_concurrency: requests run sequentially with the default HTTP transport and TLS verification",
 			"target_allowlist_exact_origin: only the origin approved by the caller is contacted",
 		},
@@ -198,30 +211,25 @@ func Execute(ctx context.Context, plan Plan, opts Options) (Report, error) {
 	sessions := map[string]map[string]string{}
 	report.RuntimeStatus = "observed"
 	report.Coverage.RuntimeState = "observed"
-	status := "passed"
 	for _, request := range plan.Requests {
-		result := executeRequest(ctx, client, origin, request, sessions)
-		report.Results = append(report.Results, result)
-		switch result.Status {
-		case "passed":
-			report.Coverage.Passed++
-		case "inconclusive":
-			report.Coverage.Inconclusive++
-			if status == "passed" {
-				status = "inconclusive"
-			}
-		default:
-			report.Coverage.Failed++
-			status = "failed"
-		}
+		result, _ := executeRequest(ctx, client, origin, request, sessions)
+		appendResult(&report, result)
 	}
+	runRolesAndMatrix(ctx, client, origin, plan, sessions, &report)
 	report.Coverage.Requests = len(report.Results)
-	report.Status = status
+	switch {
+	case report.Coverage.Failed > 0:
+		report.Status = "failed"
+	case report.Coverage.Inconclusive > 0:
+		report.Status = "inconclusive"
+	default:
+		report.Status = "passed"
+	}
 	sort.Strings(report.Limitations)
 	return report, nil
 }
 
-func executeRequest(ctx context.Context, client *http.Client, origin *url.URL, request Request, sessions map[string]map[string]string) Result {
+func executeRequest(ctx context.Context, client *http.Client, origin *url.URL, request Request, sessions map[string]map[string]string) (Result, string) {
 	result := Result{
 		ID: request.ID, Method: strings.ToUpper(request.Method), Path: request.Path,
 		Session: request.Session, Status: "error", Assertions: []Assertion{},
@@ -229,7 +237,7 @@ func executeRequest(ctx context.Context, client *http.Client, origin *url.URL, r
 	target, err := joinTarget(origin, request.Path)
 	if err != nil {
 		result.Error = err.Error()
-		return result
+		return result, ""
 	}
 	var body io.Reader
 	contentType := ""
@@ -248,7 +256,7 @@ func executeRequest(ctx context.Context, client *http.Client, origin *url.URL, r
 	httpRequest, err := http.NewRequestWithContext(ctx, result.Method, target, body)
 	if err != nil {
 		result.Error = "could not build request"
-		return result
+		return result, ""
 	}
 	for name, value := range request.Headers {
 		if strings.EqualFold(name, "Host") || strings.EqualFold(name, "Cookie") {
@@ -267,7 +275,7 @@ func executeRequest(ctx context.Context, client *http.Client, origin *url.URL, r
 	response, err := client.Do(httpRequest)
 	if err != nil {
 		result.Error = "request failed"
-		return result
+		return result, ""
 	}
 	defer response.Body.Close()
 	result.ObservedStatus = response.StatusCode
@@ -288,7 +296,7 @@ func executeRequest(ctx context.Context, client *http.Client, origin *url.URL, r
 	data, err := io.ReadAll(io.LimitReader(response.Body, MaxBodyBytes+1))
 	if err != nil {
 		result.Error = "response body read failed"
-		return result
+		return result, ""
 	}
 	if len(data) > MaxBodyBytes {
 		data = data[:MaxBodyBytes]
@@ -299,7 +307,7 @@ func executeRequest(ctx context.Context, client *http.Client, origin *url.URL, r
 	result.BodyBytes = len(data)
 	result.Assertions = evaluate(response, request, result, string(data))
 	result.Status = assertionStatus(result.Assertions)
-	return result
+	return result, string(data)
 }
 
 func evaluate(response *http.Response, request Request, result Result, body string) []Assertion {
