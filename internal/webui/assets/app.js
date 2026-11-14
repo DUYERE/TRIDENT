@@ -201,6 +201,8 @@
   function installChrome() {
     $("#exportBtn").addEventListener("click", exportReport);
     $("#exportHtmlBtn").addEventListener("click", exportHtmlReport);
+    $("#themeToggle").addEventListener("click", toggleTheme);
+    applyTheme(localStorage.getItem("trident.theme") || "dark");
     $("#mobileNav").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
     document.addEventListener("click", (event) => {
       const sidebar = $("#sidebar");
@@ -1307,6 +1309,21 @@
     } finally {
       button.disabled = false;
       button.textContent = "进入控制台";
+    }
+  }
+
+  function toggleTheme() {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    localStorage.setItem("trident.theme", next);
+    applyTheme(next);
+  }
+
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    const toggle = $("#themeToggle");
+    if (toggle) {
+      toggle.title = theme === "light" ? "切换到暗色主题" : "切换到亮色主题";
+      toggle.innerHTML = `<svg class="icon"><use href="#${theme === "light" ? "i-moon" : "i-sun"}"/></svg>`;
     }
   }
 

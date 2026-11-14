@@ -35,6 +35,8 @@
     <symbol id="i-layer" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5M3 17l9 5 9-5"/></symbol>
     <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 5h11l-1.8 3.5L16 12H5"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.4M12 19.1v2.4M21.5 12h-2.4M4.9 12H2.5M18.7 5.3l-1.7 1.7M7 17l-1.7 1.7M18.7 18.7 17 17M7 7 5.3 5.3"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11Z"/></symbol>
   </svg>
 
   <div class="app" id="app" hidden>
@@ -80,6 +82,7 @@
         </div>
         <div class="topbar-actions">
           <span class="pill runtime" title="静态证据不等于运行时可利用"><span class="dot warn"></span>runtime_status = not_run</span>
+          <button class="icon-btn" id="themeToggle" type="button" title="切换亮色/暗色主题"><svg class="icon"><use href="#i-sun"/></svg></button>
           <button class="btn ghost" id="exportBtn" type="button" title="下载统一 Finding/Hypothesis JSON">
             <svg class="icon"><use href="#i-download"/></svg><span>导出证据</span>
           </button>
