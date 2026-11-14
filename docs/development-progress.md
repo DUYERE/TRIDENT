@@ -11,11 +11,11 @@
 | R1 快照与四项只读工具 | 已实现并完成本地验收 | `snapshot-contract.md`、`internal/project/` |
 | R1 Core、Run、OpenAI 适配 | 已实现并完成本地协议验收与两次真实模型只读闭环；DeepSeek `reasoning_content`/Schema 数值兼容、48 KiB 检查点确定性压缩、按工具类型的保留策略与有界结果摘要已实现 | `agent-contract.md`；下方 2026-11-12 与 2026-11-13 记录 |
 | R1 真实模型自主工具闭环 | 已完成获准验收：DeepSeek `deepseek-flash` Run 43、`deepseek-v4-pro` Run 46，均仅合成样本且 `completed`；其他模型/快照需逐次授权 | `agent-contract.md` §6.1；下方 2026-11-13 记录 |
-| R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、Maven 有效依赖树（临时副本、默认离线）、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0 与 import 可达性已实现并验收；完整 AST/污点/制品哈希/依赖到入口可达性未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/` |
+| R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准）、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0 与 import 可达性已实现并验收；完整 AST/污点/制品哈希/依赖到入口可达性未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/` |
 | R2 只读 Web 分析控制台 | 已实现并完成本地验收；单快照、loopback、令牌鉴权、只读 JSON API 与嵌入前端；不改变分析语义，不提供 Agent 控制 API | `web-console-contract.md`、`internal/webui/`、`cmd/trident/web.go` |
 | R2 Agent 分析工具 | 已实现并完成本地验收与真实模型/真实项目使用；5 个分析工具、分析缓存、Run 公告配置、实际读取行引用与证据账本桥接 | `agent-contract.md`、`internal/tools/analysis.go`、`internal/agent/` |
 | R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射；无传递树/制品哈希/可达性 | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
-| R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/maven-compile/maven-test/javac/JUnit、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；支持新文件/BOM/多文件补丁；真实 Java/Maven/JUnit、真实模型合成补丁、真实项目编译级补丁与集中式访问控制运行时单测已验收；硬件 VM、真实 Tomcat/MySQL HTTP 权限测试与生产验证未实现 | `patch-contract.md`、`internal/r3/`、`cmd/trident/patch.go`、`docs/evidence/2026-11-14-market-access-control.patch` |
+| R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/maven-compile/maven-test/javac/JUnit、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；支持新文件/BOM/多文件补丁；真实 Java/Maven/JUnit、真实模型合成补丁、真实项目编译级补丁与集中式访问控制运行时单测已验收；真实 Tomcat/MySQL HTTP 权限测试已完成；硬件 VM 与生产验证未实现 | `patch-contract.md`、`internal/r3/`、`cmd/trident/patch.go`、`docs/evidence/2026-11-14-market-access-control.patch` |
 
 ## 2026-11-12：已完成快照切片（上轮基线）
 
@@ -881,7 +881,7 @@
 - 模型调用：`deepseek-v4-pro` 8192 输出上限时 `stop=length`；提升至 16384 后返回可应用 diff。共 2 次调用。
 - 补丁 SHA-256 `cecacc06…`，单文件 `ManagerController.java`，+12/-3：三个方法增加 `HttpSession` 参数，并在任何 service 调用前检查 `Constants.Manager_SESSION`，缺失时重定向 `/manager/login`。
 - 验证：`mvn -o -B -q -DskipTests compile` 退出 0；`validation_passed`、quality 80/B、`original_snapshot_intact=true`、`runtime_status=isolated_validation_only`。项目无测试，未做运行时访问控制验证；其他管理员接口仍未覆盖。
-- 仍阻塞：真实项目运行时行为/权限测试、硬件 VM 隔离、Gradle 有效依赖树。
+- 仍阻塞：真实项目运行时行为/权限测试、硬件 VM 隔离、Gradle 有效依赖树（前两项见续三/续四，Gradle 见续五）。
 
 ### 2026-11-14 续三：真实项目集中式访问控制补丁与运行时测试
 
@@ -893,7 +893,7 @@
   - 修复 `scorePatch` 同时读取 `TestSummary` 与 `JUnitXML` 时的测试数重复计数。
 - 最终补丁通过 TRIDENT 自身验证：`patch verify --profile maven-test --patch docs/evidence/2026-11-14-market-access-control.patch` → `validation_passed`、`mvn -o -B -q test` 退出 0、tests=4/failures=0/errors=0、quality 75/B、`original_snapshot_intact=true`、`runtime_status=isolated_validation_only`。
 - 补丁工件：`docs/evidence/2026-11-14-market-access-control.patch`（4 个文件，+207/-0：POM 测试依赖、LoginInterceptor、spring-mvc.xml 拦截配置、JUnit 测试）。
-- 未覆盖：真实 Tomcat/MySQL 部署下的 HTTP 权限验证、其他安全缺陷、Gradle 有效树、硬件 VM（HTTP 权限验证已在续四补齐）。原项目目录未被修改。
+- 未覆盖：真实 Tomcat/MySQL 部署下的 HTTP 权限验证、其他安全缺陷、Gradle 有效树、硬件 VM（HTTP 权限验证已在续四补齐，Gradle 有效树已在续五补齐）。原项目目录未被修改。
 
 ### 2026-11-14 续四：真实 Tomcat/MySQL HTTP 权限验证
 
@@ -906,6 +906,15 @@
 - 隔离与负例：manager 会话访问 staff 端点 → 302 到 `/staff/login`；员工错误密码 → 200 登录页且后续访问 main 仍 302。
 - 说明：`/staff/flatform/product/getall` 不存在对应映射（实际为 `getlist`），返回 500，不计入权限绕过；验证改用真实映射。
 - 结论：集中式拦截器在真实 Tomcat/MySQL 部署下生效；仅证明未登录访问被拒绝和登录后放行，不证明其他漏洞、授权粒度或生产配置安全。原项目 `D:\Code\Java\market` 未被修改（非 Git 仓库，全部改动只在临时副本）。
+
+### 2026-11-14 续五：Gradle 有效依赖树
+
+- 新增 `sca resolve --tool gradle`：在快照临时副本上按模块执行 `gradle --offline --no-daemon --console=plain -q -p <module> dependencies`，必须显式 `--approve-gradle`；支持 `--gradle` 绝对路径、`--gradle-user-home` 和 `--gradle-init-script`。Maven 仍为 `--tool maven` + `--approve-maven`。
+- 解析器覆盖：配置块识别、`+---`/`\---` 深度、`runtimeClasspath` 优先（其次 `compileClasspath`，再按 `*RuntimeClasspath` 后缀与全配置回退）、`project :x` 边、`a:b:1.0 -> 1.2` 版本升级、`(*)` 省略、`(c)` 约束、`(n)` 未解析、`FAILED`；部分模块失败输出 `status=partial` 并保留已解析模块。
+- 输出新增 `gradle.version/executed/duration_ms/offline/configurations/modules_attempted/modules_parsed`；模块新增 `build_file`，依赖新增 `failed`；`runtime_status=not_run`、`artifact_hashes=not_available` 保持不变。
+- 同时修复 Maven/Gradle 解析的超时：此前 `--timeout-seconds` 只被校验、未真正生效，现在通过 `context.WithTimeout` 约束执行；输出截断会显式记录 `*_output_truncated`。
+- 验收：`python scripts/test-gradle-resolve.py`（Gradle 8.14.3 + JDK 17，离线 file 仓库）通过：3 个模块、5 条依赖、2 条传递；`jdbc-app` 含 `project :common`、`commons-text:1.9` 直接边与 `commons-lang3` 深度 2；快照与 fixture 字节级不变，`runtime_status=not_run`。
+- 限制：build.gradle 是可执行输入，`dependencies` 报告不是 classpath 加载；未解释 Android variant、version catalog、BOM/platform 语义与插件脚本副作用。
 
 ## 维护规则
 

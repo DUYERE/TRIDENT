@@ -3,6 +3,7 @@ package sca
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,7 +16,7 @@ import (
 )
 
 const (
-	ResolveToolVersion     = "0.2.0-p0.2+r2-maven-effective-tree-v1"
+	ResolveToolVersion     = "0.2.0-p0.2+r2-build-effective-trees-v2"
 	MaxResolveFiles        = 20000
 	MaxResolveBytes        = 256 << 20
 	MaxMavenOutputBytes    = 8 << 20
@@ -24,10 +25,14 @@ const (
 )
 
 type ResolveOptions struct {
-	AllowNetwork bool
-	ApproveMaven bool
-	MavenRepo    string
-	Timeout      time.Duration
+	AllowNetwork     bool
+	ApproveMaven     bool
+	ApproveGradle    bool
+	MavenRepo        string
+	GradlePath       string
+	GradleUserHome   string
+	GradleInitScript string
+	Timeout          time.Duration
 }
 
 type ResolveReport struct {
@@ -39,6 +44,7 @@ type ResolveReport struct {
 	Status         string           `json:"status"`
 	Partial        bool             `json:"partial"`
 	Maven          MavenInfo        `json:"maven"`
+	Gradle         GradleInfo       `json:"gradle"`
 	Modules        []ResolvedModule `json:"modules"`
 	Coverage       ResolveCoverage  `json:"coverage"`
 	Limitations    []string         `json:"limitations"`
@@ -55,6 +61,7 @@ type MavenInfo struct {
 
 type ResolvedModule struct {
 	POM          string                `json:"pom,omitempty"`
+	BuildFile    string                `json:"build_file,omitempty"`
 	Coordinate   string                `json:"coordinate"`
 	GroupID      string                `json:"group_id"`
 	ArtifactID   string                `json:"artifact_id"`
@@ -72,6 +79,7 @@ type EffectiveDependency struct {
 	Depth      int    `json:"depth"`
 	Direct     bool   `json:"direct"`
 	Omitted    bool   `json:"omitted,omitempty"`
+	Failed     bool   `json:"failed,omitempty"`
 	Note       string `json:"note,omitempty"`
 }
 
@@ -105,7 +113,7 @@ func ResolveEffectiveTree(ctx context.Context, snapshot *project.Snapshot, opts 
 			"maven_effective_tree_not_runtime: resolved classpath metadata does not prove class loading, reachability or exploitability",
 			"maven_pom_is_untrusted_input: dependency:tree may resolve plugins/extensions; run in a disposable environment",
 			"artifact_hashes_unavailable: Maven coordinates are not artifact bytes",
-			"gradle_effective_tree_unavailable: only Maven root POMs are supported",
+			"gradle_effective_tree_unavailable: use --tool gradle for Gradle builds",
 		},
 	}
 	if snapshot == nil || snapshot.Hash() == "" {
@@ -133,11 +141,11 @@ func ResolveEffectiveTree(ctx context.Context, snapshot *project.Snapshot, opts 
 		return report, err
 	}
 	if len(declared.Project.RootPOMs) == 0 {
-		report.Error = "no Maven root POM found; Gradle effective trees are not implemented"
+		report.Error = "no Maven root POM found; use --tool gradle for Gradle builds"
 		report.Limitations = append(report.Limitations, "no_maven_root_pom")
 		return report, fmt.Errorf("%s", report.Error)
 	}
-	root, err := copySnapshotForMaven(ctx, snapshot)
+	root, err := copySnapshotForBuildTool(ctx, snapshot)
 	if err != nil {
 		return report, err
 	}
@@ -148,12 +156,17 @@ func ResolveEffectiveTree(ctx context.Context, snapshot *project.Snapshot, opts 
 		report.Error = "mvn executable not found"
 		return report, fmt.Errorf("%s", report.Error)
 	}
+	runCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
 	report.Maven.Executed = true
 	var output boundedBuffer
 	output.limit = MaxMavenOutputBytes
 	started := time.Now()
 	for _, rootPOM := range declared.Project.RootPOMs {
-		if err := ctx.Err(); err != nil {
+		if err := runCtx.Err(); err != nil {
+			report.Error = "maven dependency resolution timed out or was cancelled"
+			report.Partial = true
+			report.Maven.DurationMS = time.Since(started).Milliseconds()
 			return report, err
 		}
 		args := []string{"-B", "-f", filepath.Join(root, filepath.FromSlash(rootPOM)), "dependency:tree", "-DoutputType=text"}
@@ -163,14 +176,18 @@ func ResolveEffectiveTree(ctx context.Context, snapshot *project.Snapshot, opts 
 		if opts.MavenRepo != "" {
 			args = append(args, "-Dmaven.repo.local="+opts.MavenRepo)
 		}
-		command := exec.CommandContext(ctx, mavenPath, args...)
+		command := exec.CommandContext(runCtx, mavenPath, args...)
 		command.Dir = root
 		command.Env = mavenEnv()
 		command.Stdout = &output
 		command.Stderr = &output
 		if err := command.Run(); err != nil {
 			report.Partial = true
-			report.Error = lastMavenError(output.String())
+			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				report.Error = "maven dependency:tree timed out"
+			} else {
+				report.Error = lastMavenError(output.String())
+			}
 			report.Maven.DurationMS = time.Since(started).Milliseconds()
 			report.Limitations = append(report.Limitations, "maven_dependency_tree_failed")
 			sort.Strings(report.Limitations)
@@ -178,6 +195,10 @@ func ResolveEffectiveTree(ctx context.Context, snapshot *project.Snapshot, opts 
 		}
 	}
 	report.Maven.DurationMS = time.Since(started).Milliseconds()
+	if output.Truncated() {
+		report.Partial = true
+		report.Limitations = append(report.Limitations, "maven_output_truncated")
+	}
 	modules := parseMavenTree(output.String())
 	if len(modules) == 0 {
 		report.Error = "maven produced no parseable dependency tree"
@@ -217,8 +238,8 @@ func ResolveEffectiveTree(ctx context.Context, snapshot *project.Snapshot, opts 
 	return report, nil
 }
 
-func copySnapshotForMaven(ctx context.Context, snapshot *project.Snapshot) (string, error) {
-	root, err := os.MkdirTemp("", "trident-maven-tree-")
+func copySnapshotForBuildTool(ctx context.Context, snapshot *project.Snapshot) (string, error) {
+	root, err := os.MkdirTemp("", "trident-build-tree-")
 	if err != nil {
 		return "", err
 	}
@@ -236,7 +257,7 @@ func copySnapshotForMaven(ctx context.Context, snapshot *project.Snapshot) (stri
 		total += entry.Size
 		if files > MaxResolveFiles || total > MaxResolveBytes {
 			os.RemoveAll(root)
-			return "", fmt.Errorf("snapshot exceeds Maven resolution copy bounds")
+			return "", fmt.Errorf("snapshot exceeds build resolution copy bounds")
 		}
 		data, err := snapshot.ReadFile(ctx, entry.Path)
 		if err != nil {
@@ -420,17 +441,20 @@ func lastMavenError(output string) string {
 }
 
 type boundedBuffer struct {
-	buffer bytes.Buffer
-	limit  int
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
 }
 
 func (b *boundedBuffer) Write(data []byte) (int, error) {
 	remaining := b.limit - b.buffer.Len()
 	if remaining <= 0 {
+		b.truncated = true
 		return len(data), nil
 	}
 	if len(data) > remaining {
 		_, _ = b.buffer.Write(data[:remaining])
+		b.truncated = true
 		return len(data), nil
 	}
 	_, _ = b.buffer.Write(data)
@@ -438,3 +462,7 @@ func (b *boundedBuffer) Write(data []byte) (int, error) {
 }
 
 func (b *boundedBuffer) String() string { return b.buffer.String() }
+
+func (b *boundedBuffer) Len() int { return b.buffer.Len() }
+
+func (b *boundedBuffer) Truncated() bool { return b.truncated }

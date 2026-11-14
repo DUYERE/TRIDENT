@@ -50,11 +50,11 @@ TRIDENT_HASH="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], en
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident sca inspect --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" --advisories 'E:/pentest agent/TRIDENT/tests/fixtures/java-maven/advisories/CVE-2022-42889.json'
 ```
 
-结果与限制见 [SCA 契约](docs/sca-contract.md)；真实 CLI 验收为 `python scripts/test-sca.py`、`python scripts/test-intel.py` 与 `python scripts/test-resolve.py`。
+结果与限制见 [SCA 契约](docs/sca-contract.md)；真实 CLI 验收为 `python scripts/test-sca.py`、`python scripts/test-intel.py`、`python scripts/test-resolve.py` 与 `python scripts/test-gradle-resolve.py`。
 
 ### 有效依赖树（需显式批准）
 
-`trident sca resolve --snapshot ... --snapshot-hash ... --approve-maven` 在快照的临时副本上执行 Maven `dependency:tree`，默认离线；只有显式 `--approve-network` 才允许下载。它输出模块、直接/传递依赖、scope、冲突省略与版本管理注记，并把 `runtime_status` 固定为 `not_run`。这是构建解析结果，不是 classpath 加载证明，也不等于漏洞可达；Maven POM 是不可信输入，仍应在一次性环境中执行。Gradle 有效树未实现。
+`trident sca resolve --snapshot ... --snapshot-hash ... --tool maven --approve-maven` 在快照的临时副本上执行 Maven `dependency:tree`；`--tool gradle --approve-gradle` 执行 Gradle `dependencies`，优先 `runtimeClasspath`、其次 `compileClasspath`。两者默认离线；只有显式 `--approve-network` 才允许下载。输出模块、直接/传递依赖、scope、冲突省略、版本升级/约束/FAILED 注记，并把 `runtime_status` 固定为 `not_run`。这是构建解析结果，不是 classpath 加载证明，也不等于漏洞可达；POM 与 build.gradle 都是不可信输入，仍应在一次性环境中执行。Gradle 需要本机可执行文件（`--gradle` 绝对路径或 PATH），可用 `--gradle-user-home` 与 `--gradle-init-script` 指向离线仓库。
 
 ### SBOM：CycloneDX 1.5
 
@@ -249,7 +249,7 @@ docker compose --project-directory 'E:/pentest agent/TRIDENT' -f 'E:/pentest age
 | 路径 | 内容 |
 |---|---|
 | `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`dataflow.go`、`findings.go`、`reach.go`、`web.go`、`patch.go`、`agent.go` | version / project / sca / audit / web / patch / agent / migrate / check / bootstrap / demo-offline |
-| `internal/sca/` | 离线 Maven/Gradle 声明解析、属性/父 POM/依赖管理、公告精确/区间/别名匹配与模块树 |
+| `internal/sca/` | 离线 Maven/Gradle 声明解析、属性/父 POM/依赖管理、公告精确/区间/别名匹配与模块树；Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准） |
 | `internal/audit/`、`internal/dataflow/` | Spring MVC/JAX-RS/Servlet 注解级入口清单；10 类 Source/Sink 有界数据流 |
 | `internal/findings/`、`internal/sarif/`、`internal/reach/` | 统一 finding/假设/证据模型；SARIF 2.1.0；有界 import 可达性 |
 | `internal/webui/` | 只读 Web 控制台：令牌鉴权、JSON API、嵌入的暗色前端资源 |

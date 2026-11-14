@@ -83,13 +83,15 @@ python scripts/benchmark.py 3
 | 真实项目集中式访问控制补丁 | `patch verify --profile maven-test`（2026-11-14） | 通过：LoginInterceptor 全量拦截 manager/staff 路由，4 个 JUnit 测试通过，offline `mvn test` 退出 0，quality 75/B，快照完整 |
 | 真实 Tomcat/MySQL HTTP 权限 | Tomcat 9.0.106 + MySQL 8.0.46 容器（2026-11-14） | 通过：未登录 manager/staff 业务端点均 302 到各自登录页，登录后放行；跨会话拒绝；错误密码不建立会话 |
 | 硬件 VM/系统调用隔离 | — | 未实现；gVisor 是用户态内核 |
-| Maven/Gradle 在线有效依赖树 | `python scripts/test-resolve.py` | Maven 离线有效树通过（3 模块/31 依赖/25 传递）；Gradle 有效树未实现 |
+| Maven 有效依赖树（离线） | `python scripts/test-resolve.py` | 通过（3 模块/31 依赖/25 传递） |
+| Gradle 有效依赖树（离线） | `python scripts/test-gradle-resolve.py` | 通过（Gradle 8.14.3：3 模块/5 依赖/2 传递；需 `TRIDENT_GRADLE` 或 PATH，离线缓存 POM 缺失时 skip） |
 
 ## 5. 版本兼容与已知边界
 
 - Windows 11 与 Linux（`openat2`/`statx` Mount ID 5.8+）快照路径语义不同；不支持网络/FUSE/无法安全判断的文件系统。
 - `agent` 检查点 v2；v1 不自动恢复。模型适配只承诺 Chat Completions 子集，不支持所有供应商扩展。
 - 公告区间是调用者声明判据，不是 Maven 版本语义的完整实现；`import_reachable` 不是调用可达性。
+- Gradle 有效树优先 `runtimeClasspath`、其次 `compileClasspath`，含 `*RuntimeClasspath`/`*CompileClasspath` 后缀回退；不解释 Android variant、version catalog、BOM/platform 或插件脚本副作用。
 - 静态 finding 的 `runtime_status` 恒为 `not_run`；R3 的 `runtime_status=isolated_validation_only`。
 - gVisor 需要 Docker 注册 `runsc`；Docker 不是硬件 VM。
 

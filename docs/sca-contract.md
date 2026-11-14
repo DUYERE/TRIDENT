@@ -71,9 +71,17 @@
 
 ## 7. 有效依赖树 `sca resolve`（2026-11-14）
 
-- 仅支持 Maven root POM；在快照的临时副本上执行 `mvn -B dependency:tree -DoutputType=text`，默认 `-o` 离线，只有显式 `--approve-network` 才允许联网；必须显式 `--approve-maven`。
+- Maven：在快照的临时副本上执行 `mvn -B dependency:tree -DoutputType=text`，默认 `-o` 离线，只有显式 `--approve-network` 才允许联网；必须显式 `--approve-maven`。
 - 输出 `resolution_mode=offline|online`、`maven.executed/duration_ms/repo_local`、`modules[]`（root coordinate、POM 映射、`dependencies[]`）与 `coverage`（direct/transitive/omitted）。
 - 解析 `+-`/`\-` 深度、scope、classifier、`version managed from`、`omitted for conflict`、`optional` 注记；无法解析时 `status=failed` 并输出有界 `[ERROR]` 摘要。
 - `runtime_status` 恒为 `not_run`、`artifact_hashes=not_available`、`classpath_verified=false`。有效树是构建解析观测，不证明类加载、调用可达性或运行时利用。
 - Maven POM 是不可信输入；`dependency:tree` 仍可能解析插件/扩展。实现使用临时副本、环境变量白名单与超时，但不是沙箱；高信任要求下应在一次性容器/VM 中运行。
 - 验收 `python scripts/test-resolve.py`：离线缓存可用时得到 3 个模块、31 条依赖、25 条传递依赖，commons-lang3 深度 2，快照与 fixture 字节级不变；缓存缺失时报告 skip，不伪造结果。
+
+## 8. Gradle 有效依赖树 `sca resolve --tool gradle`（2026-11-14）
+
+- 在快照临时副本上按模块执行 `gradle --offline --no-daemon --console=plain -q -p <module> dependencies`；必须显式 `--approve-gradle`。`--gradle` 指定绝对路径，`--gradle-user-home` 与 `--gradle-init-script` 用于隔离缓存和挂载离线仓库。
+- 每个模块优先选择 `runtimeClasspath`，其次 `compileClasspath`，再按 `*RuntimeClasspath`/`*CompileClasspath` 后缀回退，最后合并全部配置；`coverage.effective_tree=gradle_dependency_report_observed`，`gradle.configurations` 记录实际选择。
+- 解析 `+---`/`\---` 深度、`project :x` 边、`a:b:1.0 -> 1.2` 版本升级、`(*)` 省略、`(c)` 约束、`(n)` 未解析与 `FAILED`；依赖输出 `failed` 和 `note`。部分模块失败时 `status=partial`、`partial=true` 并保留已解析模块；全部失败时 `status=failed`。
+- `runtime_status` 恒为 `not_run`、`artifact_hashes=not_available`。Gradle 构建脚本是可执行输入，`dependencies` 报告不是 classpath 加载证明；不解释 Android variant、version catalog、BOM/platform 语义或插件脚本副作用。
+- 验收 `python scripts/test-gradle-resolve.py`：Gradle 8.14.3 + JDK 17 + 离线 file 仓库，3 个模块、5 条依赖、2 条传递；`jdbc-app` 含 `project :common`、`commons-text:1.9` 直接边与 `commons-lang3` 深度 2；快照与 fixture 字节级不变。
