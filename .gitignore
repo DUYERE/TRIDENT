@@ -4,3 +4,5 @@
 coverage.out
 runs/
 secrets/
+
+tests/fixtures/**/target/
