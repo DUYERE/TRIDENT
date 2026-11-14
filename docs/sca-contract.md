@@ -91,7 +91,8 @@
 - 从 `sca inspect` 的已解析声明中选择唯一依赖，支持 Maven 属性、直接 `<version>`、`dependencyManagement` 版本，以及 Gradle 字符串/map 声明；目标版本由调用者用 `--to` 指定，必须是受限字面量，不接受与当前版本相同或未解析版本。
 - 生成只修改版本 token 的最小 unified diff，路径为快照相对路径；补丁写到快照外的新文件，包含 `patch`、`patch_sha256`、`patch_bytes`、`change{file,line,kind,before,after}`。计划阶段不执行构建工具，`status=prepared`、`runtime_status=not_run`。
 - 提供 `--workspace` 时必须显式 `--approve-execution`：先在临时副本对未修改快照跑基线，再通过 R3 隔离副本应用补丁并跑同一 profile；输出 `baseline` 与 `verification`。基线失败为 `baseline_validation_failed`，升级后失败为 `validation_failed`，两者区分“项目原本不可用”和“升级导致回归”。
-- 限制：不自动选择目标版本、不验证制品哈希、不分析传递依赖升级、不证明生产兼容性；Gradle 升级目前只生成补丁，验证 profile 仍为 Maven/javac/JUnit。
+- 验证 profile 支持 `maven`、`maven-compile`、`maven-test`、`gradle-test`、`javac`、`junit`；`--module-dir <dir>` 可重复（最多 8 个）以逐模块执行同一 profile，结果见 `validation.modules[]` 与 `commands[].module`，聚合状态取最差模块。`verification.rollback` 提供逐文件原始哈希的人工回退信息，但不执行回滚。
+- 限制：不自动选择目标版本、不验证制品哈希、不分析传递依赖升级、不证明生产兼容性；Gradle 升级可使用 `gradle-test` 验证 profile（离线、无需 main class），但真实 Gradle 工具链/缓存未在本机验证。
 - 验收 `python scripts/test-upgrade.py`：`java-upgrade` fixture 从 commons-text 1.9 升到 1.10.0，基线 `mvn -o -B -q test` 通过，升级后 1 个测试通过，快照与 fixture 字节级不变，同版本目标被拒绝。
 
 ## 10. 制品哈希与来源核对 `sca inspect`（2026-11-14）

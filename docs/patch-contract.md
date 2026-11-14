@@ -25,7 +25,7 @@ trident patch propose \
 trident patch verify \
   --snapshot <dir> --snapshot-hash <sha256> \
   --workspace <new-dir> --patch <unified.diff> \
-  --profile <maven|javac|junit> \
+  --profile <maven|maven-compile|maven-test|gradle-test|javac|junit> \
   [--main-class <dotted.Class>] \
   [--test-class <dotted.TestClass> --test-classpath <jars-or-dirs>] \
   [--sandbox process|docker --sandbox-image <image@sha256:...> \
@@ -130,4 +130,14 @@ trident patch verify \
 - `maven-compile` profile 只执行离线编译，不需要 `--main-class`；适合无入口/Web 项目。`Apply` 现保留 CRLF 行尾，避免 Windows 真实项目上下文误匹配。
 - 2026-11-14 真实项目集中式补丁：`LoginInterceptor` + `spring-mvc.xml` 全量拦截 `/manager/**` 与 `/staff/**`（排除登录地址），4 个 JUnit 运行时测试通过；通过 `patch verify --profile maven-test` 验证为 `validation_passed`、tests=4、quality 75/B、原快照完整。
 - `Apply` 现支持新文件创建（`--- /dev/null`）、UTF-8 BOM 与 git 多文件补丁；仍拒绝覆盖、删除、重命名、越界路径和二进制内容。新增 `maven-test` profile：离线 `mvn test` 并自动解析 Surefire XML，不需要 main class。
+- 补丁工件：`docs/evidence/2026-11-14-market-access-control.patch`（+207/-0，4 文件）。这只是隔离副本上的编译+单元测试结果，不代表生产部署或所有接口的运行时权限。
+
+## 9. 2026-11-14 扩展：回滚计划、质量评分版本、多模块与 Gradle 验证
+
+- `--profile gradle-test`：工作区必须存在 `build.gradle` 或 `build.gradle.kts`，执行 `gradle --offline -q test`（不需要 `--main-class`）；成功后从 `build/test-results/test` 解析 JUnit XML。docker/gVisor 沙箱沿用固定镜像 digest 与只读 Maven 依赖缓存；Gradle 缓存由镜像提供，不额外挂载。限制：`gradle_test_profile_runs_tests_only`、`gradle_profile_offline`。
+- `--module <dir>`（`patch verify`）与 `--module-dir <dir>`（`sca upgrade`，可重复，最多 8 个）：目录必须是工作区内已存在的相对路径，拒绝绝对路径、`..` 逃逸与重复项。每个模块独立执行同一 profile，`validation.modules[]` 记录 `module/status/duration_ms/tests/failures/errors`，`validation.commands[].module` 标注来源；聚合状态取最差模块，测试、JUnit XML 与覆盖率按模块累加，模块前缀写入 JUnit `files`。限制：`module_selection_caller_supplied`。
+- 报告新增 `rollback`：`snapshot_hash`、逐文件 `steps[]`（`path`、`action=restore_original|remove_created_file`、`sha256_before`、`sha256_after`）与 `note`。它为人工回退提供原始哈希，**不执行任何回滚命令**；验证失败（`validation_failed`/`validation_timeout`/`validation_error`）同样附带。
+- `quality` 新增 `rubric_version=r3-quality-rubric-v2`；评分仍是启发式，不参与通过/失败判定。
+- 验收：`go test ./internal/r3` 覆盖回滚计划、模块路径逃逸/上限、Gradle 构建文件检测；`python scripts/test-patch.py` 的 `[06]` 断言失败/通过报告的 rollback、rubric 版本、`--module .` 聚合、越界模块拒绝，以及 `gradle-test` profile 的命令、退出码、JUnit 汇总与离线限制（使用 PATH 中的桩 `gradle`，只验证命令构造与报告解析，不证明真实 Gradle 构建）。
+- 未验证：真实 Gradle 工具链与离线缓存、多模块真实构建、回滚命令自动化（按非目标保持人工）。
 - 补丁工件：`docs/evidence/2026-11-14-market-access-control.patch`（+207/-0，4 文件）。这只是隔离副本上的编译+单元测试结果，不代表生产部署或所有接口的运行时权限。

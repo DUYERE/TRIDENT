@@ -81,11 +81,12 @@ python scripts/benchmark.py 3
 | 真实模型 AI 补丁（合成目标） | `patch repair` + `patch verify`（2026-11-14） | 通过：`deepseek-v4-pro` 补丁，Maven 与 JUnit 各一轮 `validation_passed`，快照完整；仅合成 fixture |
 | 真实项目 AI 补丁 | `patch repair` + `patch verify`（`D:\Code\Java\market`，2026-11-14） | 通过（编译级）：`deepseek-v4-pro` 访问控制补丁，`maven-compile` 通过，quality 80/B；无测试、无运行时验证 |
 | 真实项目集中式访问控制补丁 | `patch verify --profile maven-test`（2026-11-14） | 通过：LoginInterceptor 全量拦截 manager/staff 路由，4 个 JUnit 测试通过，offline `mvn test` 退出 0，quality 75/B，快照完整 |
+| 补丁回滚、模块与 Gradle 验证 profile | `go test ./internal/r3` + `python scripts/test-patch.py` | 通过：失败/通过报告含 `rollback` 原始哈希与 `rubric_version`；`--module .` 逐模块结果；越界模块拒绝；`gradle-test` 以 PATH 桩工具链验证命令、退出码与 JUnit XML（真实 Gradle 未验证） |
 | 真实 Tomcat/MySQL HTTP 权限 | Tomcat 9.0.106 + MySQL 8.0.46 容器（2026-11-14） | 通过：未登录 manager/staff 业务端点均 302 到各自登录页，登录后放行；跨会话拒绝；错误密码不建立会话 |
 | 硬件 VM/系统调用隔离 | — | 未实现；gVisor 是用户态内核 |
 | Maven 有效依赖树（离线） | `python scripts/test-resolve.py` | 通过（3 模块/31 依赖/25 传递） |
 | Gradle 有效依赖树（离线） | `python scripts/test-gradle-resolve.py` | 通过（Gradle 8.14.3：3 模块/5 依赖/2 传递；需 `TRIDENT_GRADLE` 或 PATH，离线缓存 POM 缺失时 skip） |
-| 依赖升级验证 | `python scripts/test-upgrade.py` | 通过：commons-text 1.9→1.10.0，基线测试与升级后测试均通过，快照完整；Gradle 声明仅生成补丁 |
+| 依赖升级验证 | `python scripts/test-upgrade.py` | 通过：commons-text 1.9→1.10.0，基线测试与升级后测试均通过，快照完整；Gradle 升级可生成补丁并用 `gradle-test` 验证，真实 Gradle 工具链未验证 |
 | 权限/越权控制清单 | `python scripts/test-authz.py` | 通过：旧 fixture 5 控制/11 入口，6 protected、2 public、2 unprotected、1 unknown，2 条 CWE-306 `inconclusive` finding；`java-authz-chain` 2 条有序链、5 protected/3 public/1 unknown、`ROLE_ADMIN` 归一化、context-path 外部路径 |
 | 运行时 HTTP 验证自动化 | `python scripts/test-runtime.py` + 真实 Tomcat/MySQL | 通过（本机）：基础 loopback 4/4；角色矩阵 2 角色 × (2 登录 + 2 单元) 共 10/10、每角色 4/4、`login_status=complete`、`csrf=token_injected`；缺失 token/未设置占位符/共享 session 失败关闭；凭据与 token 不落报告。真实环境 15/15 为既有结果，本次未重跑 |
 | 静态—运行时关联报告 | `go test ./internal/correlate` + `python scripts/test-runtime.py` | 通过：`runtime correlate` 三态（唯一匹配/多匹配歧义/无匹配）、无 endpoint finding、未命中运行时结果；原 findings 字节不变、输出确定性、覆盖输入/缺失输入/未观测运行时失败关闭 |
@@ -109,6 +110,7 @@ python scripts/benchmark.py 3
 - 静态 finding 的 `runtime_status` 恒为 `not_run`；R3 的 `runtime_status=isolated_validation_only`。
 - `runtime http` 的 `runtime_status=observed` 只覆盖调用者声明的请求与断言，不是漏洞利用或生产安全证明，也不自动回写 finding。
 - `runtime correlate` 仅按注解级 route/method 字面量匹配；不解析 context path、部署前缀、路径变量或归一化，`correlated` 不证明参数可控、控制缺失或可利用。
+- `rollback` 只提供原始文件哈希与人工回退说明，不执行回滚命令；`gradle-test` profile 的桩工具链验收只证明命令构造与报告解析，不证明真实 Gradle 构建。
 - gVisor 需要 Docker 注册 `runsc`；Docker 不是硬件 VM。
 
 ## 6. 发布门槛

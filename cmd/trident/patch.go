@@ -194,11 +194,13 @@ func runPatchVerify(ctx context.Context, args []string, out io.Writer) error {
 	var sandboxKind, sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxMavenRepo string
 	var timeoutSeconds, sandboxPids int
 	var approve bool
+	var modules stringList
 	flags.StringVar(&snapshotDir, "snapshot", "", "existing trusted snapshot directory")
 	flags.StringVar(&expectedHash, "snapshot-hash", "", "trusted SHA-256 returned by import")
 	flags.StringVar(&workspace, "workspace", "", "new writable workspace directory outside the snapshot")
 	flags.StringVar(&patchPath, "patch", "", "caller-supplied unified diff file")
-	flags.StringVar(&profile, "profile", "maven", "validation profile: maven, maven-compile, maven-test, javac or junit")
+	flags.StringVar(&profile, "profile", "maven", "validation profile: maven, maven-compile, maven-test, gradle-test, javac or junit")
+	flags.Var(&modules, "module", "workspace-relative module directory to validate; repeatable, at most 8")
 	flags.StringVar(&mainClass, "main-class", "", "Java main class for maven/javac profiles")
 	flags.StringVar(&testClass, "test-class", "", "JUnit test class(es), comma-separated")
 	flags.StringVar(&testClasspath, "test-classpath", "", "OS-separated absolute JUnit/classpath entries for junit")
@@ -224,11 +226,14 @@ func runPatchVerify(ctx context.Context, args []string, out io.Writer) error {
 		if testClass == "" || testClasspath == "" {
 			return fmt.Errorf("junit profile requires --test-class and --test-classpath")
 		}
-	} else if profile != "maven-compile" && profile != "maven-test" && mainClass == "" {
-		return fmt.Errorf("maven and javac profiles require --main-class")
+	} else if profile != "maven-compile" && profile != "maven-test" && profile != "gradle-test" && mainClass == "" {
+		return fmt.Errorf("maven, gradle-test and javac profiles require --main-class")
 	}
 	if timeoutSeconds < 1 || timeoutSeconds > r3.MaxTimeoutS {
 		return fmt.Errorf("timeout-seconds must be between 1 and %d", r3.MaxTimeoutS)
+	}
+	if len(modules) > r3.MaxModules {
+		return fmt.Errorf("at most %d modules can be validated", r3.MaxModules)
 	}
 	if !approve {
 		return fmt.Errorf("patch verification compiles and executes the patched copy; explicit --approve-execution is required")
@@ -239,7 +244,7 @@ func runPatchVerify(ctx context.Context, args []string, out io.Writer) error {
 	}
 	report, err := r3.Verify(ctx, r3.VerifyOptions{
 		SnapshotDir: snapshotDir, SnapshotHash: expectedHash, Workspace: workspace, PatchPath: patchPath,
-		Profile: profile, MainClass: mainClass, TestClass: testClass, TestClasspath: classpath,
+		Profile: profile, Modules: []string(modules), MainClass: mainClass, TestClass: testClass, TestClasspath: classpath,
 		JUnitReportDir: junitReportDir, JacocoAgent: jacocoAgent, JacocoReport: jacocoReport,
 		Timeout: time.Duration(timeoutSeconds) * time.Second, ApproveExecution: true,
 		Sandbox: r3.Sandbox{
@@ -286,7 +291,7 @@ func runPatchRepair(ctx context.Context, args []string, out io.Writer) error {
 	flags.StringVar(&outputParam, "output-parameter", "max_tokens", "max_tokens or max_completion_tokens")
 	flags.IntVar(&maxOutputTokens, "max-output-tokens", 4096, "output token ceiling per round")
 	flags.IntVar(&rounds, "rounds", 3, "repair rounds (1..5)")
-	flags.StringVar(&profile, "profile", "junit", "validation profile: maven, maven-compile, maven-test, javac or junit")
+	flags.StringVar(&profile, "profile", "junit", "validation profile: maven, maven-compile, maven-test, gradle-test, javac or junit")
 	flags.StringVar(&mainClass, "main-class", "", "Java main class for maven/javac profiles")
 	flags.StringVar(&testClass, "test-class", "", "JUnit test class(es), comma-separated")
 	flags.StringVar(&testClasspath, "test-classpath", "", "OS-separated absolute JUnit/classpath entries for junit")
@@ -326,8 +331,8 @@ func runPatchRepair(ctx context.Context, args []string, out io.Writer) error {
 		if testClass == "" || testClasspath == "" {
 			return fmt.Errorf("junit profile requires --test-class and --test-classpath")
 		}
-	} else if profile != "maven-compile" && profile != "maven-test" && mainClass == "" {
-		return fmt.Errorf("maven and javac profiles require --main-class")
+	} else if profile != "maven-compile" && profile != "maven-test" && profile != "gradle-test" && mainClass == "" {
+		return fmt.Errorf("maven, gradle-test and javac profiles require --main-class")
 	}
 	if outputParam != "max_tokens" && outputParam != "max_completion_tokens" {
 		return fmt.Errorf("invalid output-parameter")

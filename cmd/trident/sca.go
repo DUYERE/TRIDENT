@@ -166,6 +166,7 @@ func runSCAUpgrade(ctx context.Context, args []string, out io.Writer) error {
 	var sandboxKind, sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxMavenRepo string
 	var timeoutSeconds, sandboxPids int
 	var approveExecution bool
+	var modules stringList
 	flags.StringVar(&snapshotDir, "snapshot", "", "existing trusted snapshot directory")
 	flags.StringVar(&expectedHash, "snapshot-hash", "", "trusted SHA-256 returned by import")
 	flags.StringVar(&module, "module", ".", "module directory or build file containing the declaration")
@@ -173,7 +174,8 @@ func runSCAUpgrade(ctx context.Context, args []string, out io.Writer) error {
 	flags.StringVar(&toVersion, "to", "", "target version literal")
 	flags.StringVar(&outPath, "out", "", "new patch file outside the snapshot")
 	flags.StringVar(&workspace, "workspace", "", "optional new workspace outside the snapshot for validation")
-	flags.StringVar(&profile, "profile", "maven-test", "validation profile: maven, maven-compile, maven-test, javac or junit")
+	flags.StringVar(&profile, "profile", "maven-test", "validation profile: maven, maven-compile, maven-test, gradle-test, javac or junit")
+	flags.Var(&modules, "module-dir", "workspace-relative module directory to validate; repeatable, at most 8")
 	flags.StringVar(&mainClass, "main-class", "", "Java main class for maven/javac profiles")
 	flags.StringVar(&testClass, "test-class", "", "JUnit test class(es), comma-separated")
 	flags.StringVar(&testClasspath, "test-classpath", "", "OS-separated absolute JUnit/classpath entries for junit")
@@ -199,8 +201,11 @@ func runSCAUpgrade(ctx context.Context, args []string, out io.Writer) error {
 		if testClass == "" || testClasspath == "" {
 			return fmt.Errorf("junit profile requires --test-class and --test-classpath")
 		}
-	} else if profile != "maven-compile" && profile != "maven-test" && mainClass == "" {
-		return fmt.Errorf("maven and javac profiles require --main-class")
+	} else if profile != "maven-compile" && profile != "maven-test" && profile != "gradle-test" && mainClass == "" {
+		return fmt.Errorf("maven, gradle-test and javac profiles require --main-class")
+	}
+	if len(modules) > r3.MaxModules {
+		return fmt.Errorf("at most %d modules can be validated", r3.MaxModules)
 	}
 	if timeoutSeconds < 1 || timeoutSeconds > r3.MaxTimeoutS {
 		return fmt.Errorf("timeout-seconds must be between 1 and %d", r3.MaxTimeoutS)
@@ -254,7 +259,7 @@ func runSCAUpgrade(ctx context.Context, args []string, out io.Writer) error {
 			classpath = filepath.SplitList(testClasspath)
 		}
 		baseline, baselineErr := runUpgradeBaseline(ctx, snapshot, absoluteSnapshot, r3.ValidationOptions{
-			Profile: profile, MainClass: mainClass, TestClass: testClass, TestClasses: nil,
+			Profile: profile, Modules: []string(modules), MainClass: mainClass, TestClass: testClass, TestClasses: nil,
 			TestClasspath: classpath, JUnitReportDir: junitReportDir,
 			JacocoAgent: jacocoAgent, JacocoReport: jacocoReport,
 			Timeout: time.Duration(timeoutSeconds) * time.Second, ApproveExecution: true,
@@ -280,7 +285,7 @@ func runSCAUpgrade(ctx context.Context, args []string, out io.Writer) error {
 		}
 		verification, verifyErr := r3.Verify(ctx, r3.VerifyOptions{
 			SnapshotDir: absoluteSnapshot, SnapshotHash: expectedHash, Workspace: workspace, PatchPath: absoluteOut,
-			Profile: profile, MainClass: mainClass, TestClass: testClass, TestClasspath: classpath,
+			Profile: profile, Modules: []string(modules), MainClass: mainClass, TestClass: testClass, TestClasspath: classpath,
 			JUnitReportDir: junitReportDir, JacocoAgent: jacocoAgent, JacocoReport: jacocoReport,
 			Timeout: time.Duration(timeoutSeconds) * time.Second, ApproveExecution: true,
 			Sandbox: r3.Sandbox{

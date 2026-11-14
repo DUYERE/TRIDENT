@@ -207,3 +207,71 @@ func TestValidationRequiresExplicitApprovalAndValidProfile(t *testing.T) {
 		t.Fatal("junit without test classpath accepted")
 	}
 }
+
+func TestRollbackPlanRecordsOriginalHashes(t *testing.T) {
+	plan := rollbackPlan("snapshot-hash", PatchResult{Files: []FileChange{
+		{Path: "src/main/java/demo/A.java", SHA256Before: "before", SHA256After: "after"},
+		{Path: "src/main/java/demo/New.java", SHA256Before: "", SHA256After: "created"},
+	}})
+	if plan == nil || plan.SnapshotHash != "snapshot-hash" || len(plan.Steps) != 2 {
+		t.Fatalf("rollback plan: %+v", plan)
+	}
+	if plan.Steps[0].Action != "restore_original" || plan.Steps[0].SHA256Before != "before" {
+		t.Fatalf("restore step: %+v", plan.Steps[0])
+	}
+	if plan.Steps[1].Action != "remove_created_file" || plan.Steps[1].SHA256Before != "" {
+		t.Fatalf("created-file step: %+v", plan.Steps[1])
+	}
+	if !strings.Contains(plan.Note, "does not execute") {
+		t.Fatalf("rollback note must stay manual: %q", plan.Note)
+	}
+}
+
+func TestModuleDirectoryStaysInsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "service-a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	absolute, relative, err := moduleDirectory(root, "service-a")
+	if err != nil || relative != "service-a" || absolute != filepath.Join(root, "service-a") {
+		t.Fatalf("module resolution: %q %q %v", absolute, relative, err)
+	}
+	for _, module := range []string{"../escape", "a/../../escape", filepath.Join(root, "service-a"), "absent"} {
+		if _, _, err := moduleDirectory(root, module); err == nil {
+			t.Fatalf("unsafe module accepted: %q", module)
+		}
+	}
+}
+
+func TestGradleProfileRequiresBuildFile(t *testing.T) {
+	workspace := t.TempDir()
+	if _, err := Validate(context.Background(), workspace, ValidationOptions{
+		Profile: "gradle-test", ApproveExecution: true,
+	}); err == nil {
+		t.Fatal("gradle profile without build file accepted")
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "build.gradle"), []byte("plugins { id 'java' }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !hasGradleBuild(workspace) {
+		t.Fatal("build.gradle not detected")
+	}
+}
+
+func TestValidateModulesRejectsUnsafeSelection(t *testing.T) {
+	workspace := t.TempDir()
+	if _, err := Validate(context.Background(), workspace, ValidationOptions{
+		Profile: "maven-compile", ApproveExecution: true, Modules: []string{"../escape"},
+	}); err == nil {
+		t.Fatal("escaping module accepted")
+	}
+	modules := []string{}
+	for index := 0; index < MaxModules+1; index++ {
+		modules = append(modules, "module")
+	}
+	if _, err := Validate(context.Background(), workspace, ValidationOptions{
+		Profile: "maven-compile", ApproveExecution: true, Modules: modules,
+	}); err == nil {
+		t.Fatal("module count above the bound accepted")
+	}
+}

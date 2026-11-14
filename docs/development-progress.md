@@ -1005,6 +1005,15 @@
 - 验收：`go test ./internal/correlate` 通过（三态、无端点、未命中运行时结果、wildcard、拒绝条件、确定性）；`python scripts/test-runtime.py` 通过（`/dologin` 唯一匹配、`/admin` 歧义、`/missing` 无匹配、依赖 finding 无 endpoint；原 findings 字节不变；两次关联输出字节一致；覆盖输入/缺失输入/未观测运行时失败关闭）。
 - 限制：路径按注解级字面量比较，不解析 context path、部署前缀、路径变量或归一化；不自动定级、不生成利用链、不替代人工复核。
 
+### 2026-11-14 续十六：P1-3 补丁验证与回滚增强
+
+- `internal/r3` 新增 `gradle-test` 验证 profile：工作区需存在 `build.gradle`/`build.gradle.kts`，执行 `gradle --offline -q test`（不需要 main class），成功后解析 `build/test-results/test` 的 JUnit XML；新增限制 `gradle_test_profile_runs_tests_only`、`gradle_profile_offline`。docker/gVisor 沿用固定镜像 digest 与只读 Maven 依赖缓存。
+- `patch verify`/`sca upgrade` 报告新增 `rollback`：`snapshot_hash`、逐文件 `steps[]`（`restore_original`/`remove_created_file`、`sha256_before`、`sha256_after`）与人工回退说明；验证失败同样附带，且不执行任何回滚命令。
+- 新增多模块验证：`patch verify --module <dir>`（`sca upgrade --module-dir`）可重复最多 8 个，必须是工作区内相对目录，拒绝绝对路径、`..` 逃逸与重复项；逐模块输出 `validation.modules[]` 与 `commands[].module`，聚合状态取最差模块，测试/JUnit/覆盖率按模块累加，限制 `module_selection_caller_supplied`。
+- `quality` 增加 `rubric_version=r3-quality-rubric-v2`；评分仍为启发式，不参与通过判定。
+- 验收：`go test ./internal/r3` 通过（回滚计划、模块路径逃逸/数量上限、Gradle 构建文件检测）；`python scripts/test-patch.py` 通过（失败/通过报告均含正确 rollback 与 rubric；`--module .` 聚合；越界模块拒绝；`gradle-test` 使用 PATH 桩工具链验证命令、退出码、JUnit 汇总与离线限制）。`scripts/test-upgrade.py` 的 Gradle 依赖升级场景因缺少真实 Gradle/离线缓存未运行。
+- 未验证：真实 Gradle 工具链与缓存、多模块真实构建、回滚命令自动化（保持人工，非目标）。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

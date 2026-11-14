@@ -11,7 +11,10 @@ import (
 	"trident/internal/project"
 )
 
-const SchemaVersion = 1
+const (
+	SchemaVersion        = 1
+	QualityRubricVersion = "r3-quality-rubric-v2"
+)
 
 type VerifyOptions struct {
 	SnapshotDir      string
@@ -19,6 +22,7 @@ type VerifyOptions struct {
 	Workspace        string
 	PatchPath        string
 	Profile          string
+	Modules          []string
 	MainClass        string
 	TestClass        string
 	TestClasses      []string
@@ -37,6 +41,7 @@ type Report struct {
 	SnapshotHash           string            `json:"snapshot_hash"`
 	Workspace              WorkspaceInfo     `json:"workspace"`
 	Patch                  PatchResult       `json:"patch"`
+	Rollback               *RollbackPlan     `json:"rollback,omitempty"`
 	Validation             *ValidationResult `json:"validation,omitempty"`
 	Quality                QualityScore      `json:"quality"`
 	OriginalSnapshotIntact bool              `json:"original_snapshot_intact"`
@@ -45,11 +50,27 @@ type Report struct {
 	Error                  string            `json:"error,omitempty"`
 }
 
+// RollbackPlan contains manual instructions derived from the applied patch. It
+// is never executed by trident and contains no shell command interpolation.
+type RollbackPlan struct {
+	SnapshotHash string         `json:"snapshot_hash"`
+	Steps        []RollbackStep `json:"steps"`
+	Note         string         `json:"note"`
+}
+
+type RollbackStep struct {
+	Path         string `json:"path"`
+	Action       string `json:"action"`
+	SHA256Before string `json:"sha256_before,omitempty"`
+	SHA256After  string `json:"sha256_after"`
+}
+
 type QualityScore struct {
-	Score       int      `json:"score"`
-	Grade       string   `json:"grade"`
-	Dimensions  []string `json:"dimensions"`
-	Limitations []string `json:"limitations"`
+	RubricVersion string   `json:"rubric_version"`
+	Score         int      `json:"score"`
+	Grade         string   `json:"grade"`
+	Dimensions    []string `json:"dimensions"`
+	Limitations   []string `json:"limitations"`
 }
 
 // Verify executes the bounded R3 slice: isolated copy, caller-supplied patch,
@@ -86,6 +107,15 @@ func Verify(ctx context.Context, opts VerifyOptions) (Report, error) {
 	}
 	if opts.Profile == "maven-test" {
 		limitations = append(limitations, "maven_test_profile_runs_tests_only: Maven Surefire tests are executed, but no application entry point or HTTP request is run")
+	}
+	if opts.Profile == "gradle-test" {
+		limitations = append(limitations,
+			"gradle_test_profile_runs_tests_only: Gradle tests are executed, but no application entry point or HTTP request is run",
+			"gradle_profile_offline: requires a pre-populated Gradle cache; no network fetch is attempted",
+		)
+	}
+	if len(opts.Modules) > 0 {
+		limitations = append(limitations, "module_selection_caller_supplied: validation runs only in the explicitly selected module directories")
 	}
 	report := Report{
 		SchemaVersion: SchemaVersion, Status: "setup_failed", SnapshotHash: opts.SnapshotHash,
@@ -124,13 +154,14 @@ func Verify(ctx context.Context, opts VerifyOptions) (Report, error) {
 	report.Status = "patch_failed"
 	patchResult, err := Apply(workspace.Path, patch)
 	report.Patch = patchResult
+	report.Rollback = rollbackPlan(opts.SnapshotHash, patchResult)
 	if err != nil {
 		report.Error = err.Error()
 		report.OriginalSnapshotIntact = snapshotIntact(ctx, opts.SnapshotDir, opts.SnapshotHash)
 		return report, err
 	}
 	validation, err := Validate(ctx, workspace.Path, ValidationOptions{
-		Profile: opts.Profile, MainClass: opts.MainClass, TestClass: opts.TestClass,
+		Profile: opts.Profile, Modules: opts.Modules, MainClass: opts.MainClass, TestClass: opts.TestClass,
 		TestClasses: opts.TestClasses, TestClasspath: opts.TestClasspath,
 		JUnitReportDir: opts.JUnitReportDir, JacocoAgent: opts.JacocoAgent, JacocoReport: opts.JacocoReport,
 		Timeout: opts.Timeout, ApproveExecution: true,
@@ -239,12 +270,33 @@ func scorePatch(validation ValidationResult, patch PatchResult) QualityScore {
 		grade = "C"
 	}
 	return QualityScore{
-		Score: score, Grade: grade, Dimensions: dimensions,
+		RubricVersion: QualityRubricVersion,
+		Score:         score, Grade: grade, Dimensions: dimensions,
 		Limitations: []string{
 			"quality_score_is_heuristic: it does not prove security, correctness or production safety",
 			"no_mutation_or_differential_test_analysis",
 			"single_validation_profile_only",
 		},
+	}
+}
+
+// rollbackPlan records the per-file original hashes so a failed validation can
+// be reverted by a human. Every step is descriptive; trident never runs it.
+func rollbackPlan(snapshotHash string, patch PatchResult) *RollbackPlan {
+	steps := make([]RollbackStep, 0, len(patch.Files))
+	for _, file := range patch.Files {
+		action := "restore_original"
+		if file.SHA256Before == "" {
+			action = "remove_created_file"
+		}
+		steps = append(steps, RollbackStep{
+			Path: file.Path, Action: action,
+			SHA256Before: file.SHA256Before, SHA256After: file.SHA256After,
+		})
+	}
+	return &RollbackPlan{
+		SnapshotHash: snapshotHash, Steps: steps,
+		Note: "manual rollback instructions only: restore original files from the pinned snapshot or your VCS; trident does not execute rollback commands",
 	}
 }
 

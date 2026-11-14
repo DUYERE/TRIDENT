@@ -18,6 +18,7 @@ import (
 const (
 	MaxOutputBytes  = 64 << 10
 	MaxJavacFiles   = 100
+	MaxModules      = 8
 	DefaultTimeoutS = 180
 	MaxTimeoutS     = 600
 )
@@ -31,6 +32,7 @@ const (
 
 type ValidationOptions struct {
 	Profile          string
+	Modules          []string
 	MainClass        string
 	TestClass        string
 	TestClasses      []string
@@ -45,6 +47,7 @@ type ValidationOptions struct {
 
 type CommandResult struct {
 	Command      string `json:"command"`
+	Module       string `json:"module,omitempty"`
 	ExitCode     int    `json:"exit_code"`
 	Status       string `json:"status"`
 	DurationMS   int64  `json:"duration_ms"`
@@ -66,7 +69,19 @@ type ValidationResult struct {
 	TestSummary *TestRunSummary  `json:"test_summary,omitempty"`
 	JUnitXML    *JUnitXMLSummary `json:"junit_xml,omitempty"`
 	Coverage    *CoverageSummary `json:"coverage,omitempty"`
+	Modules     []ModuleResult   `json:"modules,omitempty"`
 	Error       string           `json:"error,omitempty"`
+}
+
+// ModuleResult records one explicitly selected module's validation outcome.
+type ModuleResult struct {
+	Module     string `json:"module"`
+	Status     string `json:"status"`
+	DurationMS int64  `json:"duration_ms"`
+	Tests      int    `json:"tests,omitempty"`
+	Failures   int    `json:"failures,omitempty"`
+	Errors     int    `json:"errors,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 type TestRunSummary struct {
@@ -116,8 +131,9 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 	if !opts.ApproveExecution {
 		return result, fmt.Errorf("isolated execution requires explicit approval")
 	}
-	if opts.Profile != "maven" && opts.Profile != "maven-compile" && opts.Profile != "maven-test" && opts.Profile != "javac" && opts.Profile != "junit" {
-		return result, fmt.Errorf("profile must be maven, maven-compile, maven-test, javac or junit")
+	if opts.Profile != "maven" && opts.Profile != "maven-compile" && opts.Profile != "maven-test" &&
+		opts.Profile != "gradle-test" && opts.Profile != "javac" && opts.Profile != "junit" {
+		return result, fmt.Errorf("profile must be maven, maven-compile, maven-test, gradle-test, javac or junit")
 	}
 	var testClasses []string
 	if opts.Profile == "junit" {
@@ -140,7 +156,7 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 				return result, fmt.Errorf("jacoco agent must be an absolute regular jar file")
 			}
 		}
-	} else if opts.Profile != "maven-compile" && opts.Profile != "maven-test" && (!mainClassPattern.MatchString(opts.MainClass) || len(opts.MainClass) > 256) {
+	} else if !buildOnlyProfile(opts.Profile) && (!mainClassPattern.MatchString(opts.MainClass) || len(opts.MainClass) > 256) {
 		return result, fmt.Errorf("main class must be a dotted Java identifier")
 	}
 	root, err := filepath.Abs(workspace)
@@ -149,6 +165,9 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 	}
 	if info, statErr := os.Stat(root); statErr != nil || !info.IsDir() {
 		return result, fmt.Errorf("workspace does not exist or is not a directory")
+	}
+	if len(opts.Modules) > 0 {
+		return validateModules(ctx, root, opts)
 	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
@@ -240,6 +259,33 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 						Tests: summary.Tests, Failures: summary.Failures,
 						Errors: summary.Errors, Skipped: summary.Skipped,
 						Raw: "surefire:" + strings.Join(summary.Files, ","),
+					}
+				}
+			}
+		}
+	case "gradle-test":
+		if !hasGradleBuild(root) {
+			return result, fmt.Errorf("gradle-test profile requires build.gradle or build.gradle.kts in the workspace")
+		}
+		var step CommandResult
+		if sandbox.Kind == SandboxDocker || sandbox.Kind == SandboxGVisor {
+			step = runDockerCommand(runCtx, sandbox, root, dockerDisplay(sandbox, "gradle --offline -q test"), "gradle", "--offline", "-q", "test")
+		} else {
+			step = runCommand(runCtx, exec.CommandContext(runCtx, "gradle", "--offline", "-q", "test"), "gradle --offline -q test", root)
+		}
+		appendStep(step)
+		if step.Status == "ok" {
+			reportDir := filepath.Join(root, "build", "test-results", "test")
+			if info, statErr := os.Stat(reportDir); statErr == nil && info.IsDir() {
+				summary, summaryErr := parseJUnitXMLDir(reportDir)
+				if summaryErr != nil {
+					result.Error = summaryErr.Error()
+				} else if summary != nil {
+					result.JUnitXML = summary
+					result.TestSummary = &TestRunSummary{
+						Tests: summary.Tests, Failures: summary.Failures,
+						Errors: summary.Errors, Skipped: summary.Skipped,
+						Raw: "gradle:" + strings.Join(summary.Files, ","),
 					}
 				}
 			}
@@ -509,7 +555,7 @@ func safeEnv() []string {
 	allowed := []string{
 		"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "JAVA_HOME", "M2_HOME", "MAVEN_HOME",
 		"SystemRoot", "WINDIR", "TEMP", "TMP", "PATHEXT", "COMSPEC", "USERPROFILE",
-		"HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+		"HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "GRADLE_USER_HOME",
 	}
 	env := make([]string, 0, len(allowed))
 	for _, name := range allowed {
@@ -518,4 +564,169 @@ func safeEnv() []string {
 		}
 	}
 	return env
+}
+
+// buildOnlyProfile reports profiles that do not execute an application entry
+// point and therefore do not require --main-class.
+func buildOnlyProfile(profile string) bool {
+	return profile == "maven-compile" || profile == "maven-test" || profile == "gradle-test"
+}
+
+func hasGradleBuild(root string) bool {
+	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
+		if info, err := os.Stat(filepath.Join(root, name)); err == nil && info.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
+}
+
+// validateModules runs the same bounded profile inside each explicitly selected
+// module directory. It never guesses modules from a build file and never walks
+// outside the workspace. The aggregate status is the worst module status.
+func validateModules(ctx context.Context, root string, opts ValidationOptions) (ValidationResult, error) {
+	if len(opts.Modules) > MaxModules {
+		return ValidationResult{}, fmt.Errorf("at most %d modules can be validated", MaxModules)
+	}
+	sandbox, err := opts.Sandbox.normalized()
+	if err != nil {
+		return ValidationResult{}, err
+	}
+	aggregate := ValidationResult{
+		Profile: opts.Profile, MainClass: opts.MainClass, TestClass: opts.TestClass,
+		TestClasses: append([]string{}, opts.TestClasses...), Sandbox: sandbox.Kind,
+		Commands: []CommandResult{}, Modules: []ModuleResult{}, Status: ValidationPassed,
+	}
+	seen := map[string]bool{}
+	for _, module := range opts.Modules {
+		directory, relative, pathErr := moduleDirectory(root, module)
+		if pathErr != nil {
+			return aggregate, pathErr
+		}
+		if seen[relative] {
+			return aggregate, fmt.Errorf("duplicate module %q", relative)
+		}
+		seen[relative] = true
+		sub := opts
+		sub.Modules = nil
+		result, subErr := Validate(ctx, directory, sub)
+		if subErr != nil {
+			return aggregate, subErr
+		}
+		for index := range result.Commands {
+			result.Commands[index].Module = relative
+		}
+		aggregate.Commands = append(aggregate.Commands, result.Commands...)
+		aggregate.DurationMS += result.DurationMS
+		aggregate.Status = worstStatus(aggregate.Status, result.Status)
+		moduleResult := ModuleResult{Module: relative, Status: result.Status, DurationMS: result.DurationMS}
+		if result.TestSummary != nil {
+			moduleResult.Tests = result.TestSummary.Tests
+			moduleResult.Failures = result.TestSummary.Failures
+			moduleResult.Errors = result.TestSummary.Errors
+			aggregate.TestSummary = addTestSummary(aggregate.TestSummary, result.TestSummary)
+		}
+		if result.JUnitXML != nil {
+			aggregate.JUnitXML = addJUnitSummary(aggregate.JUnitXML, result.JUnitXML, relative)
+		}
+		if result.Coverage != nil {
+			aggregate.Coverage = addCoverage(aggregate.Coverage, result.Coverage)
+		}
+		if result.Error != "" {
+			moduleResult.Error = result.Error
+			if aggregate.Error == "" {
+				aggregate.Error = result.Error
+			}
+		}
+		aggregate.Modules = append(aggregate.Modules, moduleResult)
+	}
+	return aggregate, nil
+}
+
+func moduleDirectory(root, module string) (string, string, error) {
+	module = strings.TrimSpace(module)
+	if module == "" || len(module) > 256 || filepath.IsAbs(module) {
+		return "", "", fmt.Errorf("module must be a relative path inside the workspace")
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(module))
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("module %q escapes the workspace", module)
+	}
+	absolute := filepath.Join(root, cleaned)
+	relative, err := filepath.Rel(root, absolute)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", "", fmt.Errorf("module %q escapes the workspace", module)
+	}
+	info, err := os.Stat(absolute)
+	if err != nil || !info.IsDir() {
+		return "", "", fmt.Errorf("module %q is not an existing directory inside the workspace", module)
+	}
+	return absolute, filepath.ToSlash(relative), nil
+}
+
+var statusRank = map[string]int{
+	ValidationPassed:  0,
+	ValidationFailed:  1,
+	ValidationError:   2,
+	ValidationTimeout: 3,
+}
+
+func worstStatus(left, right string) string {
+	if statusRank[right] > statusRank[left] {
+		return right
+	}
+	return left
+}
+
+func addTestSummary(total, next *TestRunSummary) *TestRunSummary {
+	if total == nil {
+		copied := *next
+		return &copied
+	}
+	total.Tests += next.Tests
+	total.Failures += next.Failures
+	total.Errors += next.Errors
+	total.Skipped += next.Skipped
+	if next.Raw != "" {
+		if total.Raw != "" {
+			total.Raw += ","
+		}
+		total.Raw += next.Raw
+	}
+	return total
+}
+
+func addJUnitSummary(total, next *JUnitXMLSummary, module string) *JUnitXMLSummary {
+	if total == nil {
+		total = &JUnitXMLSummary{Files: []string{}}
+	}
+	total.Suites += next.Suites
+	total.Tests += next.Tests
+	total.Failures += next.Failures
+	total.Errors += next.Errors
+	total.Skipped += next.Skipped
+	for _, file := range next.Files {
+		total.Files = append(total.Files, module+"/"+file)
+	}
+	return total
+}
+
+func addCoverage(total, next *CoverageSummary) *CoverageSummary {
+	if total == nil {
+		copied := *next
+		return &copied
+	}
+	total.LineCovered += next.LineCovered
+	total.LineTotal += next.LineTotal
+	total.BranchCovered += next.BranchCovered
+	total.BranchTotal += next.BranchTotal
+	total.MethodCovered += next.MethodCovered
+	total.MethodTotal += next.MethodTotal
+	if total.LineTotal > 0 {
+		total.LinePercent = float64(total.LineCovered) / float64(total.LineTotal) * 100
+	}
+	if total.BranchTotal > 0 {
+		total.BranchPercent = float64(total.BranchCovered) / float64(total.BranchTotal) * 100
+	}
+	return total
 }

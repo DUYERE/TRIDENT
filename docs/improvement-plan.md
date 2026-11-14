@@ -14,8 +14,10 @@
 > P1-1 运行时角色矩阵与 CSRF（`roles`/`matrix`、`${ENV:NAME}` 凭据占位符、有界 token 提取与注入）
 > 已实现并通过 `scripts/test-runtime.py` 与 `go test ./internal/httpverify` 验收；P1-2 静态—运行时关联
 > （`runtime correlate` 三态关联、只读输入、独立报告）已实现并通过 `go test ./internal/correlate` 与
-> `scripts/test-runtime.py` 验收。
-> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五。其余项仍为计划。
+> `scripts/test-runtime.py` 验收；P1-3 回滚计划、质量评分版本、多模块选择与 `gradle-test` 验证 profile
+> 已实现并通过 `go test ./internal/r3` 与 `scripts/test-patch.py` 验收（Gradle 使用桩工具链，真实 Gradle
+> 构建未验证）。
+> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六。其余项仍为计划。
 
 ## 1. 原则与约束
 
@@ -175,17 +177,30 @@
 
 ### P1-3 补丁验证与回滚增强
 
+- **状态**：已实现（`internal/r3`；Gradle profile 以桩工具链验收，真实 Gradle 构建保持未验证）。
 - **目标**：让升级与修复在更多构建方式下可验证，并具备失败回退路径。
 - **实现要点**：
-  - `sca upgrade` 增加 Gradle 验证 profile（`gradle --offline test`，需 `--approve-execution`），
+  - `sca upgrade` 增加 Gradle 验证 profile（`gradle --offline -q test`，需 `--approve-execution`），
     超时与输出截断沿用现有机制。
   - 补丁计划增加 `rollback` 信息（reverse patch 或原文件哈希），验证失败时输出可复现的回退步骤。
   - Docker 验证固定镜像 digest 与只读依赖缓存；质量评分规则版本化（`quality_rubric_version`）。
   - 多模块补丁支持按模块选择验证目标，输出逐模块结果。
+- **实现结果**：
+  - 新增 `gradle-test` profile：要求 `build.gradle`/`build.gradle.kts`，执行 `gradle --offline -q test`，
+    解析 `build/test-results/test` 的 JUnit XML；不需要 `--main-class`。新增限制
+    `gradle_test_profile_runs_tests_only`、`gradle_profile_offline`。
+  - 报告新增 `rollback`：`snapshot_hash` + 逐文件 `steps[]`（`restore_original` / `remove_created_file`、
+    原始与结果 SHA-256）与人工回退说明；验证失败同样附带，不执行任何回滚命令。
+  - `patch verify --module`（最多 8 个）与 `sca upgrade --module-dir` 逐模块执行同一 profile，
+    `validation.modules[]`/`commands[].module` 输出逐模块结果，聚合状态取最差模块。
+  - `quality.rubric_version=r3-quality-rubric-v2`；Docker 固定镜像 digest 与只读 Maven 缓存沿用既有实现。
 - **验收标准**：
-  - `scripts/test-upgrade.py` 增加 Gradle 场景（离线仓库）；`scripts/test-patch.py` 增加回滚断言。
-  - 契约更新 `docs/sca-contract.md`、`docs/patch-contract.md`。
-- **非目标**：不自动合并上游新版本、不做生产兼容性证明。
+  - `go test ./internal/r3` 覆盖回滚计划、模块路径逃逸/数量上限与 Gradle 构建文件检测（已通过）。
+  - `scripts/test-patch.py` 增加回滚、rubric、`--module .`、越界模块与 `gradle-test` 断言（已通过；
+    Gradle 使用桩工具链验证命令构造、退出码与 XML 解析，不证明真实 Gradle 构建）。
+  - `scripts/test-upgrade.py` 的 Gradle 依赖升级场景因缺少真实 Gradle/离线缓存仍未运行，保持未验证。
+  - 契约更新 `docs/sca-contract.md`、`docs/patch-contract.md`（已完成）。
+- **非目标**：不自动合并上游新版本、不做生产兼容性证明、不自动执行回滚。
 
 ### P1-4 扫描性能与增量
 
