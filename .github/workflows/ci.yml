@@ -11,6 +11,9 @@ jobs:
   offline:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 
@@ -59,3 +62,63 @@ jobs:
         with:
           name: trident-sarif
           path: artifacts/trident.sarif
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: artifacts/trident.sarif
+
+  db-governance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The drill starts its own digest-pinned one-shot PostgreSQL 18 container
+      # and never touches runner state beyond that container.
+      - name: Database governance drill
+        run: python scripts/test-db-governance.py
+
+  release-artifacts:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/trident-linux-amd64 ./cmd/trident
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/trident-windows-amd64.exe ./cmd/trident
+
+      - name: Generate SBOM and SARIF from the pinned fixture
+        run: |
+          ./dist/trident-linux-amd64 project import --source tests/fixtures/java-maven --snapshot dist/snapshot > dist/import.json
+          HASH=$(python3 -c 'import json; print(json.load(open("dist/import.json", encoding="utf-8"))["snapshot_hash"])')
+          ./dist/trident-linux-amd64 sca sbom --snapshot dist/snapshot --snapshot-hash "$HASH" > dist/trident.cdx.json
+          ./dist/trident-linux-amd64 audit sarif --snapshot dist/snapshot --snapshot-hash "$HASH" > dist/trident.sarif
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum trident-linux-amd64 trident-windows-amd64.exe trident.cdx.json trident.sarif > checksums.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trident-release-${{ github.ref_name }}
+          path: dist/*
