@@ -151,7 +151,7 @@
   - `flow[]`（call/concat/assign/constructor/builder_append/builder_to_string/builder_mutated/command_append/string_format/string_format_dynamic/collection_add/collection_read/collection_mutated/collection_clear/collection_remove/array_write/array_read/return/field_write/field_read/reflected_return/return_content_type/sink/command_sink/ssrf_sink/path_sink/template_sink/xss_sink/deserialization_sink/xxe_sink/ldap_sink/value_binding/dynamic/ambiguous_dispatch/ambiguous_overload/unresolved_parent/unresolved_call/unresolved_sink，文件与行号）。
   - `evidence[]`（文件、SHA、方法起止行、`fixture:*` 锚点）。
   - `limitations[]`（状态相关限制）。
-- `coverage`：Java 文件扫描/拒绝、方法数、endpoint 清单/分析数、confirmed/refuted/inconclusive、跨方法解析/未解析、动态边界；`java_ast=not_available`、`taint_analysis=bounded_lexical_multi_category`、`runtime_status=not_run`。
+- `coverage`：Java 文件扫描/拒绝、方法数、endpoint 清单/分析数、confirmed/refuted/inconclusive、跨方法解析/未解析、动态边界；`java_ast=restricted_subset|partial|not_available`（受限 AST 可解析性，仅用于声明/调用分辨率，不参与 sink/source 匹配）、`java_ast_types`/`java_ast_methods`、`taint_analysis=bounded_lexical_multi_category`、`runtime_status=not_run`。
 - 输出按 endpoint 路径和 finding ID 排序；参数/快照/完整性错误返回非零且不输出成功 JSON。
 
 ## 5. 验收
@@ -314,3 +314,11 @@
 - 新样本 `tests/fixtures/java-advanced-sinks`（3 个 Java 文件、12 endpoint）：11 个分析入口、14 finding，confirmed=7、inconclusive=7、refuted=0。正例覆盖 JdbcTemplate、JPA、HttpClient/WebClient、MultipartFile、字面量元素读、import helper；负例覆盖值绑定、常量上传、未污染元素、`remove(index)` 后读取、清洁 helper。
 - `python scripts/test-dataflow.py` 新增 `[13]` 块；原十套样本计数不变（3/9/7/8/5/6/21/24/10/10/23）。未执行 Java/Maven、未调用模型，快照与源目录字节级不变。
 - 未验证：非字面量元素级精度、其他对象持有的容器/字段、完整 AST/别名、框架封装调用（`HttpClient.send` 链、模板/ORM 二次封装）、`produces` 之外的内容协商、运行时利用。
+
+## 第十六片：受限 AST 语义模型接入与 v13（2026-11-14）
+
+- `ToolVersion=0.2.0-p0.3+r1-source-sink-flow-v13`、`analysis_scope=single_parameter_multi_category_v13`；`analysis_kind` 仍为 `source_sink_multi_category_v1`，sink/source 匹配语义未变。
+- 新增 `trident audit java-model`（见 `audit-contract.md` §8）：受限 Java 子集的声明、擦除签名、常量/注解折叠与方法级调用图，`java_semantic_model_v1`。
+- dataflow 在同一快照上运行 `javaast.ScanSnapshot`，仅用于报告 AST 可解析性：`coverage.java_ast=restricted_subset|partial|not_available`、`java_ast_types`、`java_ast_methods`；拒绝文件不影响既有词法 finding 结论。
+- 限制新增 `java_ast_semantic_model_staged` 与改写后的 `lexical_flow_not_ast`：AST 模型尚未接入 sink/source 匹配，控制流与跨方法污点仍不在范围内。
+- 回归：`python scripts/test-dataflow.py`、`python scripts/test-findings.py` 全部通过；既有 15 套样本的 finding 计数与状态未变（仅新增 coverage 字段）。新旧引擎的音量/能力差异见 `docs/evidence/2026-11-14-java-ast-model.md`。

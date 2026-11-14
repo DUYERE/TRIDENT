@@ -13,6 +13,7 @@ $scripts = @(
     "test-artifact-hash.py",
     "test-intel.py",
     "test-reachability.py",
+    "test-java-ast.py",
     "test-audit.py",
     "test-authz.py",
     "test-dataflow.py",

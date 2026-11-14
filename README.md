@@ -112,18 +112,28 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit findings --snapshot "$T
 
 契约见 [证据模型契约](docs/findings-contract.md)；真实 CLI 验收为 `python scripts/test-findings.py`。
 
-## R2 CI 出口：SARIF 与 import 可达性
+## R2 CI 出口：SARIF 与有界可达性
 
 `audit sarif` 将同一份统一 evidence 报告导出为确定性 SARIF 2.1.0；`static_confirmed` 映射为 `warning`、`inconclusive` 为 `note`、`refuted` 为 `none`，所有结果保留 `runtime_status=not_run`，不会因导出升级为运行时确认。
 
-`audit reachability` 解析快照内 Java import，并用调用者显式提供的 `--package-map`（`group:artifact` → 包前缀）把声明依赖映射到 import。分类只有 `import_reachable` / `import_not_observed` / `unverified`；**import 存在不等于类或方法被加载，更不等于漏洞可调用**。没有 package map 时所有依赖保持 `unverified`。
+`audit reachability` 在类级 import/同包类型引用图上从入口做有界 BFS（深度/节点/边/路径上限），并用调用者显式提供的 `--package-map`（`group:artifact` → 包前缀）映射声明依赖。分类为 `reachable` / `unreachable` / `unknown`：`reachable` 附入口→中间类→依赖的路径证据（文件 SHA-256 + 行号）；`unreachable` 仅表示本快照有界图中无路径；缺少映射、模块无入口、版本未解析、反射或超限均为 `unknown`。**三条路径都不证明类加载或运行时利用**，`runtime_status` 保持 `not_run`。
 
 ```bash
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit sarif --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH"
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit reachability --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" --package-map '/path/to/package-map.json'
 ```
 
-真实 CLI 验收为 `python scripts/test-intel.py`。
+真实 CLI 验收为 `python scripts/test-intel.py` 与 `python scripts/test-reachability.py`。
+
+## R2 Java 语义模型：`audit java-model`
+
+`audit java-model` 用纯 Go 解析受限 Java 子集，输出确定性语义模型：文件/类型/字段/方法（擦除后的 `pkg.Type#name(paramTypes)`）、常量与注解实参折叠，以及方法级调用图（局部变量/参数/字段/类型接收者、泛型擦除后的重载消歧、继承链与接口查找）。唯一具体实现记 `resolved/interface_dispatch`，多实现记 `ambiguous/ambiguous_dispatch`，反射只记边界。**不编译、不运行、不反编译 Java；不建模控制流、别名或跨方法污点，调用解析不等于漏洞可利用。**
+
+```bash
+go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit java-model --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH"
+```
+
+契约见 [入口清单契约](docs/audit-contract.md) §8；验收为 `python scripts/test-java-ast.py`。
 
 ## R2 只读 Web 分析控制台
 
@@ -285,16 +295,16 @@ docker compose --project-directory 'E:/pentest agent/TRIDENT' -f 'E:/pentest age
 
 | 路径 | 内容 |
 |---|---|
-| `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`dataflow.go`、`findings.go`、`reach.go`、`web.go`、`patch.go`、`runtime.go`、`agent.go` | version / project / sca / audit / web / patch / runtime / agent / migrate / check / bootstrap / demo-offline |
+| `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`dataflow.go`、`findings.go`、`reach.go`、`java_model.go`、`web.go`、`patch.go`、`runtime.go`、`agent.go` | version / project / sca / audit / web / patch / runtime / agent / migrate / check / bootstrap / demo-offline |
 | `internal/sca/` | 离线 Maven/Gradle 声明解析、属性/父 POM/依赖管理、公告精确/区间/别名匹配与模块树；Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准） |
 | `internal/audit/`、`internal/authz/`、`internal/dataflow/` | Spring MVC/JAX-RS/Servlet 注解级入口清单；权限/越权控制清单；10 类 Source/Sink 有界数据流 |
 | `internal/httpverify/` | 显式 origin 授权的运行时 HTTP 断言、cookie session 与有界证据 |
-| `internal/findings/`、`internal/sarif/`、`internal/reach/` | 统一 finding/假设/证据模型；SARIF 2.1.0；有界 import 可达性 |
+| `internal/findings/`、`internal/sarif/`、`internal/reach/`、`internal/javaast/` | 统一 finding/假设/证据模型；SARIF 2.1.0；类级有界入口可达性；受限 Java 语义模型与方法级调用图 |
 | `internal/webui/` | 只读 Web 控制台：令牌鉴权、JSON API、嵌入的暗色前端资源 |
 | `internal/sbom/` | 确定性 CycloneDX 1.5 序列化与 metadata/component/vulnerability 映射 |
 | `internal/r3/` | 快照工作区复制、统一 diff 应用、策略约束、离线 Maven/javac/JUnit（XML/JaCoCo）验证、质量评分、多轮修复与 Docker/gVisor |
 | `docs/sca-contract.md`、`docs/audit-contract.md`、`docs/dataflow-contract.md`、`docs/findings-contract.md`、`docs/web-console-contract.md`、`docs/sbom-contract.md`、`docs/patch-contract.md`、`docs/runtime-contract.md`、`docs/deployment.md`、`docs/benchmark-report.md`、`docs/release-checklist.md` | SCA、入口清单、数据流、证据模型、Web、SBOM、R3、运行时验证、部署、基准与发布检查表 |
-| `scripts/test-sca.py`、`test-audit.py`、`test-authz.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-intel.py`、`test-upgrade.py`、`test-runtime.py`、`test-patch.py`、`verify-offline.ps1`、`benchmark.py` | 真实 CLI 与官方 Schema/真实 Java/Maven/运行时验收、离线门禁和可复现基准 |
+| `scripts/test-sca.py`、`test-audit.py`、`test-authz.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-intel.py`、`test-upgrade.py`、`test-runtime.py`、`test-patch.py`、`test-artifact-hash.py`、`test-reachability.py`、`test-java-ast.py`、`verify-offline.ps1`、`benchmark.py` | 真实 CLI 与官方 Schema/真实 Java/Maven/运行时验收、离线门禁和可复现基准 |
 | `internal/agent/`、`internal/tools/` | 只读主循环、受控工具与检查点/证据 |
 | `internal/model/openai/` | 官方 Go SDK Chat Completions 薄适配，无隐式外发 |
 | `internal/store/agent_runs*.go` | Run 所有者权限、CAS、预算与恢复 |

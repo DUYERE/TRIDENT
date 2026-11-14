@@ -123,7 +123,7 @@ def main():
                 and coverage["authz_unprotected"] == 3
                 and coverage["authz_findings"] == 3,
                 "Linked analysis coverage mismatch")
-        require(coverage["java_ast"] == "not_available"
+        require(coverage["java_ast"] in ("restricted_subset", "partial")
                 and coverage["sca_resolution"] == "declaration_only"
                 and coverage["taint_analysis"] == "bounded_lexical_multi_category"
                 and coverage["runtime_status"] == "not_run"

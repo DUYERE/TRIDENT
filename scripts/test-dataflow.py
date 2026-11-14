@@ -127,7 +127,9 @@ def main():
                 and report["coverage"]["findings_refuted"] == 1
                 and report["coverage"]["findings_inconclusive"] == 1,
                 "Finding status counts mismatch")
-        require(report["coverage"]["java_ast"] == "not_available"
+        require(report["coverage"]["java_ast"] in ("restricted_subset", "partial")
+                and report["coverage"]["java_ast_types"] > 0
+                and report["coverage"]["java_ast_methods"] > 0
                 and report["coverage"]["taint_analysis"] == "bounded_lexical_multi_category"
                 and report["coverage"]["runtime_status"] == "not_run",
                 "Dataflow coverage overclaimed analysis")

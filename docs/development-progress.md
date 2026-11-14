@@ -11,7 +11,7 @@
 | R1 快照与四项只读工具 | 已实现并完成本地验收 | `snapshot-contract.md`、`internal/project/` |
 | R1 Core、Run、OpenAI 适配 | 已实现并完成本地协议验收与两次真实模型只读闭环；DeepSeek `reasoning_content`/Schema 数值兼容、48 KiB 检查点确定性压缩、按工具类型的保留策略与有界结果摘要已实现 | `agent-contract.md`；下方 2026-11-12 与 2026-11-13 记录 |
 | R1 真实模型自主工具闭环 | 已完成获准验收：DeepSeek `deepseek-flash` Run 43、`deepseek-v4-pro` Run 46，均仅合成样本且 `completed`；其他模型/快照需逐次授权 | `agent-contract.md` §6.1；下方 2026-11-13 记录 |
-| R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准）、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0、本地制品 SHA-256/调用者哈希清单与类级有界入口可达性已实现并验收；完整 AST/跨方法污点未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/` |
+| R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准）、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0、本地制品 SHA-256/调用者哈希清单、类级有界入口可达性、受限 Java 语义模型与方法级调用图已实现并验收；AST 尚未接入污点引擎，完整控制流/跨方法污点未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/`、`internal/javaast/` |
 | R2 只读 Web 分析控制台 | 已实现并完成本地验收；单快照、loopback、令牌鉴权、只读 JSON API 与嵌入前端；不改变分析语义，不提供 Agent 控制 API | `web-console-contract.md`、`internal/webui/`、`cmd/trident/web.go` |
 | R2 Agent 分析工具 | 已实现并完成本地验收与真实模型/真实项目使用；5 个分析工具、分析缓存、Run 公告配置、实际读取行引用与证据账本桥接 | `agent-contract.md`、`internal/tools/analysis.go`、`internal/agent/` |
 | R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射、本地观测制品 SHA-256；无传递树，依赖可达性不写入 SBOM | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
@@ -965,6 +965,16 @@
 - 新增 fixture `tests/fixtures/java-artifact-hash`、`tests/fixtures/java-reachability`，以及 `scripts/test-artifact-hash.py`、`scripts/test-reachability.py`；加入 `scripts/verify-offline.ps1`。
 - 验收结果：`go test ./...` 通过；`python scripts/test-artifact-hash.py` 通过（本地命中/清单 exact/mismatch/catalog-only/空仓库/SBOM/确定性）；`python scripts/test-reachability.py` 通过（三态、2 步路径与 SHA-256/行号、findings unsupported/unverified、无映射全 unknown）；`test-sca.py`、`test-sbom.py`、`test-intel.py`、`test-findings.py` 均通过，快照与 fixture 字节不变。
 - 限制：制品哈希不证明来源；可达性不解析字节码、方法重载/继承/接口分派、AOP、异步、动态代理或网关；`unreachable` 是有界静态图结论，不是运行时不可能性证明。
+
+### 2026-11-14 续十二：M2 受限 Java 语义层（P0-3 第一片）
+
+- 新增 `internal/javaast`：基于 `text/scanner` 的受限 Java 子集解析器（package/import/嵌套类型/枚举/记录/注解/字段/方法/构造器/初始化块边界），以及确定性语义模型 `java_semantic_model_v1`。
+- 建模：擦除后的类型与签名、`java.lang`/显式导入/同包/通配导入/唯一简单名解析、内部类到外部类方法、常量折叠（字面量、`static final`、字符串拼接、整数加法、class literal、枚举常量、数组）与注解实参折叠。
+- 方法级调用图：局部变量/参数/字段/类型/外部接收者解析；泛型擦除后按实参类型选择重载；继承链与接口参与查找；唯一实现记 `resolved/interface_dispatch`，多实现记 `ambiguous/ambiguous_dispatch`，反射 API 只记边界；输出调用者/文件/SHA-256/行号、实参推断类型、目标符号与目标文件/SHA-256。
+- 新增 CLI `audit java-model` 与 fixture `tests/fixtures/java-ast-model`（5 文件：1 个语法错误、嵌套类、泛型重载、接口分派/歧义、注解常量）及 `scripts/test-java-ast.py`；`go test ./internal/javaast` 覆盖同一组断言。
+- dataflow 升级到 `0.2.0-p0.3+r1-source-sink-flow-v13`：仅新增 `coverage.java_ast=restricted_subset|partial|not_available`、`java_ast_types`、`java_ast_methods` 与 `java_ast_semantic_model_staged` 限制；sink/source 匹配与既有 finding 计数不变。findings 同步透传 `coverage.java_ast` 并升级到 `finding-evidence-v3-reachability-ast`。
+- 验收：`go build ./...`、`go vet ./internal/javaast ./internal/dataflow ./internal/findings ./cmd/trident`、`go test ./internal/javaast ./internal/dataflow ./internal/findings -count=1`、`python scripts/test-java-ast.py`、`python scripts/test-dataflow.py`、`python scripts/test-findings.py` 通过；fixture 与快照字节不变。
+- 限制：AST 尚未接入 sink/source 匹配，控制流、别名/points-to、跨方法污点、AOP/动态代理仍未实现；lambda、方法引用、文本块、匿名类为边界；不编译、不运行 Java。
 
 ## 维护规则
 

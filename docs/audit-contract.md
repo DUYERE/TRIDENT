@@ -89,3 +89,22 @@
 - 模块作用域：路径命中只归属于入口文件所在模块；跨模块调用视为边界外，避免把共享模块的 import 直接算到另一个模块。
 - 输出：`entrypoints[]`、`dependencies[]`（三态、reason、prefixes、matched_imports、paths）、`coverage{java_files_scanned,java_files_rejected,imports_parsed,entrypoints,classes_indexed,graph_edges,dependencies,reachable,unreachable,unknown}`、`limitations[]`；`runtime_status=not_run` 恒定。
 - 验收：`python scripts/test-reachability.py`。`java-reachability` fixture 三个模块共 3 个入口：经 service 使用依赖为 `reachable` 且路径为 2 步并带 SHA-256/行号，仅声明未引用为 `unreachable`，`Class.forName` 为 `unknown/reflection_not_resolved`；无映射全部 `unknown`；输出确定性、fixture 与快照不变。
+
+## 8. 2026-11-14 受限 Java 语义模型 `audit java-model`
+
+- 输入：同一个可信快照；`javaast.Analyze` 用 `text/scanner` 解析受限 Java 子集。不编译、不运行、不反编译、不访问网络，不读取 `D:\Code\Java\market` 之外的依赖源码。
+- 建模内容：
+  - 文件：package、import（含 static/通配）、类型声明；非法文件单独拒绝并记录 `parse_error`，其余文件继续分析。
+  - 类型：类/接口/枚举/记录/注解/嵌套类，FQN、修饰符、注解、擦除后的 extends/implements（`Extends`/`Implements` 为解析结果，`*_raw` 为源文本）。
+  - 字段：类型、修饰符、注解、枚举常量名；常量值按需折叠。
+  - 方法：擦除后的符号 `pkg.Type#name(paramTypes)`、返回类型、构造器、类型参数、参数（含 varargs 与注解）、起止行、是否有方法体。
+  - 注解实参：字面量、同类型/静态导入 `static final` 常量、字符串拼接、整数加法、class literal、枚举常量与数组。
+  - 调用图：方法体内的 `name(...)`、`this/super.name(...)`、`recv.name(...)`、`new Type(...)`；接收者按局部变量/参数/字段/类型/外部类型解析。
+- 解析与消歧：
+  - 泛型按擦除比较（`List<String>` → `java.util.List`），重载按实参字面量/局部变量/`new`/cast 推断类型；无唯一最优候选记 `ambiguous/ambiguous_overload`。
+  - 继承链与接口参与方法查找；无方法体的接口/抽象方法仅在快照内存在唯一具体实现时记 `resolved/interface_dispatch`，多个实现记 `ambiguous/ambiguous_dispatch`，零实现记 `unresolved/no_concrete_implementation`。
+  - 内部类可解析到外部类实例方法；父类型在快照外记 `unresolved/parent_outside_snapshot`；反射 API（`Class.forName`、`Method.invoke`、`Proxy.newProxyInstance` 等）只记边界，不猜目标。
+- 输出：`schema_version`、`tool_version=0.2.0-p0.3+r1-java-semantic-model-v1`、`snapshot_hash`、`analysis_kind=java_semantic_model_v1`、`partial`、`files[]`、`types[]`、`calls[]`、`coverage`、`limitations[]`；`runtime_status=not_run` 恒定。
+- `calls[]` 只包含可定位到调用行的直接调用；JDK/库接收者只计入 `coverage.external_calls`，不生成伪造目标。每条边携带调用者/文件/SHA-256/行号、接收者、API、实参文本与推断类型、目标符号、目标文件/SHA-256、`status=resolved|ambiguous|unresolved` 与 `reason`。
+- 限制：不建模控制流、别名/points-to、跨方法污点、AOP/动态代理、注解默认值求值、完整 JLS；lambda、方法引用、文本块、匿名类为边界；常量折叠深度 ≤16、条目 ≤20000；调用边 ≤`MaxCalls`（当前 100000）。
+- 验收：`go test ./internal/javaast` 与 `python scripts/test-java-ast.py`。`java-ast-model` fixture 5 个文件：1 个语法错误文件单独拒绝且 `partial=true`；嵌套类 `Outer.Inner` 索引并解析到外部类 `label()`；`pick(String)`/`pick(List)` 泛型擦除重载分别命中；`Store` 唯一实现解析为 `JdbcStore#save`、`Handler` 双实现为 `ambiguous_dispatch`；`@Route(PREFIX + "/items")` 折叠为 `api/items`、`@Access(Role.ADMIN)` 保留枚举常量；输出确定性、fixture 字节不变。

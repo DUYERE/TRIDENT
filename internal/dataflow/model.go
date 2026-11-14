@@ -11,12 +11,13 @@ import (
 	"sort"
 
 	"trident/internal/audit"
+	"trident/internal/javaast"
 	"trident/internal/project"
 )
 
 const (
 	SchemaVersion = 1
-	ToolVersion   = "0.2.0-p0.2+r2-source-sink-flow-v12"
+	ToolVersion   = "0.2.0-p0.3+r1-source-sink-flow-v13"
 
 	MaxJavaFiles  = 2000
 	MaxJavaBytes  = 2 << 20
@@ -133,6 +134,8 @@ type Coverage struct {
 	CallsUnresolved      int    `json:"calls_unresolved"`
 	DynamicBoundaries    int    `json:"dynamic_boundaries"`
 	JavaAST              string `json:"java_ast"`
+	JavaASTTypes         int    `json:"java_ast_types"`
+	JavaASTMethods       int    `json:"java_ast_methods"`
 	TaintAnalysis        string `json:"taint_analysis"`
 	RuntimeStatus        string `json:"runtime_status"`
 	AnalysisScope        string `json:"analysis_scope"`
@@ -199,13 +202,14 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 			JavaAST:       "not_available",
 			TaintAnalysis: "bounded_lexical_multi_category",
 			RuntimeStatus: "not_run",
-			AnalysisScope: "single_parameter_multi_category_v12",
+			AnalysisScope: "single_parameter_multi_category_v13",
 		},
 		Limitations: []string{
 			"sql_sink_scope: SQL findings model Statement.execute*/prepareStatement, JdbcTemplate/NamedParameterJdbcTemplate query/update/execute family, JPA EntityManager/Hibernate Session createQuery/createNativeQuery, and PreparedStatement value binding",
 			"multi_category_sinks: OS command execution (Runtime.getRuntime().exec, ProcessBuilder command/start), SSRF (URL.openConnection/openStream, RestTemplate, HttpRequest.uri and WebClient.uri), path traversal (file stream/reader constructors, Files.*), template injection (SpelExpressionParser.parseExpression, template engine process), XSS (PrintWriter/JspWriter/ServletOutputStream writes), unsafe deserialization (ObjectInputStream/XMLDecoder readObject, including new ObjectInputStream(...)/new XMLDecoder(...) chains), XXE (DocumentBuilder/SAXParser/SAXReader.parse, SAXReader/XMLReader.read, XMLInputFactory.createXMLStreamReader/createXMLEventReader, Unmarshaller.unmarshal, Transformer.transform, SAXBuilder/Digester.parse, DocumentHelper.parseText), LDAP injection (DirContext.search/lookup, LdapTemplate.search/lookup/authenticate) and unrestricted upload (MultipartFile.transferTo, Part.write) are modeled",
 			"non_sql_sink_observed_only: non-SQL category findings are emitted only when that category sink or sink-specific boundary is observed for the parameter; absence is not safety",
-			"lexical_flow_not_ast: no Java AST, control-flow, alias, points-to or branch sensitivity",
+			"lexical_flow_not_ast: taint matching uses bounded lexical flow; the restricted AST semantic model is emitted by `audit java-model` and is not yet used for sink/source matching",
+			"java_ast_semantic_model_staged: declarations, erased signatures and call resolution are modeled, but control-flow and cross-method taint remain out of scope",
 			"collection_taint_bounds: a tainted value written through List/Set/Map/Queue add/put marks that local or field container flow-insensitively; literal-index set/add and array element writes are tracked per element (name[0]) and literal-index get/remove operate on that element, while clear drops the container and its element taints; non-literal indices fall back to the container aggregate; resolved calls can mutate a caller collection or array parameter, while target-object containers and instance/thread state are not modeled",
 			"builder_and_format_bounds: StringBuilder/StringBuffer append and builder.toString() require a known builder-typed receiver; String.format requires a literal pattern with a conversion specifier, otherwise the result is an inconclusive boundary",
 			"return_value_bounds: tainted returns and builder parameter mutation are summarized only for resolved same-project calls; ambiguous dispatch, fields of other objects and external libraries stay unresolved",
@@ -239,6 +243,16 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 	report.Limitations = append(report.Limitations, problems...)
 	if len(files) == 0 && rejected == 0 {
 		report.Limitations = append(report.Limitations, "no_java_source_found")
+	}
+	ast, astErr := javaast.ScanSnapshot(ctx, snapshot)
+	if astErr != nil {
+		report.Limitations = append(report.Limitations, "java_ast_unavailable")
+	} else if len(ast.Units) > 0 {
+		report.Coverage.JavaAST = "restricted_subset"
+		if len(ast.Rejected) > 0 {
+			report.Coverage.JavaAST = "partial"
+		}
+		report.Coverage.JavaASTTypes, report.Coverage.JavaASTMethods = javaast.DeclarationCounts(ast)
 	}
 	nested := 0
 	for _, file := range files {

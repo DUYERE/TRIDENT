@@ -6,8 +6,10 @@
 > 本文件只描述“接下来做什么、做到什么程度算完成”。
 >
 > 实施状态（2026-11-14）：M1 的 P0-1 制品哈希与 P0-2 有界可达性已实现并通过
-> `scripts/test-artifact-hash.py`、`scripts/test-reachability.py` 验收；记录见
-> [开发进度](development-progress.md) 续十一。其余项仍为计划。
+> `scripts/test-artifact-hash.py`、`scripts/test-reachability.py` 验收；M2 的 P0-3 第一片
+> （受限 Java 语义模型 `audit java-model`、方法级调用图、v13 coverage 接入）已实现并通过
+> `scripts/test-java-ast.py`、`go test ./internal/javaast` 验收，AST 尚未接入 sink/source 匹配；
+> 记录见 [开发进度](development-progress.md) 续十一、续十二。其余项仍为计划。
 
 ## 1. 原则与约束
 

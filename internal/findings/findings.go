@@ -28,7 +28,7 @@ import (
 
 const (
 	SchemaVersion = 1
-	ToolVersion   = "0.2.0-p0.2+r4-finding-evidence-v2-reachability"
+	ToolVersion   = "0.2.0-p0.3+r1-finding-evidence-v3-reachability-ast"
 
 	MaxFindings = 20_000
 	MaxEvidence = 256
@@ -190,7 +190,7 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 			AuthzControls:          len(authzReport.Controls),
 			AuthzUnprotected:       authzReport.Coverage.Unprotected,
 			AuthzFindings:          len(authzReport.Findings),
-			JavaAST:                "not_available",
+			JavaAST:                flows.Coverage.JavaAST,
 			ScaResolution:          "declaration_only",
 			TaintAnalysis:          "bounded_lexical_multi_category",
 			RuntimeStatus:          "not_run",
@@ -201,7 +201,7 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 			"sca_declaration_only: POM declarations and exact advisory version cases; no resolved dependency tree, classpath or artifact hash",
 			"advisory_exact_version_only: ranges, aliases and repository resolution remain outside this slice",
 			"endpoint_inventory_annotation_only: routes are annotation-level, not deployed routes",
-			"dataflow_bounded_lexical: no Java AST, branch sensitivity, alias/points-to or external library implementation; non-SQL sink findings appear only when that sink is observed",
+			"dataflow_bounded_lexical: taint matching is bounded lexical flow; the restricted AST semantic model is staged and not used for sink/source matching; no branch sensitivity, alias/points-to or external library implementation; non-SQL sink findings appear only when that sink is observed",
 			"authz_control_inventory_lexical: annotations, XML blocks and common Java config chains are matched textually; filter-chain order, custom AOP and external gateways are not evaluated",
 			"authz_unprotected_is_inconclusive: absence of a recognized control does not prove an endpoint is reachable without authentication",
 			"absence_is_not_safety: inconclusive means required evidence was not collected, not that the code is safe",
