@@ -116,8 +116,8 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 	if !opts.ApproveExecution {
 		return result, fmt.Errorf("isolated execution requires explicit approval")
 	}
-	if opts.Profile != "maven" && opts.Profile != "javac" && opts.Profile != "junit" {
-		return result, fmt.Errorf("profile must be maven, javac or junit")
+	if opts.Profile != "maven" && opts.Profile != "maven-compile" && opts.Profile != "javac" && opts.Profile != "junit" {
+		return result, fmt.Errorf("profile must be maven, maven-compile, javac or junit")
 	}
 	var testClasses []string
 	if opts.Profile == "junit" {
@@ -140,7 +140,7 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 				return result, fmt.Errorf("jacoco agent must be an absolute regular jar file")
 			}
 		}
-	} else if !mainClassPattern.MatchString(opts.MainClass) || len(opts.MainClass) > 256 {
+	} else if opts.Profile != "maven-compile" && (!mainClassPattern.MatchString(opts.MainClass) || len(opts.MainClass) > 256) {
 		return result, fmt.Errorf("main class must be a dotted Java identifier")
 	}
 	root, err := filepath.Abs(workspace)
@@ -180,7 +180,7 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 			return result, fmt.Errorf("maven profile requires pom.xml in the workspace")
 		}
 		var step CommandResult
-		if sandbox.Kind == SandboxDocker {
+		if sandbox.Kind == SandboxDocker || sandbox.Kind == SandboxGVisor {
 			step = runDockerCommand(runCtx, sandbox, root, dockerDisplay(sandbox, "mvn -o -B -q -DskipTests compile"), "mvn", "-o", "-B", "-q", "-DskipTests", "compile")
 		} else {
 			step = runCommand(runCtx, mavenCompileCommand(runCtx, root), "mvn -o -B -q -DskipTests compile", root)
@@ -192,10 +192,29 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 				result.Commands[last].Status = "start_error"
 				result.Commands[last].ErrorMessage = "maven compile did not produce target/classes"
 				status = ValidationError
-			} else if sandbox.Kind == SandboxDocker {
+			} else if sandbox.Kind == SandboxDocker || sandbox.Kind == SandboxGVisor {
 				appendStep(runDockerCommand(runCtx, sandbox, root, dockerDisplay(sandbox, "java -cp target/classes "+opts.MainClass), "java", "-cp", "target/classes", opts.MainClass))
 			} else {
 				appendStep(runCommand(runCtx, javaCommand(runCtx, "target/classes", opts.MainClass), "java -cp target/classes "+opts.MainClass, root))
+			}
+		}
+	case "maven-compile":
+		if info, statErr := os.Stat(filepath.Join(root, "pom.xml")); statErr != nil || info.IsDir() {
+			return result, fmt.Errorf("maven-compile profile requires pom.xml in the workspace")
+		}
+		var step CommandResult
+		if sandbox.Kind == SandboxDocker || sandbox.Kind == SandboxGVisor {
+			step = runDockerCommand(runCtx, sandbox, root, dockerDisplay(sandbox, "mvn -o -B -q -DskipTests compile"), "mvn", "-o", "-B", "-q", "-DskipTests", "compile")
+		} else {
+			step = runCommand(runCtx, mavenCompileCommand(runCtx, root), "mvn -o -B -q -DskipTests compile", root)
+		}
+		appendStep(step)
+		if step.Status == "ok" {
+			if info, statErr := os.Stat(filepath.Join(root, "target", "classes")); statErr != nil || !info.IsDir() {
+				last := len(result.Commands) - 1
+				result.Commands[last].Status = "start_error"
+				result.Commands[last].ErrorMessage = "maven compile did not produce target/classes"
+				status = ValidationError
 			}
 		}
 	case "javac":
@@ -208,7 +227,7 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 			return result, err
 		}
 		var step CommandResult
-		if sandbox.Kind == SandboxDocker {
+		if sandbox.Kind == SandboxDocker || sandbox.Kind == SandboxGVisor {
 			relativeFiles, relErr := relativeJavaFiles(root, "src/main/java")
 			if relErr != nil {
 				return result, relErr
@@ -222,7 +241,7 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 		}
 		appendStep(step)
 		if step.Status == "ok" {
-			if sandbox.Kind == SandboxDocker {
+			if sandbox.Kind == SandboxDocker || sandbox.Kind == SandboxGVisor {
 				appendStep(runDockerCommand(runCtx, sandbox, root, dockerDisplay(sandbox, "java -cp build/classes "+opts.MainClass), "java", "-cp", "build/classes", opts.MainClass))
 			} else {
 				appendStep(runCommand(runCtx, javaCommand(runCtx, "build/classes", opts.MainClass), "java -cp build/classes "+opts.MainClass, root))

@@ -91,6 +91,26 @@ func TestWorkspaceAndPatchSlice(t *testing.T) {
 	}
 }
 
+func TestApplyPreservesCRLF(t *testing.T) {
+	workspace := t.TempDir()
+	target := filepath.Join(workspace, "A.java")
+	original := "package demo;\r\npublic class A { int x = 1; }\r\n"
+	if err := os.WriteFile(target, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := "--- a/A.java\n+++ b/A.java\n@@ -1,2 +1,2 @@\n package demo;\n-public class A { int x = 1; }\n+public class A { int x = 2; }\n"
+	if _, err := Apply(workspace, []byte(patch)); err != nil {
+		t.Fatal(err)
+	}
+	patched, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(patched) != "package demo;\r\npublic class A { int x = 2; }\r\n" {
+		t.Fatalf("CRLF not preserved: %q", patched)
+	}
+}
+
 func TestWorkspaceRejectsUnsafeDestinations(t *testing.T) {
 	snapshot, imported, _ := testSnapshot(t, map[string]string{"a.txt": "a\n"})
 	if _, err := CreateWorkspace(context.Background(), snapshot, imported.Path, filepath.Join(imported.Path, "workspace")); err == nil {

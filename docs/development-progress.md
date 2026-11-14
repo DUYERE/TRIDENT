@@ -15,7 +15,7 @@
 | R2 只读 Web 分析控制台 | 已实现并完成本地验收；单快照、loopback、令牌鉴权、只读 JSON API 与嵌入前端；不改变分析语义，不提供 Agent 控制 API | `web-console-contract.md`、`internal/webui/`、`cmd/trident/web.go` |
 | R2 Agent 分析工具 | 已实现并完成本地验收与真实模型/真实项目使用；5 个分析工具、分析缓存、Run 公告配置、实际读取行引用与证据账本桥接 | `agent-contract.md`、`internal/tools/analysis.go`、`internal/agent/` |
 | R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射；无传递树/制品哈希/可达性 | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
-| R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/javac/JUnit（多测试类、JUnit XML、可选 JaCoCo）、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；真实 Java/Maven/JUnit、真实模型合成补丁与 loopback/Docker 已验收；硬件 VM、真实项目 AI 补丁与生产验证未实现 | `patch-contract.md`、`internal/r3/`、`cmd/trident/patch.go` |
+| R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/maven-compile/javac/JUnit（多测试类、JUnit XML、可选 JaCoCo）、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；真实 Java/Maven/JUnit、真实模型合成补丁、真实项目编译级补丁与 loopback/Docker 已验收；硬件 VM、真实项目运行时权限测试与生产验证未实现 | `patch-contract.md`、`internal/r3/`、`cmd/trident/patch.go` |
 
 ## 2026-11-12：已完成快照切片（上轮基线）
 
@@ -872,6 +872,16 @@
 - 另一轮 JUnit 4.12 验证：`javac` main/test 编译通过，`JUnitCore demo.VulnerableTest` 输出 `OK (1 test)`，tests=1/failures=0/errors=0；quality 100。
 - 两轮均 `original_snapshot_intact=true`，`runtime_status=isolated_validation_only`。该补丁只是合成 fixture 的编译/单元测试通过，不证明真实数据库绑定、真实项目语义或生产修复有效。
 - 真实项目 AI 补丁仍未执行：工作区没有含 `pom.xml`/`build.gradle` 的真实 Java 项目；需另行提供路径与授权。
+
+### 2026-11-14 续二：真实 Java 项目 AI 补丁（D:\Code\Java\market）
+
+- 目标：`D:\Code\Java\market`（Spring MVC 4.3.14 + MyBatis，84 个 Java 文件，Java 8，war，无 `src/test`）。快照 SHA-256 `3de9c6c480c1b753a61aacb13f0938b65c92633f98c857da573e00f9337e5873`。
+- 本地只读分析：20 个 controller、186 个入口、109 条 SQL finding，全部 `inconclusive`，未发现 `Statement`/`JdbcTemplate` 直接拼接；MyBatis 自定义 SQL 使用 `#{}`。决定修复真实可验证的访问控制缺陷：`/manager/getbyid`、`/manager/update`、`/manager/toupdate` 未校验管理员会话。
+- 为真实项目新增 `maven-compile` profile：仅执行 `mvn -o -B -q -DskipTests compile`，不要求 main class；同时修复 `Apply` 对 CRLF 文件的上下文匹配并新增 `TestApplyPreservesCRLF`。`maven-compile` 不运行应用或测试，属于编译级验证。
+- 模型调用：`deepseek-v4-pro` 8192 输出上限时 `stop=length`；提升至 16384 后返回可应用 diff。共 2 次调用。
+- 补丁 SHA-256 `cecacc06…`，单文件 `ManagerController.java`，+12/-3：三个方法增加 `HttpSession` 参数，并在任何 service 调用前检查 `Constants.Manager_SESSION`，缺失时重定向 `/manager/login`。
+- 验证：`mvn -o -B -q -DskipTests compile` 退出 0；`validation_passed`、quality 80/B、`original_snapshot_intact=true`、`runtime_status=isolated_validation_only`。项目无测试，未做运行时访问控制验证；其他管理员接口仍未覆盖。
+- 仍阻塞：真实项目运行时行为/权限测试、硬件 VM 隔离、Gradle 有效依赖树。
 
 ## 维护规则
 

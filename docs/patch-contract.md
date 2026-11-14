@@ -123,6 +123,8 @@ trident patch verify \
 - `patch propose` 支持 `--policy` remediation policy（schema_version=1、最大文件/变更行数、禁止新增正则、首选策略）；默认策略限制 4 文件/200 行并禁止新增 `Runtime.exec`、`ObjectInputStream`、`XMLDecoder`。策略是调用者配置，不是安全证明。
 - `patch repair` 在 1—5 轮内重复 propose→verify，每轮使用新的 workspace；模型失败立即停止、不重试，重复 patch SHA 停止；最终 JSON 包含每轮 proposal/validation/quality。
 - `quality` 为启发式 0—100 分（validation、tests、patch size、files、regression clean），不参与通过/失败判定。
-- 验收：`go test ./internal/r3` 覆盖 JUnit 摘要/XML/JaCoCo、policy、repair failure/bounds、quality、gVisor 参数；`python scripts/test-patch.py` 与 `test-patch-ai.py` 通过；真实项目 AI 补丁与硬件 VM 未验证。
+- 验收：`go test ./internal/r3` 覆盖 JUnit 摘要/XML/JaCoCo、policy、repair failure/bounds、quality、gVisor 参数；`python scripts/test-patch.py` 与 `test-patch-ai.py` 通过；硬件 VM 未验证，真实项目仅完成编译级验证。
 - 2026-11-14 实测：本机 Docker 未注册 `runsc` 时 `--sandbox gvisor` 在启动容器前失败关闭，不执行任何命令；该 setup error 的 `runtime_status` 现为 `not_run`，只有真正执行验证命令后才为 `isolated_validation_only`。
 - 2026-11-14 真实模型补丁：`deepseek-flash` 在 2048 输出上限下被截断，随后返回 hunk 行数不匹配的 diff；`deepseek-v4-pro` 返回严格可应用补丁（SHA `69aee83e…`，1 行），process Maven `validation_passed`（quality 85）、JUnit 4.12 `OK (1 test)`（quality 100），原快照完整。模型失败时 `patch repair` 停止而不自动重试；以上仅为合成 fixture 结果。
+- 2026-11-14 真实项目：`D:\Code\Java\market`（快照 `3de9c6c4…`），`maven-compile` profile 验证 `ManagerController` 访问控制补丁（SHA `cecacc06…`，+12/-3），`mvn -o -B -q -DskipTests compile` 通过，quality 80/B，原快照完整。项目无测试，只证明编译通过，不证明运行时权限或业务语义。
+- `maven-compile` profile 只执行离线编译，不需要 `--main-class`；适合无入口/Web 项目。`Apply` 现保留 CRLF 行尾，避免 Windows 真实项目上下文误匹配。

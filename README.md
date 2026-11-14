@@ -149,10 +149,10 @@ python 'E:/pentest agent/TRIDENT/scripts/test-agent.py'
 
 ## R3 补丁生成、隔离验证、修复循环与沙箱
 
-`trident patch propose` 在显式 `--approve-egress` 下调用模型，基于 finding 证据或指定源码路径生成一个统一 diff；补丁先在只包含被修改文件的临时副本上做精确上下文验证，并受可选 `--policy` remediation policy（文件数、变更行数、禁止新增 API）约束，通过后才写到快照之外的新文件。`trident patch verify` 将已 pin 的快照复制到新的可写工作区，应用调用者或模型生成的 diff，在离线 Maven、javac 或 JUnit profile 下编译并运行，最后重新校验原快照未被修改。JUnit profile 支持多测试类、Surefire 风格 XML 报告和可选 JaCoCo agent/XML 覆盖率，并可在 process、Docker 或 gVisor `runsc` 沙箱中运行。`trident patch repair` 在最多 5 轮内重复 propose→隔离 verify，每轮使用新工作区；模型失败不重试，重复补丁停止。必须显式 `--approve-execution`；Docker 提供固定 digest 镜像、`--network none`、`--cap-drop ALL` 与资源限额，gVisor 提供用户态内核但不是硬件 VM。AI 补丁必须人工复核；Maven 离线模式要求本机或只读挂载的 `.m2` 已缓存插件与依赖。报告附带启发式 `quality` 分数，它不是安全或正确性证明。
+`trident patch propose` 在显式 `--approve-egress` 下调用模型，基于 finding 证据或指定源码路径生成一个统一 diff；补丁先在只包含被修改文件的临时副本上做精确上下文验证，并受可选 `--policy` remediation policy（文件数、变更行数、禁止新增 API）约束，通过后才写到快照之外的新文件。`trident patch verify` 将已 pin 的快照复制到新的可写工作区，应用调用者或模型生成的 diff，在离线 Maven、`maven-compile`、javac 或 JUnit profile 下编译并运行，最后重新校验原快照未被修改；`maven-compile` 仅编译、适合无入口/Web 项目。JUnit profile 支持多测试类、Surefire 风格 XML 报告和可选 JaCoCo agent/XML 覆盖率，并可在 process、Docker 或 gVisor `runsc` 沙箱中运行。`trident patch repair` 在最多 5 轮内重复 propose→隔离 verify，每轮使用新工作区；模型失败不重试，重复补丁停止。必须显式 `--approve-execution`；Docker 提供固定 digest 镜像、`--network none`、`--cap-drop ALL` 与资源限额，gVisor 提供用户态内核但不是硬件 VM。AI 补丁必须人工复核；Maven 离线模式要求本机或只读挂载的 `.m2` 已缓存插件与依赖。报告附带启发式 `quality` 分数，它不是安全或正确性证明。
 
 ```bash
-# [01] AI 生成补丁（仅合成样本；真实项目需逐次外发授权）。
+# [01] AI 生成补丁（合成样本或已获授权的真实项目；真实项目外发需逐次授权）。
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident patch propose \
   --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" \
   --path 'src/main/java/demo/Vulnerable.java' --goal 'Use a parameter placeholder instead of string concatenation.' \

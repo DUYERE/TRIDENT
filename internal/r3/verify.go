@@ -81,6 +81,9 @@ func Verify(ctx context.Context, opts VerifyOptions) (Report, error) {
 	if opts.JacocoAgent != "" {
 		limitations = append(limitations, "coverage_is_observation_only: JaCoCo line/branch counters do not prove that the vulnerability path or the fix is exercised")
 	}
+	if opts.Profile == "maven-compile" {
+		limitations = append(limitations, "maven_compile_profile_compiles_only: no application entry point, tests or runtime behavior are executed")
+	}
 	report := Report{
 		SchemaVersion: SchemaVersion, Status: "setup_failed", SnapshotHash: opts.SnapshotHash,
 		RuntimeStatus: "not_run", Limitations: limitations,

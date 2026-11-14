@@ -237,6 +237,13 @@ func applyFile(root string, file filePatch) (FileChange, error) {
 		return FileChange{}, fmt.Errorf("patch target %q is not a bounded UTF-8 text file", file.path)
 	}
 	lines := strings.Split(string(before), "\n")
+	eol := "\n"
+	if len(lines) > 0 && strings.HasSuffix(lines[0], "\r") {
+		eol = "\r\n"
+	}
+	for index := range lines {
+		lines[index] = strings.TrimSuffix(lines[index], "\r")
+	}
 	var out []string
 	cursor := 0
 	additions, deletions := 0, 0
@@ -272,7 +279,7 @@ func applyFile(root string, file filePatch) (FileChange, error) {
 		cursor = index
 	}
 	out = append(out, lines[cursor:]...)
-	after := []byte(strings.Join(out, "\n"))
+	after := []byte(strings.Join(out, eol))
 	if len(after) > MaxFileBytes {
 		return FileChange{}, fmt.Errorf("patched file %q exceeds size budget", file.path)
 	}
