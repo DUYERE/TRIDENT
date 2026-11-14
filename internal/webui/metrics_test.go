@@ -2,8 +2,11 @@ package webui
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +17,104 @@ func decodeMetrics(t *testing.T, body []byte) metricsSnapshot {
 		t.Fatalf("metrics payload: %v", err)
 	}
 	return snapshot
+}
+
+func TestConsolePrometheusScrapeEndpoint(t *testing.T) {
+	console, _ := newTestConsole(t)
+	server := httptest.NewServer(console.Handler())
+	defer server.Close()
+	c := &client{t: t, server: server, token: console.Token()}
+
+	response, _ := c.do(http.MethodGet, "/metrics", false, false)
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("scrape without token: %d", response.StatusCode)
+	}
+
+	// Prometheus-style bearer token without the browser-only console header.
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+console.Token())
+	response, err = server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("bearer scrape: %d", response.StatusCode)
+	}
+	if contentType := response.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/plain") {
+		t.Fatalf("scrape content type: %s", contentType)
+	}
+	text := string(body)
+	for _, name := range []string{
+		"trident_console_build_info", "trident_console_uptime_seconds",
+		"trident_console_requests_total", "trident_console_requests_unauthorized_total",
+		"trident_console_requests_forbidden_total", "trident_console_analysis_runs_total",
+		"trident_console_analysis_cache_hits_total", "trident_console_analysis_failures_total",
+		"trident_console_analysis_cached", "trident_console_analysis_cached_ok",
+		"trident_console_analysis_last_duration_milliseconds",
+	} {
+		if !strings.Contains(text, "# TYPE "+name) {
+			t.Fatalf("scrape missing TYPE line for %s:\n%s", name, text)
+		}
+	}
+	if !strings.Contains(text, `product="TRIDENT"`) {
+		t.Fatalf("build_info labels missing:\n%s", text)
+	}
+	scrapeTotal := parsePrometheusCounter(t, text, "trident_console_requests_total")
+
+	// The JSON endpoint must agree with the scrape: the JSON request itself is
+	// one additional gated request counted after the scrape.
+	response, jsonBody := c.do(http.MethodGet, "/api/metrics", true, true)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("json metrics: %d", response.StatusCode)
+	}
+	jsonSnapshot := decodeMetrics(t, jsonBody)
+	if jsonSnapshot.Requests.Total != scrapeTotal+1 {
+		t.Fatalf("scrape/JSON counter drift: scrape=%d json=%d", scrapeTotal, jsonSnapshot.Requests.Total)
+	}
+
+	// A bearer token also authorizes the JSON plane only when the console
+	// header is present.
+	req, err = http.NewRequest(http.MethodGet, server.URL+"/api/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+console.Token())
+	response, err = server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("bearer without console header on the API plane: %d", response.StatusCode)
+	}
+}
+
+func parsePrometheusCounter(t *testing.T, text, name string) int64 {
+	t.Helper()
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, name+" ") {
+			fields := strings.Fields(strings.TrimPrefix(line, name+" "))
+			if len(fields) != 1 {
+				t.Fatalf("unexpected sample line: %q", line)
+			}
+			value, err := strconv.ParseInt(fields[0], 10, 64)
+			if err != nil {
+				t.Fatalf("sample value: %v", err)
+			}
+			return value
+		}
+	}
+	t.Fatalf("sample line missing for %s", name)
+	return 0
 }
 
 func TestConsoleHealthzAndMetrics(t *testing.T) {

@@ -270,6 +270,7 @@ func (c *Console) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sbom", c.handleSBOM)
 	mux.HandleFunc("GET /api/report", c.handleReport)
 	mux.HandleFunc("GET /api/metrics", c.handleMetrics)
+	mux.HandleFunc("GET /metrics", c.handleMetricsText)
 	mux.HandleFunc("GET /export/report", c.handleExportReport)
 	mux.HandleFunc("GET /healthz", c.handleHealthz)
 	return c.middleware(mux)
@@ -320,6 +321,49 @@ func (c *Console) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(snapshot)
 }
 
+// handleMetricsText serves the same counters as Prometheus text format 0.0.4
+// so a real Prometheus can scrape them with a bearer token. Metric names match
+// the alert rule template in docs/deployment.md.
+func (c *Console) handleMetricsText(w http.ResponseWriter, _ *http.Request) {
+	c.mu.Lock()
+	state := c.state
+	c.mu.Unlock()
+	cached, cachedOK := int64(0), int64(0)
+	if state != nil {
+		cached = 1
+		if state.err == nil {
+			cachedOK = 1
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# HELP trident_console_build_info Product build metadata.\n# TYPE trident_console_build_info gauge\ntrident_console_build_info{product=\"TRIDENT\",version=\"%s\"} 1\n", escapeLabelValue(c.version))
+	gauge := func(name, help string, value int64) {
+		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s gauge\n%s %d\n", name, help, name, name, value)
+	}
+	counter := func(name, help string, value int64) {
+		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s counter\n%s %d\n", name, help, name, name, value)
+	}
+	gauge("trident_console_uptime_seconds", "Process uptime in seconds.", int64(time.Since(c.startedAt).Seconds()))
+	counter("trident_console_requests_total", "Gated console requests served or rejected.", c.requestsTotal.Load())
+	counter("trident_console_requests_unauthorized_total", "Middleware-level 401 rejections.", c.unauthorizedTotal.Load())
+	counter("trident_console_requests_forbidden_total", "Middleware-level 403 rejections.", c.forbiddenTotal.Load())
+	counter("trident_console_analysis_runs_total", "Cold analysis runs, including terminal failures.", c.analysisRuns.Load())
+	counter("trident_console_analysis_cache_hits_total", "Cached analysis reads.", c.analysisCacheHits.Load())
+	counter("trident_console_analysis_failures_total", "Analysis runs that ended in a terminal failure.", c.analysisFailures.Load())
+	gauge("trident_console_analysis_cached", "Whether a terminal analysis state is cached.", cached)
+	gauge("trident_console_analysis_cached_ok", "Whether the cached analysis succeeded.", cachedOK)
+	gauge("trident_console_analysis_last_duration_milliseconds", "Wall-clock duration of the last cold analysis run.", c.lastDurationMS.Load())
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(b.String()))
+}
+
+// escapeLabelValue applies the Prometheus text-format escaping (backslash,
+// quote, newline) without Go's extra escape sequences.
+func escapeLabelValue(value string) string {
+	return strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\"", "\\\"").Replace(value)
+}
+
 func (c *Console) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -330,6 +374,7 @@ func (c *Console) middleware(next http.Handler) http.Handler {
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
 		var entry TokenEntry
 		gated := auditPath(r.URL.Path)
+		metricsProbe := r.URL.Path == "/metrics"
 		if gated {
 			c.requestsTotal.Add(1)
 			h.Set("Cache-Control", "no-store")
@@ -343,16 +388,28 @@ func (c *Console) middleware(next http.Handler) http.Handler {
 				}
 				entry = resolved
 			}
-			if r.Header.Get(RequestHeader) != "console" {
-				c.forbiddenTotal.Add(1)
-				c.accessLog.record(entry, r, http.StatusForbidden)
-				writeError(w, http.StatusForbidden, "missing_console_header", "API requests require the console request header")
-				return
-			}
-			if r.Method != http.MethodGet && r.Method != http.MethodPost {
-				c.accessLog.record(entry, r, http.StatusMethodNotAllowed)
-				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "read-only console")
-				return
+			// The scrape endpoint is part of the operations plane: token-gated
+			// like every other gated path, but exempt from the browser-only
+			// console request header so Prometheus can scrape it with a bearer
+			// token.
+			if metricsProbe {
+				if r.Method != http.MethodGet {
+					c.accessLog.record(entry, r, http.StatusMethodNotAllowed)
+					writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "scrape endpoint is read-only")
+					return
+				}
+			} else {
+				if r.Header.Get(RequestHeader) != "console" {
+					c.forbiddenTotal.Add(1)
+					c.accessLog.record(entry, r, http.StatusForbidden)
+					writeError(w, http.StatusForbidden, "missing_console_header", "API requests require the console request header")
+					return
+				}
+				if r.Method != http.MethodGet && r.Method != http.MethodPost {
+					c.accessLog.record(entry, r, http.StatusMethodNotAllowed)
+					writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "read-only console")
+					return
+				}
 			}
 		}
 		recorder := &statusRecorder{ResponseWriter: w}
@@ -365,6 +422,13 @@ func (c *Console) middleware(next http.Handler) http.Handler {
 
 func (c *Console) authorize(r *http.Request) (TokenEntry, error) {
 	token := r.Header.Get(TokenHeader)
+	if token == "" {
+		// Prometheus and other pollers present a bearer token instead of the
+		// browser-only console header.
+		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+			token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+		}
+	}
 	if token == "" {
 		if cookie, err := r.Cookie(SessionCookie); err == nil {
 			token = cookie.Value

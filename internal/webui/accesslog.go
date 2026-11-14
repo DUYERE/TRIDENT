@@ -37,7 +37,7 @@ func newAccessLogger(path string) (*accessLogger, error) {
 
 // auditPath reports whether the request path is subject to the audit trail.
 func auditPath(path string) bool {
-	return len(path) >= 5 && path[:5] == "/api/" || len(path) >= 8 && path[:8] == "/export/"
+	return len(path) >= 5 && path[:5] == "/api/" || len(path) >= 8 && path[:8] == "/export/" || path == "/metrics"
 }
 
 func (l *accessLogger) record(entry TokenEntry, r *http.Request, status int) {

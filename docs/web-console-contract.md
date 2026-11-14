@@ -62,6 +62,7 @@ trident web --snapshot <dir> --snapshot-hash <sha256> \
 | GET | `/api/report` | 下载与 `trident audit findings` 相同的统一证据 JSON |
 | GET | `/api/sbom` | 下载与 `trident sca sbom` 相同的 CycloneDX 1.5 JSON |
 | GET | `/api/metrics` | 只读运维指标（进程生命周期计数器，见 §6.1；令牌门禁） |
+| GET | `/metrics` | Prometheus 文本格式 0.0.4 抓取端点（同一组计数器；令牌门禁，接受 `Authorization: Bearer`，豁免 console 头；指标名与 `docs/deployment.md` §2.2 告警规则对齐） |
 | GET | `/export/report` | 下载确定性 HTML 审阅报告（见 §6；无时间戳、无外部资源） |
 | GET | `/healthz` | 未认证探活（负载均衡/反向代理用），仅返回 `status/product/version`，不含分析或令牌状态 |
 

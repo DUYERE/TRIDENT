@@ -242,6 +242,31 @@ def main():
                     and metrics["analysis"]["runs_total"] >= 1,
                     f"metrics analysis counters: {metrics['analysis']}")
 
+            # Prometheus scrape endpoint: token-gated, bearer-friendly, plain
+            # text 0.0.4. The JSON read above counted itself, so the scrape
+            # total must be exactly json_total + 2 (this 401 probe + this scrape).
+            status, _, _ = request(base, "/metrics")
+            require(status == 401, "scrape without token must be rejected")
+            status, headers, body = request(base, "/metrics", headers={**console, "Authorization": f"Bearer {TOKEN}"})
+            require(status == 200 and header(headers, "Content-Type").startswith("text/plain; version=0.0.4"),
+                    f"scrape failed: {status} {header(headers, 'Content-Type')}")
+            scrape_text = body.decode("utf-8")
+            for name in ("trident_console_build_info", "trident_console_uptime_seconds",
+                         "trident_console_requests_total", "trident_console_requests_unauthorized_total",
+                         "trident_console_requests_forbidden_total", "trident_console_analysis_runs_total",
+                         "trident_console_analysis_cache_hits_total", "trident_console_analysis_failures_total",
+                         "trident_console_analysis_cached", "trident_console_analysis_cached_ok",
+                         "trident_console_analysis_last_duration_milliseconds"):
+                require(f"# TYPE {name} " in scrape_text, f"scrape missing TYPE {name}")
+            samples = dict(line.rsplit(" ", 1) for line in scrape_text.splitlines()
+                           if line.startswith("trident_console_") and not line.startswith("#"))
+            require(int(samples["trident_console_requests_total"]) == metrics["requests"]["total"] + 2,
+                    f"scrape total drift: {samples.get('trident_console_requests_total')} vs {metrics['requests']['total']}")
+            require(int(samples["trident_console_analysis_cached"]) == 1
+                    and int(samples["trident_console_analysis_cached_ok"]) == 1,
+                    f"scrape cache gauges: {samples}")
+            require(TOKEN not in scrape_text, "scrape output must not contain the token")
+
             print("[01] console shell, token gate, session cookie and security headers: PASS")
             print("[02] overview, findings, endpoints, dependencies and file tools: PASS")
             print("[03] runtime_status=not_run, traversal rejection and evidence report: PASS")
