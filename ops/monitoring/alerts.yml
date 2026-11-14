@@ -1,0 +1,54 @@
+groups:
+  - name: trident-console
+    rules:
+      # Pipeline probe for the P2-3 monitoring drill: always fires so the
+      # Prometheus -> Alertmanager -> receiver path can be verified end to end.
+      # Remove in production.
+      - alert: TridentAlertDeliveryProbe
+        expr: vector(1) != 0
+        for: 0m
+        labels:
+          severity: info
+          probe: "true"
+        annotations:
+          summary: "Alert delivery pipeline probe (P2-3 monitoring drill)"
+
+      - alert: TridentConsoleDown
+        expr: up{job="trident-console"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TRIDENT console scrape target unreachable for 1 minute"
+
+      - alert: TridentConsoleUnauthorizedSpike
+        expr: increase(trident_console_requests_unauthorized_total[10m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Token rejections spiking (brute force or rotation mistake)"
+
+      - alert: TridentConsoleForbiddenSpike
+        expr: increase(trident_console_requests_forbidden_total[10m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Console-header rejections spiking (unexpected client or script)"
+
+      - alert: TridentAnalysisFailure
+        expr: increase(trident_console_analysis_failures_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Analysis ended in a terminal failure; reproduce via trident audit findings"
+
+      - alert: TridentAnalysisStale
+        expr: trident_console_analysis_cached == 0 and up{job="trident-console"} == 1
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Console running 30+ minutes without a cached analysis"

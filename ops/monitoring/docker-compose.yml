@@ -1,0 +1,22 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    restart: no
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./generated/scrape-token:/etc/prometheus/scrape-token:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: no
+    volumes:
+      - ./generated/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:9093:9093"
