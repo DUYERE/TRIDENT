@@ -9,7 +9,9 @@
 > `scripts/test-artifact-hash.py`、`scripts/test-reachability.py` 验收；M2 的 P0-3 第一片
 > （受限 Java 语义模型 `audit java-model`、方法级调用图、v13 coverage 接入）已实现并通过
 > `scripts/test-java-ast.py`、`go test ./internal/javaast` 验收，AST 尚未接入 sink/source 匹配；
-> 记录见 [开发进度](development-progress.md) 续十一、续十二。其余项仍为计划。
+> P0-4 权限链语义（`SecurityFilterChain` 顺序与 `securityMatcher` 作用域、受限方法注解 SpEL、
+> context-path 外部路径）已实现并通过 `scripts/test-authz.py` 与 `go test ./internal/authz` 验收。
+> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三。其余项仍为计划。
 
 ## 1. 原则与约束
 
@@ -97,22 +99,26 @@
     `docs/audit-contract.md`。
 - **非目标**：不实现完整 Java 编译器、不做字节码分析、不引入需要网络/构建的解析依赖。
 
-### P0-4 权限链语义与上下文
+### P0-4 权限链语义与上下文（已实现，2026-11-14）
 
 - **目标**：从“匹配到控制”提升为“按框架语义判断控制是否真正覆盖入口”。
-- **实现要点**：
-  - 解析 Spring Security `SecurityFilterChain` 顺序、`addFilterBefore/After`、
-    `requestMatchers`/`securityMatcher`、`permitAll` 与 `authenticated` 的先后覆盖关系。
-  - 支持 `@EnableMethodSecurity`、`@PreAuthorize` SpEL 的常量布尔/角色表达式子集；
-    复杂 SpEL 记为 `unknown`。
-  - 支持 `server.servlet.context-path`、`web.xml` `context-param` 与 `@WebServlet` 前缀拼接；
-    无法确定的部署前缀不改写结论，标记 `context_path_unknown`。
-  - 网关/反向代理不解析，保持 limitation。
-- **验收标准**：
-  - 新 fixture `java-authz-chain`：多 `SecurityFilterChain`、`permitAll` 覆盖、方法注解优先、
-    context-path 前缀四类场景；`scripts/test-authz.py` 扩展断言。
-  - 契约更新 `docs/audit-contract.md`；新增 limitation
-    `filter_chain_order_bounded`、`spel_subset_only`、`context_path_unknown`。
+- **已实现**：
+  - `SecurityFilterChain` 按方法边界分组，`@Order`/`Ordered` 排链，`securityMatcher` 限定链作用域；
+    链内规则保持声明顺序，首条命中生效，`permitAll`→`hasRole`→`anyRequest().authenticated()`
+    的覆盖关系按源码顺序判定。`addFilterBefore/After` 记录到 `chains[].custom_filters` 但不执行。
+  - `@EnableMethodSecurity`/`@EnableGlobalMethodSecurity` 记入 `coverage.method_security`；
+    `@PreAuthorize` 支持常量布尔、`permitAll/denyAll`、`isAuthenticated()/isAnonymous()`、
+    `hasRole/hasAnyRole/hasAuthority/hasAnyAuthority` 与 `&&/||/!`；`hasRole` 归一化为 `ROLE_`。
+    复杂 SpEL 与 `@PostAuthorize/@PreFilter/@PostFilter` 记 `unknown`。
+  - `server.servlet.context-path`（properties/yml）与 `web.xml` `context-param` 只写入
+    `endpoints[].external_path`，不改变相对 context path 的匹配；冲突/非字面量标记
+    `context_path_unresolved`。
+  - 新 limitation：`filter_chain_order_bounded`、`filter_chain_rule_order_bounded`、
+    `spel_subset_only`、`context_path_unknown`。
+- **验收**：新 fixture `tests/fixtures/java-authz-chain`（`@Order(1)` + `securityMatcher`、
+  默认链 `permitAll`、方法注解优先级、context-path 前缀）；`python scripts/test-authz.py`
+  断言 2 条链、5 protected/3 public/1 unknown、`ROLE_ADMIN`、`external_path=/app/ctx/hello`、
+  快照与 fixture 字节不变；`go test ./internal/authz` 覆盖同一场景。
 - **非目标**：不模拟运行时 filter 执行，不解析外部网关规则，不证明未授权访问。
 
 ### P1-1 运行时多角色矩阵与 CSRF 自动化

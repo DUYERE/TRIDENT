@@ -30,7 +30,8 @@ var (
 	anyRequestCall      = regexp.MustCompile(`anyRequest\s*\(\s*\)\s*\.\s*([A-Za-z]+)\s*(?:\(([^()]*)\))?`)
 )
 
-func scanXMLControls(files map[string]string, lookup classLookup, sources map[string]javaSource) []Control {
+func scanXMLControls(files map[string]string, lookup classLookup, sources map[string]javaSource) controlBatch {
+	batch := controlBatch{}
 	var controls []Control
 	var paths []string
 	for file := range files {
@@ -88,6 +89,8 @@ func scanXMLControls(files map[string]string, lookup classLookup, sources map[st
 				Declarations: []string{"mvc:interceptor"},
 			})
 		}
+		var xmlChain *chainSpec
+		xmlRules := 0
 		for _, match := range xmlInterceptURL.FindAllStringSubmatchIndex(content, -1) {
 			if len(match) < 4 {
 				continue
@@ -99,11 +102,19 @@ func scanXMLControls(files map[string]string, lookup classLookup, sources map[st
 			}
 			requirement, roles := requirementFromAccess(attributes["access"] + " " + attributes["filters"])
 			order++
-			controls = append(controls, Control{
+			control := Control{
 				Kind: "spring_security_xml", File: file, Line: lineOf(content, match[0]), Order: order,
 				Paths: []string{pattern}, Requirement: requirement, Roles: roles,
 				Status: "observed", Declarations: []string{"intercept-url"},
-			})
+			}
+			if xmlChain == nil {
+				xmlChain = &chainSpec{source: "xml", file: file, line: control.Line, order: defaultChainOrder}
+				batch.chains = append(batch.chains, xmlChain)
+			}
+			xmlRules++
+			control.key = controlKey(file, "xml", xmlRules)
+			xmlChain.ruleKeys = append(xmlChain.ruleKeys, control.key)
+			controls = append(controls, control)
 		}
 		if strings.EqualFold(baseName(file), "web.xml") {
 			filterClasses := map[string]string{}
@@ -164,10 +175,60 @@ func scanXMLControls(files map[string]string, lookup classLookup, sources map[st
 			}
 		}
 	}
-	return controls
+	return controlBatch{controls: controls, chains: batch.chains}
 }
 
-func scanJavaControls(sources map[string]javaSource, lookup classLookup) []Control {
+// securityWindow returns the configuration statement that starts at the '('
+// that ends the authorizeRequests/authorizeHttpRequests match. Chained calls
+// are included and block-lambda semicolons do not terminate the statement.
+func securityWindow(content string, openIndex int) string {
+	if openIndex <= 0 || openIndex > len(content) || content[openIndex-1] != '(' {
+		return ""
+	}
+	const limit = 16384
+	parens := 0
+	braces := 0
+	var quote byte
+	for index := openIndex - 1; index < len(content); index++ {
+		character := content[index]
+		if quote != 0 {
+			if character == '\\' {
+				index++
+				continue
+			}
+			if character == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch character {
+		case '"', '\'':
+			quote = character
+		case '(':
+			parens++
+		case ')':
+			parens--
+		case '{':
+			braces++
+		case '}':
+			if braces > 0 {
+				braces--
+			}
+		case ';':
+			if parens == 0 && braces == 0 {
+				return content[openIndex : index+1]
+			}
+		}
+		if index-openIndex > limit {
+			return content[openIndex : openIndex+limit]
+		}
+	}
+	return content[openIndex:]
+}
+
+func scanJavaControls(sources map[string]javaSource, lookup classLookup) controlBatch {
+	batch := controlBatch{}
+	specs := map[string]*chainSpec{}
 	var controls []Control
 	var files []string
 	for file := range sources {
@@ -234,12 +295,15 @@ func scanJavaControls(sources map[string]javaSource, lookup classLookup) []Contr
 			})
 		}
 		for _, start := range securityConfigStart.FindAllStringIndex(content, -1) {
-			window := content[start[1]:]
-			if end := strings.IndexByte(window, ';'); end >= 0 {
-				window = window[:end]
-			}
+			spec := chainSpecFor(content, file, start[0], specs, &batch.chains)
+			window := securityWindow(content, start[1])
 			if len(window) > 8192 {
 				window = window[:8192]
+			}
+			appendRule := func(control Control) {
+				control.key = controlKey(file, "java", control.Order)
+				spec.ruleKeys = append(spec.ruleKeys, control.key)
+				controls = append(controls, control)
 			}
 			for _, match := range matcherCall.FindAllStringSubmatchIndex(window, -1) {
 				if len(match) < 8 {
@@ -256,7 +320,7 @@ func scanJavaControls(sources map[string]javaSource, lookup classLookup) []Contr
 				}
 				requirement, roles := requirementFromSpringMethod(method, args)
 				order++
-				controls = append(controls, Control{
+				appendRule(Control{
 					Kind: "spring_security_java", File: file, Line: lineOf(content, start[0]+match[0]), Order: order,
 					Paths: patterns, Methods: nil, Requirement: requirement, Roles: roles,
 					Status: "observed", Declarations: []string{"spring_security_java:" + method},
@@ -273,7 +337,7 @@ func scanJavaControls(sources map[string]javaSource, lookup classLookup) []Contr
 				}
 				requirement, roles := requirementFromSpringMethod(method, args)
 				order++
-				controls = append(controls, Control{
+				appendRule(Control{
 					Kind: "spring_security_java", File: file, Line: lineOf(content, start[0]+match[0]), Order: order,
 					Paths: []string{"/**"}, Requirement: requirement, Roles: roles,
 					Status: "observed", Declarations: []string{"spring_security_java:anyRequest"},
@@ -281,7 +345,7 @@ func scanJavaControls(sources map[string]javaSource, lookup classLookup) []Contr
 			}
 		}
 	}
-	return controls
+	return controlBatch{controls: controls, chains: batch.chains}
 }
 
 func requirementForClass(class string, lookup classLookup, sources map[string]javaSource) (string, string) {
@@ -341,7 +405,7 @@ func requirementFromAccess(value string) (string, []string) {
 		return RequirementDeny, nil
 	case strings.Contains(lower, "hasrole") || strings.Contains(lower, "hasauthority") ||
 		strings.Contains(lower, "role_") || strings.Contains(lower, "hasanyrole"):
-		return RequirementRole, roles
+		return RequirementRole, rolePrefix(roles)
 	case strings.Contains(lower, "isauthenticated") || strings.Contains(lower, "fullyauthenticated"):
 		return RequirementAuthenticated, nil
 	default:
@@ -357,7 +421,9 @@ func requirementFromSpringMethod(method, args string) (string, []string) {
 		return RequirementDeny, nil
 	case "authenticated", "fullyauthenticated":
 		return RequirementAuthenticated, nil
-	case "hasrole", "hasanyrole", "hasauthority", "hasanyauthority":
+	case "hasrole", "hasanyrole":
+		return RequirementRole, rolePrefix(roleValues(args))
+	case "hasauthority", "hasanyauthority":
 		return RequirementRole, roleValues(args)
 	case "access":
 		return requirementFromAccess(args)

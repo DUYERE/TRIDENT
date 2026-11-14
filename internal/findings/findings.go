@@ -202,7 +202,7 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 			"advisory_exact_version_only: ranges, aliases and repository resolution remain outside this slice",
 			"endpoint_inventory_annotation_only: routes are annotation-level, not deployed routes",
 			"dataflow_bounded_lexical: taint matching is bounded lexical flow; the restricted AST semantic model is staged and not used for sink/source matching; no branch sensitivity, alias/points-to or external library implementation; non-SQL sink findings appear only when that sink is observed",
-			"authz_control_inventory_lexical: annotations, XML blocks and common Java config chains are matched textually; filter-chain order, custom AOP and external gateways are not evaluated",
+			"authz_control_inventory_lexical: annotations, XML blocks and common Java config chains are matched textually; chain precedence is bounded to @Order and declaration order, and custom AOP or external gateways are not evaluated",
 			"authz_unprotected_is_inconclusive: absence of a recognized control does not prove an endpoint is reachable without authentication",
 			"absence_is_not_safety: inconclusive means required evidence was not collected, not that the code is safe",
 			"correlation_not_exploitation: linking a dependency, an endpoint and a flow is context, not runtime proof",
@@ -452,7 +452,7 @@ func fromAuthz(item authz.Finding, entries map[string]string) Finding {
 		Kind: "control_absence", Detail: item.Reason, Origin: "authz", OriginRef: item.ID,
 	})
 	limitations := []string{
-		"authz_control_inventory_lexical: no filter-chain order, custom AOP, Spring EL or external gateway evaluation",
+		"authz_control_inventory_lexical: filter chains are ordered by @Order and declaration, but addFilterBefore/After bodies, custom AOP, complex Spring EL and external gateways are not evaluated",
 		"authz_unprotected_is_inconclusive: a custom or container-level control may still protect this route",
 		"runtime_not_verified: no HTTP request or deployed security configuration is exercised",
 	}

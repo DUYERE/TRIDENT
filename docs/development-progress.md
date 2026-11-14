@@ -976,6 +976,17 @@
 - 验收：`go build ./...`、`go vet ./internal/javaast ./internal/dataflow ./internal/findings ./cmd/trident`、`go test ./internal/javaast ./internal/dataflow ./internal/findings -count=1`、`python scripts/test-java-ast.py`、`python scripts/test-dataflow.py`、`python scripts/test-findings.py` 通过；fixture 与快照字节不变。
 - 限制：AST 尚未接入 sink/source 匹配，控制流、别名/points-to、跨方法污点、AOP/动态代理仍未实现；lambda、方法引用、文本块、匿名类为边界；不编译、不运行 Java。
 
+### 2026-11-14 续十三：P0-4 权限链语义与上下文
+
+- `internal/authz` 升级到 `0.2.0-p0.4+r1-authz-chain-v2`：`SecurityFilterChain` 按方法边界分组，链顺序取 `@Order`/`Ordered`，缺省 `2147483647`，同序按 source/file/line 稳定排序；`securityMatcher` 限定链作用域，`requestMatchers`/`anyRequest` 保持链内声明顺序，首条命中生效。
+- 输出新增 `chains[]`（id/source/file/line/order/order_source/security_matchers/custom_filters/rules/status）、`controls[].chain`、`endpoints[].chain`/`roles`/`external_path`，`coverage` 新增 `chains`/`method_security`/`context_path`/`context_path_source`。
+- 方法安全：`@EnableMethodSecurity`/`@EnableGlobalMethodSecurity` 记入 coverage；`@PreAuthorize` 受限 SpEL（常量布尔、`permitAll/denyAll`、`isAuthenticated()/isAnonymous()`、`hasRole/hasAnyRole/hasAuthority/hasAnyAuthority`、`&&/||/!`）参与判定，`hasRole` 归一化为 `ROLE_`；复杂表达式与 `@PostAuthorize/@PreFilter/@PostFilter` 为 `unknown`。
+- context path：读取 `server.servlet.context-path`（properties/yml）与 `web.xml` `<context-param>`，仅写入 `endpoints[].external_path`；匹配仍相对 context path。多值/非字面量记 `context_path_unresolved`，不改写结论。
+- 新 limitation：`filter_chain_order_bounded`、`filter_chain_rule_order_bounded`、`spel_subset_only`、`context_path_unknown`；findings 的 `authz_control_inventory_lexical` 文案同步。
+- 新增 fixture `tests/fixtures/java-authz-chain`：`@Order(1)` + `securityMatcher("/chain/api/**")` 链（`permitAll`→`hasRole("ADMIN")`→`anyRequest().authenticated()`）、默认 `permitAll` 链、方法注解 `isAuthenticated()`/`hasRole('ADMIN')`/`false`/复杂 SpEL、`application.properties` 的 `/app`。
+- 验收：`python scripts/test-authz.py` 通过（2 条链；5 protected/3 public/1 unknown/0 unprotected；`ROLE_ADMIN`；`/ctx/hello` 的 `external_path=/app/ctx/hello`；`partial=false`、`runtime_status=not_run`、快照与 fixture 字节不变）；`go test ./internal/authz` 覆盖同一场景；旧 `java-authz` 的 6/2/2/1 与 2 条 finding 不变。
+- 限制：不执行 `addFilterBefore/After` 或过滤器体，不解析自定义 AOP、外部网关/反向代理、重写规则；`unprotected` 仍是静态缺省证据，不是未授权访问证明。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

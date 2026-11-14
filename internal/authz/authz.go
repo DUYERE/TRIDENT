@@ -20,10 +20,14 @@ import (
 
 const (
 	SchemaVersion = 1
-	ToolVersion   = "0.2.0-p0.2+r4-authz-inventory-v1"
+	ToolVersion   = "0.2.0-p0.4+r1-authz-chain-v2"
 	MaxFiles      = 4000
 	MaxFileBytes  = 2 << 20
 )
+
+// defaultChainOrder is Spring Security's implicit chain order when neither
+// @Order nor Ordered is declared.
+const defaultChainOrder = 2147483647
 
 const (
 	RequirementAuthenticated = "authenticated"
@@ -40,6 +44,7 @@ type Report struct {
 	AnalysisKind  string             `json:"analysis_kind"`
 	Partial       bool               `json:"partial"`
 	Controls      []Control          `json:"controls"`
+	Chains        []FilterChain      `json:"chains"`
 	Endpoints     []EndpointDecision `json:"endpoints"`
 	Findings      []Finding          `json:"findings"`
 	Coverage      Coverage           `json:"coverage"`
@@ -62,7 +67,25 @@ type Control struct {
 	SourceClass  string   `json:"source_class,omitempty"`
 	Status       string   `json:"status"`
 	Note         string   `json:"note,omitempty"`
+	Chain        string   `json:"chain,omitempty"`
 	Declarations []string `json:"declarations,omitempty"`
+	key          string
+}
+
+// FilterChain is a bounded model of one Spring Security filter chain. Rules
+// keep declaration order because the first matching rule inside a chain wins.
+type FilterChain struct {
+	ID               string   `json:"id"`
+	Source           string   `json:"source"`
+	File             string   `json:"file"`
+	Line             int      `json:"line"`
+	Order            int      `json:"order"`
+	OrderSource      string   `json:"order_source"`
+	SecurityMatchers []string `json:"security_matchers,omitempty"`
+	CustomFilters    []string `json:"custom_filters,omitempty"`
+	Rules            []string `json:"rules,omitempty"`
+	Status           string   `json:"status"`
+	Note             string   `json:"note,omitempty"`
 }
 
 type EndpointDecision struct {
@@ -77,6 +100,9 @@ type EndpointDecision struct {
 	EndLine         int      `json:"end_line"`
 	Decision        string   `json:"decision"`
 	Requirement     string   `json:"requirement"`
+	Roles           []string `json:"roles,omitempty"`
+	Chain           string   `json:"chain,omitempty"`
+	ExternalPath    string   `json:"external_path,omitempty"`
 	MatchedControls []string `json:"matched_controls,omitempty"`
 	Reason          string   `json:"reason"`
 	FindingStatus   string   `json:"finding_status,omitempty"`
@@ -110,6 +136,10 @@ type Coverage struct {
 	Unknown            int    `json:"unknown"`
 	Controls           int    `json:"controls"`
 	UnresolvedControls int    `json:"unresolved_controls"`
+	Chains             int    `json:"chains"`
+	MethodSecurity     string `json:"method_security"`
+	ContextPath        string `json:"context_path,omitempty"`
+	ContextPathSource  string `json:"context_path_source,omitempty"`
 	RuntimeStatus      string `json:"runtime_status"`
 }
 
@@ -132,8 +162,8 @@ var (
 	beanPattern        = regexp.MustCompile(`<(?:[A-Za-z0-9_.-]+:)?bean\b([^>]*)>`)
 	attributePattern   = regexp.MustCompile(`([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*["']([^"']*)["']`)
 	quotedValuePattern = regexp.MustCompile(`["']([^"']+)["']`)
-	securityMethod     = regexp.MustCompile(`@(PreAuthorize|PostAuthorize|Secured|RolesAllowed|PermitAll|DenyAll|PreFilter|PostFilter)\b`)
-	securityClass      = regexp.MustCompile(`@(PreAuthorize|PostAuthorize|Secured|RolesAllowed|PermitAll|DenyAll)\b`)
+	javaStringLiteral  = regexp.MustCompile(`"(?:\\.|[^"\\])*"`)
+	securityAnnotation = regexp.MustCompile(`(?s)@(PreAuthorize|PostAuthorize|Secured|RolesAllowed|PermitAll|DenyAll|PreFilter|PostFilter)\b\s*(\((?:[^()]|\([^()]*\))*\))?`)
 )
 
 // Analyze inventories authorization controls and classifies every resolved
@@ -149,9 +179,11 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 		Coverage:      Coverage{RuntimeStatus: "not_run"},
 		Limitations: []string{
 			"lexical_control_inventory_not_ast: annotations, XML blocks and common Java config chains are matched textually",
-			"filter_chain_order_not_evaluated: Spring Security first-match order is approximated only by declaration order in one file",
-			"custom_auth_not_modeled: custom filters, AOP, Spring EL expressions and external gateways are not evaluated",
-			"context_path_not_modeled: declared paths are compared without servlet context-path or rewrite rules",
+			"filter_chain_order_bounded: SecurityFilterChain order comes from @Order/Ordered and declaration sequence; addFilterBefore/After and custom filter bodies are recorded but not executed",
+			"filter_chain_rule_order_bounded: the first matching rule inside a chain wins; requestMatchers/securityMatcher use the bounded Ant subset",
+			"spel_subset_only: @PreAuthorize/@Secured support constant booleans, role/authority predicates and simple and/or/not; other expressions are unknown",
+			"custom_auth_not_modeled: custom filters, AOP and external gateways are not evaluated",
+			"context_path_unknown: reverse proxy, gateway and container deployment prefixes are not resolved; a declared context-path is only applied to external_path",
 			"unprotected_is_inconclusive: absence of a recognized control does not prove an endpoint is reachable without authentication",
 			"manual_session_checks_are_unknown: a session read is recorded but not proven to guard every execution path",
 			"runtime_status_not_run: no HTTP request, deployment or filter execution is performed",
@@ -175,19 +207,47 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 	if err != nil {
 		return report, err
 	}
+	configFiles, err := loadConfigFiles(ctx, snapshot)
+	if err != nil {
+		return report, err
+	}
+	contextPath, contextSource, contextConflict := detectContextPath(xmlFiles, configFiles)
+	if contextConflict {
+		report.Limitations = append(report.Limitations, "context_path_unresolved: multiple or non-literal context-path declarations were observed")
+	} else if contextPath != "" {
+		report.Coverage.ContextPath = contextPath
+		report.Coverage.ContextPathSource = contextSource
+	}
 	report.Coverage.JavaFilesScanned = len(sources)
 	report.Coverage.XMLFilesScanned = len(xmlFiles)
-	controls := scanXMLControls(xmlFiles, lookup, sources)
-	controls = append(controls, scanJavaControls(sources, lookup)...)
+	report.Coverage.MethodSecurity = methodSecurityState(sources, xmlFiles)
+	xmlBatch := scanXMLControls(xmlFiles, lookup, sources)
+	javaBatch := scanJavaControls(sources, lookup)
+	controls := append(xmlBatch.controls, javaBatch.controls...)
 	sort.SliceStable(controls, func(i, j int) bool { return controls[i].Order < controls[j].Order })
+	idByKey := map[string]string{}
+	indexByKey := map[string]int{}
 	for index := range controls {
 		controls[index].ID = fmt.Sprintf("ctl-%03d", index+1)
 		if controls[index].Status == "" {
 			controls[index].Status = "observed"
 		}
+		if controls[index].key != "" {
+			idByKey[controls[index].key] = controls[index].ID
+			indexByKey[controls[index].key] = index
+		}
+	}
+	specs := append(xmlBatch.chains, javaBatch.chains...)
+	chains, chainRules, chainIDByKey := buildChainReport(specs, controls, idByKey, indexByKey)
+	for index := range controls {
+		if chainID, ok := chainIDByKey[controls[index].key]; ok {
+			controls[index].Chain = chainID
+		}
 	}
 	report.Controls = controls
+	report.Chains = chains
 	report.Coverage.Controls = len(controls)
+	report.Coverage.Chains = len(chains)
 	for _, control := range controls {
 		if control.Status != "observed" {
 			report.Coverage.UnresolvedControls++
@@ -199,7 +259,7 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 	}
 	for _, endpoint := range inventory.Endpoints {
 		controller := controllers[endpoint.File+"\x00"+endpoint.Class]
-		decision := evaluateEndpoint(endpoint, controller, sources[endpoint.File], controls)
+		decision := evaluateEndpoint(endpoint, controller, sources[endpoint.File], controls, chains, chainRules, report.Coverage.ContextPath)
 		report.Endpoints = append(report.Endpoints, decision)
 		switch decision.Decision {
 		case "protected":
@@ -217,6 +277,12 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 	if report.Coverage.UnresolvedControls > 0 {
 		report.Partial = true
 		report.Limitations = append(report.Limitations, "unresolved_controls_present: some controls could not be resolved to a class or path")
+	}
+	for _, chain := range chains {
+		if chain.Status != "observed" {
+			report.Limitations = append(report.Limitations, "filter_chain_metadata_unresolved: some chains have non-literal securityMatcher or order metadata")
+			break
+		}
 	}
 	sort.Slice(report.Findings, func(i, j int) bool {
 		if report.Findings[i].Path != report.Findings[j].Path {
@@ -302,42 +368,54 @@ func loadXMLFiles(ctx context.Context, snapshot *project.Snapshot) (map[string]s
 	return files, nil
 }
 
-func evaluateEndpoint(endpoint audit.Endpoint, controller audit.Controller, source javaSource, controls []Control) EndpointDecision {
+func evaluateEndpoint(endpoint audit.Endpoint, controller audit.Controller, source javaSource, controls []Control, chains []FilterChain, chainRules map[string][]Control, contextPath string) EndpointDecision {
 	decision := EndpointDecision{
 		Path: endpoint.Path, HTTPMethods: append([]string{}, endpoint.HTTPMethods...),
 		File: endpoint.File, Class: endpoint.Class, Method: endpoint.Method, Symbol: endpoint.Symbol,
 		StartLine: endpoint.StartLine, MethodLine: endpoint.MethodLine, EndLine: endpoint.EndLine,
 		Decision: "unknown", Requirement: RequirementUnknown, RuntimeStatus: "not_run",
 	}
+	if contextPath != "" {
+		decision.ExternalPath = joinPath(contextPath, endpoint.Path)
+	}
 	if endpoint.PathStatus != "resolved" {
 		decision.Reason = "unresolved_route_path"
 		return decision
 	}
-	methodRequirement, methodNotes := annotationRequirement(source.Lines, endpoint.StartLine, endpoint.MethodLine, securityMethod)
-	classRequirement, classNotes := classAnnotationRequirement(source.Lines, controller.StartLine, securityClass)
+	methodRequirement, methodRoles, methodNotes := annotationSecurityRequirement(source.Lines, endpoint.StartLine, endpoint.MethodLine)
+	classRequirement, classRoles, classNotes := annotationSecurityRequirement(source.Lines, classAnnotationStart(controller.StartLine), controller.StartLine)
 	manual, manualNote := manualControl(source.Lines, endpoint.MethodLine, endpoint.EndLine)
 
-	var securityControls []Control
-	var otherControls []Control
-	for _, control := range controls {
-		switch control.Kind {
-		case "spring_security_java", "spring_security_xml":
-			securityControls = append(securityControls, control)
-		default:
-			otherControls = append(otherControls, control)
-		}
-	}
 	securityRequirement := ""
-	for _, control := range securityControls {
-		if !controlApplies(control, endpoint.Path, endpoint.HTTPMethods) {
+	securityReason := ""
+	for _, chain := range chains {
+		if !chainApplies(chain, endpoint.Path) {
 			continue
 		}
-		decision.MatchedControls = append(decision.MatchedControls, control.ID)
-		securityRequirement = control.Requirement
+		rule, found := firstChainRule(chain, chainRules[chain.ID], endpoint.Path, endpoint.HTTPMethods)
+		if !found {
+			if len(chain.SecurityMatchers) > 0 {
+				// A securityMatcher-selected chain that abstains is not the
+				// same as falling through to an unrelated later chain.
+				decision.Chain = chain.ID
+				securityRequirement = RequirementUnknown
+				securityReason = "filter_chain_without_matching_rule"
+				break
+			}
+			continue
+		}
+		decision.Chain = chain.ID
+		decision.MatchedControls = append(decision.MatchedControls, rule.ID)
+		decision.Roles = unionRoles(decision.Roles, rule.Roles)
+		securityRequirement = rule.Requirement
+		securityReason = "filter_chain_rule:" + rule.Requirement
 		break
 	}
 	otherProtected, otherPublic, otherUnknown := false, false, false
-	for _, control := range otherControls {
+	for _, control := range controls {
+		if control.Kind == "spring_security_java" || control.Kind == "spring_security_xml" {
+			continue
+		}
 		if !controlApplies(control, endpoint.Path, endpoint.HTTPMethods) {
 			continue
 		}
@@ -351,16 +429,19 @@ func evaluateEndpoint(endpoint audit.Endpoint, controller audit.Controller, sour
 			otherUnknown = true
 		}
 	}
-	explicitRequirement, explicitNotes := methodRequirement, methodNotes
+	explicitRequirement, explicitRoles, explicitNotes := methodRequirement, methodRoles, methodNotes
 	explicitReason := "method_security_annotation"
 	if explicitRequirement == "" {
-		explicitRequirement, explicitNotes = classRequirement, classNotes
+		explicitRequirement, explicitRoles, explicitNotes = classRequirement, classRoles, classNotes
 		explicitReason = "class_security_annotation"
 	}
 	if explicitRequirement != "" {
 		decision.Reason = explicitReason
 		if len(explicitNotes) > 0 {
 			decision.Reason += ":" + strings.Join(explicitNotes, ",")
+		}
+		if len(explicitRoles) > 0 {
+			decision.Roles = explicitRoles
 		}
 		switch explicitRequirement {
 		case RequirementPublic:
@@ -378,6 +459,9 @@ func evaluateEndpoint(endpoint audit.Endpoint, controller audit.Controller, sour
 				decision.Decision = "public"
 				decision.Requirement = RequirementPublic
 			}
+		case RequirementUnknown:
+			decision.Decision = "unknown"
+			decision.Requirement = RequirementUnknown
 		case RequirementAuthenticated, RequirementRole, RequirementDeny:
 			decision.Decision = "protected"
 			decision.Requirement = explicitRequirement
@@ -387,7 +471,7 @@ func evaluateEndpoint(endpoint audit.Endpoint, controller audit.Controller, sour
 	if securityRequirement == RequirementAuthenticated || securityRequirement == RequirementRole || securityRequirement == RequirementDeny {
 		decision.Decision = "protected"
 		decision.Requirement = securityRequirement
-		decision.Reason = "spring_security_" + securityRequirement
+		decision.Reason = securityReason
 		return decision
 	}
 	if otherProtected {
@@ -399,7 +483,11 @@ func evaluateEndpoint(endpoint audit.Endpoint, controller audit.Controller, sour
 	if securityRequirement == RequirementUnknown || otherUnknown {
 		decision.Decision = "unknown"
 		decision.Requirement = RequirementUnknown
-		decision.Reason = "control_requirement_unresolved"
+		if securityReason != "" {
+			decision.Reason = securityReason
+		} else {
+			decision.Reason = "control_requirement_unresolved"
+		}
 		return decision
 	}
 	if manual != "" {
@@ -414,7 +502,11 @@ func evaluateEndpoint(endpoint audit.Endpoint, controller audit.Controller, sour
 	if securityRequirement == RequirementPublic || otherPublic {
 		decision.Decision = "public"
 		decision.Requirement = RequirementPublic
-		decision.Reason = "public_control_observed"
+		if securityRequirement == RequirementPublic && securityReason != "" {
+			decision.Reason = securityReason
+		} else {
+			decision.Reason = "public_control_observed"
+		}
 		return decision
 	}
 	if isLoginPath(endpoint.Path) {
@@ -428,6 +520,51 @@ func evaluateEndpoint(endpoint audit.Endpoint, controller audit.Controller, sour
 	decision.Reason = "no_authentication_or_authorization_control_observed"
 	decision.FindingStatus = "inconclusive"
 	return decision
+}
+
+func chainApplies(chain FilterChain, path string) bool {
+	if len(chain.SecurityMatchers) == 0 {
+		return true
+	}
+	for _, pattern := range chain.SecurityMatchers {
+		if matchPath(pattern, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstChainRule(chain FilterChain, rules []Control, path string, methods []string) (Control, bool) {
+	for _, rule := range rules {
+		if controlApplies(rule, path, methods) {
+			return rule, true
+		}
+	}
+	return Control{}, false
+}
+
+func joinPath(prefix, path string) string {
+	prefix = strings.TrimSuffix(normalizePath(prefix), "/")
+	path = normalizePath(path)
+	if prefix == "" {
+		return path
+	}
+	return prefix + path
+}
+
+func classAnnotationStart(classLine int) int {
+	start := classLine - 40
+	if start < 1 {
+		return 1
+	}
+	return start
+}
+
+func unionRoles(current, next []string) []string {
+	if len(next) == 0 {
+		return current
+	}
+	return uniqueStrings(append(append([]string{}, current...), next...))
 }
 
 func controlApplies(control Control, endpointPath string, methods []string) bool {
@@ -464,7 +601,10 @@ func methodsIntersect(declared, actual []string) bool {
 	return false
 }
 
-func annotationRequirement(lines []string, start, end int, pattern *regexp.Regexp) (string, []string) {
+// annotationSecurityRequirement folds method/class authorization annotations.
+// The returned requirement is empty when no annotation is present, so callers
+// can distinguish "absent" from an explicit expression that is unresolved.
+func annotationSecurityRequirement(lines []string, start, end int) (string, []string, []string) {
 	if start < 1 {
 		start = 1
 	}
@@ -472,44 +612,103 @@ func annotationRequirement(lines []string, start, end int, pattern *regexp.Regex
 		end = start
 	}
 	if start > len(lines) {
-		return "", nil
+		return "", nil, nil
 	}
 	if end > len(lines) {
 		end = len(lines)
 	}
+	content := strings.Join(lines[start-1:end], "\n")
 	requirement := ""
+	var roles []string
 	var notes []string
-	for index := start - 1; index < end; index++ {
-		matches := pattern.FindAllStringSubmatch(lines[index], -1)
-		for _, match := range matches {
-			if len(match) < 2 {
+	for _, match := range securityAnnotation.FindAllStringSubmatch(content, -1) {
+		name := match[1]
+		args := ""
+		if len(match) >= 3 && match[2] != "" {
+			args = strings.TrimSpace(match[2])
+			args = strings.TrimPrefix(args, "(")
+			args = strings.TrimSuffix(args, ")")
+		}
+		notes = append(notes, name)
+		switch name {
+		case "PermitAll":
+			requirement = combineAnd(requirement, RequirementPublic)
+		case "DenyAll":
+			requirement = combineAnd(requirement, RequirementDeny)
+		case "Secured", "RolesAllowed":
+			values := annotationRoleValues(args)
+			if len(values) == 0 {
+				requirement = combineAnd(requirement, RequirementUnknown)
+				notes = append(notes, strings.ToLower(name)+"_without_role_literal")
 				continue
 			}
-			notes = append(notes, match[1])
-			switch match[1] {
-			case "PermitAll":
-				requirement = RequirementPublic
-			case "DenyAll":
-				requirement = RequirementDeny
-			default:
-				if requirement != RequirementDeny {
-					requirement = RequirementAuthenticated
-				}
+			roles = uniqueStrings(append(roles, values...))
+			requirement = combineAnd(requirement, RequirementRole)
+		case "PreAuthorize":
+			expression := firstJavaString(args)
+			expressionRequirement, expressionRoles, note := parseSpelExpression(expression)
+			requirement = combineAnd(requirement, expressionRequirement)
+			roles = uniqueStrings(append(roles, expressionRoles...))
+			if note != "" {
+				notes = append(notes, note)
 			}
+		default:
+			// PostAuthorize/PreFilter/PostFilter run around invocation and are
+			// not entry controls in this bounded model.
+			requirement = combineAnd(requirement, RequirementUnknown)
+			notes = append(notes, strings.ToLower(name)+"_not_entry_control")
 		}
 	}
-	return requirement, dedupe(notes)
+	return requirement, roles, dedupe(notes)
 }
 
-func classAnnotationRequirement(lines []string, classLine int, pattern *regexp.Regexp) (string, []string) {
-	if classLine < 1 {
-		return "", nil
+func annotationRoleValues(args string) []string {
+	var roles []string
+	for _, match := range javaStringLiteral.FindAllString(args, -1) {
+		roles = append(roles, stripJavaString(match))
 	}
-	start := classLine - 40
-	if start < 1 {
-		start = 1
+	return uniqueStrings(roles)
+}
+
+func firstJavaString(args string) string {
+	args = strings.TrimSpace(args)
+	if index := strings.Index(args, "="); index >= 0 {
+		args = strings.TrimSpace(args[index+1:])
 	}
-	return annotationRequirement(lines, start, classLine, pattern)
+	if match := javaStringLiteral.FindString(args); match != "" {
+		return stripJavaString(match)
+	}
+	return args
+}
+
+func stripJavaString(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return value
+	}
+	inner := value[1 : len(value)-1]
+	inner = strings.ReplaceAll(inner, `\"`, `"`)
+	inner = strings.ReplaceAll(inner, `\\`, `\`)
+	return inner
+}
+
+func combineAnd(current, next string) string {
+	if current == "" {
+		return next
+	}
+	if current == RequirementUnknown || next == RequirementUnknown {
+		return RequirementUnknown
+	}
+	if current == RequirementDeny || next == RequirementDeny {
+		return RequirementDeny
+	}
+	if current == RequirementRole || next == RequirementRole {
+		return RequirementRole
+	}
+	if current == RequirementAuthenticated || next == RequirementAuthenticated {
+		return RequirementAuthenticated
+	}
+	return RequirementPublic
 }
 
 func manualControl(lines []string, methodLine, endLine int) (string, string) {

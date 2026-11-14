@@ -72,10 +72,18 @@
   - XML：`<mvc:interceptor>` 的 mapping/exclude-mapping/ref 与 bean class、`<security:intercept-url pattern/access>`、`web.xml` 的 filter-mapping 与 security-constraint。
   - Java：`@WebFilter(urlPatterns)`、`WebMvcConfigurer.addInterceptor().addPathPatterns()/excludePathPatterns()`、`HttpSecurity.authorizeRequests()`/`authorizeHttpRequests()` 的 matcher 链与 `anyRequest()`。
   - 控制类认证性：解析到源码后，仅当同时观察到 `HandlerInterceptor`/`Filter`/`OncePerRequestFilter` 或 `doFilter` 以及 session/redirect/SecurityContext 等 token 时，才把该类视为认证控制；否则为 `unknown`。
-- 决策：`protected`（唯一匹配的安全控制为 authenticated/role/deny）、`public`（permitAll/登录路径/显式放行）、`unprotected`（没有任何已识别控制）、`unknown`（控制类/路径无法解析、手工 session 检查或控制冲突）。Spring Security 匹配按声明顺序取第一个命中；独立 interceptor/filter 仍可把 permitAll 路由标为 protected。
-- 输出：`controls[]`（kind/file/line/paths/excluded/requirement/source_class/status）、`endpoints[]`（path/decision/reason/matched_controls/runtime_status）、`findings[]`（CWE-306、`status=inconclusive`、`runtime_status=not_run`）与 `coverage`。`partial=true` 表示存在未解析控制或入口。
-- 限制：不评估 Spring EL 表达式、filter-chain 全局顺序、自定义 AOP/网关、context-path、重写规则或部署配置；`unprotected` 是静态缺省证据，不是未授权访问证明。
-- 验收：`go test ./internal/authz` 与 `python scripts/test-authz.py`。fixture 中 MVC interceptor、servlet filter（注解与 web.xml）、Spring Security Java/XML、方法注解分别覆盖 6 个 protected 入口，登录/permitAll 为 2 个 public，2 个无控制入口为 unprotected，手工 session 检查为 unknown；2 条 finding 均为 `inconclusive`、`CWE-306`、`runtime_status=not_run`，快照与 fixture 字节级不变。
+- 决策：`protected`（唯一匹配的安全控制为 authenticated/role/deny）、`public`（permitAll/登录路径/显式放行）、`unprotected`（没有任何已识别控制）、`unknown`（控制类/路径无法解析、手工 session 检查、复杂表达式或控制冲突）。独立 interceptor/filter 仍可把 permitAll 路由标为 protected。
+- 2026-11-14 权限链语义（P0-4）：
+  - `SecurityFilterChain` 按方法边界分组；链顺序取 `@Order`/`Ordered.HIGHEST_PRECEDENCE`/`LOWEST_PRECEDENCE`，缺省为 `2147483647`，同序时按 source/file/line 稳定排序。`securityMatcher` 限定链作用域；未命中该链的入口继续检查下一条链。链内规则保持声明顺序，第一个匹配的 `requestMatchers`/`anyRequest` 生效（`permitAll` 放在 `authenticated` 之前时确实放行）。
+  - `addFilterBefore/After` 只记录到 `chains[].custom_filters`，不执行过滤器体，不据此推断认证强度。
+  - 方法/类注解：`@PermitAll`、`@DenyAll`、`@Secured`/`@RolesAllowed` 与 `@PreAuthorize` 的受限 SpEL（常量 `true/false`、`permitAll/denyAll`、`isAuthenticated()/isAnonymous()`、`hasRole/hasAnyRole/hasAuthority/hasAnyAuthority`、括号与 `&&/||/!`）参与判定；`hasRole` 统一补 `ROLE_` 前缀。`@PostAuthorize`/`@PreFilter`/`@PostFilter` 不是入口控制，记 `unknown`；其余表达式（`hasIpAddress`、bean 引用、`#param` 等）记 `unknown` 并保留原因。
+  - `@EnableMethodSecurity`/`@EnableGlobalMethodSecurity`/XML `<global-method-security>` 记入 `coverage.method_security`；即使未观察到全局开关，注解仍按声明判定，这是显式 staged 边界。
+  - `server.servlet.context-path`（properties/yml）与 `web.xml` `<context-param>` 中 `contextPath`/`server.servlet.context-path`/`app.context-path` 被读取。匹配仍相对 context path；声明值只用于 `endpoints[].external_path`。多值或非字面量时置 `context_path_unresolved`，不改写结论。
+- 输出：`controls[]`（kind/file/line/paths/excluded/requirement/source_class/chain/status）、`chains[]`（id/source/file/line/order/order_source/security_matchers/custom_filters/rules/status）、`endpoints[]`（path/decision/requirement/roles/chain/external_path/reason/matched_controls/runtime_status）、`findings[]`（CWE-306、`status=inconclusive`、`runtime_status=not_run`）与 `coverage`（含 `chains`、`method_security`、`context_path`、`context_path_source`）。`partial=true` 仅表示存在未解析控制或入口。
+- 限制：`filter_chain_order_bounded`（不执行 addFilterBefore/After 与过滤器体）、`filter_chain_rule_order_bounded`（Ant 子集匹配，链内首条命中）、`spel_subset_only`、`custom_auth_not_modeled`、`context_path_unknown`（网关/反向代理/容器部署前缀未知）、`unprotected_is_inconclusive`、`manual_session_checks_are_unknown`、`runtime_status_not_run`。不解析外部网关规则、重写规则或运行时状态。
+- 验收：`go test ./internal/authz` 与 `python scripts/test-authz.py`。
+  - `java-authz`：MVC interceptor、servlet filter（注解与 web.xml）、Spring Security Java/XML、方法注解分别覆盖 6 个 protected 入口，登录/permitAll 为 2 个 public，2 个无控制入口为 unprotected，手工 session 检查为 unknown；2 条 finding 均为 `inconclusive`、`CWE-306`、`runtime_status=not_run`。
+  - `java-authz-chain`：`@Order(1)` + `securityMatcher("/chain/api/**")` 链内 `permitAll`→`hasRole`→`anyRequest().authenticated()` 首条命中；默认链 `anyRequest().permitAll()` 覆盖其余入口；方法注解 `isAuthenticated()`/`hasRole('ADMIN')`/`false`/复杂 SpEL 分别得到 protected/protected/protected/unknown；`application.properties` 的 `/app` 只写入 `external_path`。断言 2 条链、5 protected/3 public/1 unknown、`ROLE_ADMIN` 归一化、快照与 fixture 字节不变、输出确定性。
 
 ## 7. 2026-11-14 依赖到入口的有界可达性 `audit reachability`
 

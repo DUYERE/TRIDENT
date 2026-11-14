@@ -83,7 +83,7 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit endpoints --snapshot "$
 
 ## R4 权限/越权控制清单
 
-`audit authz` 在同一边界内识别 Spring Security 方法/类注解（`@PreAuthorize`、`@Secured`、`@RolesAllowed`、`@PermitAll` 等）、XML `<mvc:interceptor>`、`<security:intercept-url>`、`web.xml` filter/security-constraint、Java `WebMvcConfigurer.addInterceptors`、`HttpSecurity` matcher 链和 `@WebFilter`，并按 Ant 风格路径为每个入口给出 `protected` / `public` / `unprotected` / `unknown`。无任何已识别控制的入口输出 `inconclusive` 的 CWE-306 finding；手工 session 检查只记为 `unknown`。**这是有界词法控制清单，不评估 filter-chain 顺序、SpEL、自定义 AOP、外部网关或运行时行为；`unprotected` 不等于已证明可未授权访问。**
+`audit authz` 在同一边界内识别 Spring Security 方法/类注解（`@PreAuthorize`、`@Secured`、`@RolesAllowed`、`@PermitAll` 等）、XML `<mvc:interceptor>`、`<security:intercept-url>`、`web.xml` filter/security-constraint、Java `WebMvcConfigurer.addInterceptors`、`HttpSecurity` matcher 链和 `@WebFilter`，并按 Ant 风格路径为每个入口给出 `protected` / `public` / `unprotected` / `unknown`。`SecurityFilterChain` 按 `@Order` 与声明顺序建模，`securityMatcher` 限定链作用域，链内首条匹配规则生效；`@PreAuthorize` 支持常量布尔与 `hasRole/hasAnyRole/hasAuthority/hasAnyAuthority/isAuthenticated/isAnonymous` 的受限 SpEL，复杂表达式为 `unknown`；`server.servlet.context-path` 只写入 `external_path`。无任何已识别控制的入口输出 `inconclusive` 的 CWE-306 finding；手工 session 检查只记为 `unknown`。**这是有界静态控制清单，不执行 `addFilterBefore/After` 或过滤器体，不评估自定义 AOP、外部网关/反向代理或运行时行为；`unprotected` 不等于已证明可未授权访问。**
 
 ```bash
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit authz --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH"
