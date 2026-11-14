@@ -78,7 +78,8 @@ python scripts/benchmark.py 3
 | R3 AI 补丁 + Docker | `python scripts/test-patch-ai.py` | 通过（loopback 模型） |
 | Linux race | `python scripts/test-linux.py` | 通过（固定 `golang:1.26.3-bookworm`） |
 | 真实模型只读 | Run 43/46/48 记录 | 已获准并通过，其他模型/快照需重新授权 |
-| 真实项目 AI 补丁 | — | 未执行，需逐次外发与执行授权 |
+| 真实模型 AI 补丁（合成目标） | `patch repair` + `patch verify`（2026-11-14） | 通过：`deepseek-v4-pro` 补丁，Maven 与 JUnit 各一轮 `validation_passed`，快照完整；仅合成 fixture |
+| 真实项目 AI 补丁 | — | 未执行，工作区无真实 Java 项目；需提供路径与逐次授权 |
 | 硬件 VM/系统调用隔离 | — | 未实现；gVisor 是用户态内核 |
 | Maven/Gradle 在线有效依赖树 | `python scripts/test-resolve.py` | Maven 离线有效树通过（3 模块/31 依赖/25 传递）；Gradle 有效树未实现 |
 

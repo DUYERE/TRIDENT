@@ -11,11 +11,11 @@
 | R1 快照与四项只读工具 | 已实现并完成本地验收 | `snapshot-contract.md`、`internal/project/` |
 | R1 Core、Run、OpenAI 适配 | 已实现并完成本地协议验收与两次真实模型只读闭环；DeepSeek `reasoning_content`/Schema 数值兼容、48 KiB 检查点确定性压缩、按工具类型的保留策略与有界结果摘要已实现 | `agent-contract.md`；下方 2026-11-12 与 2026-11-13 记录 |
 | R1 真实模型自主工具闭环 | 已完成获准验收：DeepSeek `deepseek-flash` Run 43、`deepseek-v4-pro` Run 46，均仅合成样本且 `completed`；其他模型/快照需逐次授权 | `agent-contract.md` §6.1；下方 2026-11-13 记录 |
-| R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0 与 import 可达性已实现并验收；完整 AST/污点/传递树/依赖可达性未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/` |
+| R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、Maven 有效依赖树（临时副本、默认离线）、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0 与 import 可达性已实现并验收；完整 AST/污点/制品哈希/依赖到入口可达性未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/` |
 | R2 只读 Web 分析控制台 | 已实现并完成本地验收；单快照、loopback、令牌鉴权、只读 JSON API 与嵌入前端；不改变分析语义，不提供 Agent 控制 API | `web-console-contract.md`、`internal/webui/`、`cmd/trident/web.go` |
 | R2 Agent 分析工具 | 已实现并完成本地验收与真实模型/真实项目使用；5 个分析工具、分析缓存、Run 公告配置、实际读取行引用与证据账本桥接 | `agent-contract.md`、`internal/tools/analysis.go`、`internal/agent/` |
 | R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射；无传递树/制品哈希/可达性 | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
-| R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、 remediation policy、隔离副本、离线 Maven/javac/JUnit（含多测试类、JUnit XML、可选 JaCoCo 覆盖率）、Docker 沙箱（network none/cap-drop/固定 digest）与 gVisor `runsc`、补丁质量评分、最多 5 轮 propose→verify 修复、原快照复验；真实 Java/Maven/JUnit 与真实模型补丁均已验收；VM 级隔离（硬件 VM）、真实项目 AI 补丁与补丁质量实证未实现 | `patch-contract.md`、`internal/r3/`、`cmd/trident/patch.go` |
+| R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/javac/JUnit（多测试类、JUnit XML、可选 JaCoCo）、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；真实 Java/Maven/JUnit、真实模型合成补丁与 loopback/Docker 已验收；硬件 VM、真实项目 AI 补丁与生产验证未实现 | `patch-contract.md`、`internal/r3/`、`cmd/trident/patch.go` |
 
 ## 2026-11-12：已完成快照切片（上轮基线）
 
@@ -862,6 +862,16 @@
 - gVisor：本机 Docker 仅注册 `runc`/`nvidia`，`--sandbox gvisor` 按设计失败关闭，未执行容器；报告 `runtime_status` 已修正为 `not_run`（此前 setup error 会误标 `isolated_validation_only`）。
 - 仍阻塞：真实模型调用需要 `TRIDENT_MODEL_API_KEY`（当前环境与 `.env` 均未设置）；工作区内没有真实 Java 项目可供“真实项目 AI 补丁”验证；硬件 VM 隔离不在当前环境能力内。
 - 本片验证：`go test ./internal/sca ./cmd/trident`、`python scripts/test-resolve.py` 通过；未调用模型、未写数据库、未修改快照。
+
+### 2026-11-14 续：获准真实模型补丁修复（合成 Java 目标）
+
+- 用户书面授权 DeepSeek 真实模型 + 现有 `tests/fixtures/java-patch` 合成目标；密钥从 `%USERPROFILE%\.trident-model-key` 读入进程环境，未写入仓库、日志、Run 或补丁报告。
+- 共 3 次模型调用：`deepseek-flash` 第 1 次 `stop=length`（2048 输出上限）、第 2 次返回的 hunk 行数不匹配；`deepseek-v4-pro` 第 3 次返回严格可应用的 unified diff。`patch repair` 按设计在模型失败/无效补丁时停止，不自动重试。
+- 成功补丁 SHA-256 `69aee83e…`，只改 `src/main/java/demo/Vulnerable.java` 1 行，与既有 `safe.patch` 字节一致：`query` 返回常量参数化 SQL `name=?`。
+- process Maven 验证：`mvn -o -B -q -DskipTests compile` 与 `java -cp target/classes demo.Main` 均退出 0，`Main` 输出 `safe`；quality 85、grade A。
+- 另一轮 JUnit 4.12 验证：`javac` main/test 编译通过，`JUnitCore demo.VulnerableTest` 输出 `OK (1 test)`，tests=1/failures=0/errors=0；quality 100。
+- 两轮均 `original_snapshot_intact=true`，`runtime_status=isolated_validation_only`。该补丁只是合成 fixture 的编译/单元测试通过，不证明真实数据库绑定、真实项目语义或生产修复有效。
+- 真实项目 AI 补丁仍未执行：工作区没有含 `pom.xml`/`build.gradle` 的真实 Java 项目；需另行提供路径与授权。
 
 ## 维护规则
 

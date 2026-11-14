@@ -125,3 +125,4 @@ trident patch verify \
 - `quality` 为启发式 0—100 分（validation、tests、patch size、files、regression clean），不参与通过/失败判定。
 - 验收：`go test ./internal/r3` 覆盖 JUnit 摘要/XML/JaCoCo、policy、repair failure/bounds、quality、gVisor 参数；`python scripts/test-patch.py` 与 `test-patch-ai.py` 通过；真实项目 AI 补丁与硬件 VM 未验证。
 - 2026-11-14 实测：本机 Docker 未注册 `runsc` 时 `--sandbox gvisor` 在启动容器前失败关闭，不执行任何命令；该 setup error 的 `runtime_status` 现为 `not_run`，只有真正执行验证命令后才为 `isolated_validation_only`。
+- 2026-11-14 真实模型补丁：`deepseek-flash` 在 2048 输出上限下被截断，随后返回 hunk 行数不匹配的 diff；`deepseek-v4-pro` 返回严格可应用补丁（SHA `69aee83e…`，1 行），process Maven `validation_passed`（quality 85）、JUnit 4.12 `OK (1 test)`（quality 100），原快照完整。模型失败时 `patch repair` 停止而不自动重试；以上仅为合成 fixture 结果。

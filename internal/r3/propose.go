@@ -122,7 +122,7 @@ func Propose(ctx context.Context, snapshot *project.Snapshot, client CompletionC
 		return proposal, err
 	}
 	if response.Stop != model.StopComplete {
-		return proposal, fmt.Errorf("%w: model did not return a complete proposal", ErrProposal)
+		return proposal, fmt.Errorf("%w: model did not return a complete proposal (stop=%s)", ErrProposal, response.Stop)
 	}
 	envelope, err := decodeProposalEnvelope(response.Message.Content)
 	if err != nil {
