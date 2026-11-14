@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"trident/internal/reach"
 	"trident/internal/sca"
 )
 
@@ -24,6 +25,10 @@ type Options struct {
 	SnapshotHash string
 	ToolVersion  string
 	Partial      bool
+	// Reachability carries the caller-provided bounded call-graph results keyed
+	// by module, dependency and declared version. Only results computed in this
+	// process are accepted; the SBOM never invents reachability itself.
+	Reachability map[string]reach.Reachability
 }
 
 type Document struct {
@@ -95,8 +100,9 @@ type Rating struct {
 }
 
 type Analysis struct {
-	State  string `json:"state"`
-	Detail string `json:"detail,omitempty"`
+	State         string `json:"state"`
+	Justification string `json:"justification,omitempty"`
+	Detail        string `json:"detail,omitempty"`
 }
 
 type Affect struct {
@@ -197,6 +203,8 @@ func Build(report sca.Report, opts Options) (Document, error) {
 		if _, ok := components[ref]; !ok {
 			continue
 		}
+		reachItem, hasReach := opts.Reachability[vexKey(match)]
+		analysis, reachProperties := vexAnalysis(match, reachItem, hasReach)
 		vulnerability := Vulnerability{
 			BOMRef:      "trident:advisory:" + match.AdvisoryID + ":" + ref,
 			ID:          match.AdvisoryID,
@@ -204,9 +212,9 @@ func Build(report sca.Report, opts Options) (Document, error) {
 			Ratings:     []Rating{{Severity: "unknown", Method: "other", Justification: "declared version only; runtime exploitation not verified"}},
 			Description: "Declared dependency " + match.Dependency + " " + match.DeclaredVersion + " matches an exact advisory version case.",
 			Detail:      "Declaration-level exact-version match. Dependency reachability, classpath and runtime exploitation are unverified; runtime_status=not_run.",
-			Analysis:    Analysis{State: "in_triage", Detail: "Requires runtime and reachability evidence before any impact conclusion."},
+			Analysis:    analysis,
 			Affects:     []Affect{{Ref: ref}},
-			Properties:  []Property{{Name: "trident:runtime_status", Value: "not_run"}},
+			Properties:  append([]Property{{Name: "trident:runtime_status", Value: "not_run"}}, reachProperties...),
 		}
 		document.Vulnerabilities = append(document.Vulnerabilities, vulnerability)
 	}
@@ -219,14 +227,60 @@ func Build(report sca.Report, opts Options) (Document, error) {
 	return document, nil
 }
 
+// vexAnalysis derives the CycloneDX VEX analysis from the caller-supplied
+// bounded call-graph result. The mapping is deliberately conservative:
+// "unreachable" is a bounded-graph negative, so it only yields
+// not_affected/code_not_reachable with its boundary spelled out; a reachable
+// path never upgrades to "exploitable" because static evidence cannot prove
+// runtime exploitation, and every unknown reason stays in triage.
+func vexAnalysis(match sca.AdvisoryMatch, item reach.Reachability, hasReach bool) (Analysis, []Property) {
+	if !hasReach {
+		return Analysis{State: "in_triage", Detail: "Requires runtime and reachability evidence before any impact conclusion."}, nil
+	}
+	properties := []Property{
+		{Name: "trident:reachability", Value: item.Reachability},
+		{Name: "trident:reachability_tool", Value: item.RuntimeStatus},
+	}
+	switch item.Reachability {
+	case "unreachable":
+		properties = append(properties, Property{Name: "trident:reachability_claim", Value: item.Reason})
+		return Analysis{
+			State:         "not_affected",
+			Justification: "code_not_reachable",
+			Detail:        "No path from any inventoried HTTP entrypoint to this dependency in the bounded import/type-ref graph (depth " + fmt.Sprint(reach.MaxPathDepth) + " hops). Reflection, dynamic dispatch, framework wiring and external configuration stay outside this claim; runtime_status=not_run.",
+		}, properties
+	case "reachable":
+		properties = append(properties, Property{Name: "trident:reachability_claim", Value: item.Reason})
+		return Analysis{
+			State:  "in_triage",
+			Detail: "Bounded entry call graph found an entry-to-import path (" + fmt.Sprint(len(item.Paths)) + " path(s)); static reachability does not prove runtime exploitation. runtime_status=not_run.",
+		}, properties
+	default:
+		properties = append(properties, Property{Name: "trident:reachability_claim", Value: item.Reason})
+		return Analysis{
+			State:  "in_triage",
+			Detail: "Bounded call graph could not decide reachability: " + item.Reason + ". runtime_status=not_run.",
+		}, properties
+	}
+}
+
+func vexKey(match sca.AdvisoryMatch) string {
+	return match.Module + "\x00" + match.Dependency + "\x00" + match.DeclaredVersion
+}
+
 func metadataProperties(report sca.Report, opts Options) []Property {
+	reachProperty := "unverified"
+	if len(opts.Reachability) > 0 {
+		reachProperty = "bounded_entry_call_graph"
+	}
 	properties := []Property{
 		{Name: "trident:snapshot_hash", Value: opts.SnapshotHash},
 		{Name: "trident:runtime_status", Value: "not_run"},
 		{Name: "trident:sca_resolution", Value: "declaration_only"},
 		{Name: "trident:artifact_hashes", Value: report.Coverage.ArtifactHashes},
 		{Name: "trident:transitive_tree", Value: "not_available"},
-		{Name: "trident:dependency_reachability", Value: "unverified"},
+		{Name: "trident:dependency_reachability", Value: reachProperty},
+		{Name: "trident:vex_basis", Value: reachProperty},
 		{Name: "trident:partial", Value: fmt.Sprintf("%t", opts.Partial || report.Partial)},
 	}
 	for _, limitation := range report.Limitations {

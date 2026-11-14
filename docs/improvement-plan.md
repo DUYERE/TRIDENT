@@ -27,8 +27,9 @@
 > 并通过 `go test ./internal/sarif` 验收，SARIF 已由 CI 上传 GitHub code scanning（run 43585400725）；
 > P2-1 CI 门禁已在真实 runner 验证：`offline` 与 `db-governance` job 全绿（run 43585245302、
 > 43585400725），故意红灯探针可复现失败（run 43585523523，revert 恢复），`release-artifacts` job
-> 已提供待打 tag 演练。
-> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六、续十七、续十八、续十九、续二十、续二十一。其余项仍为计划。
+> 已提供待打 tag 演练——tag `v0.2.0-p0.2` 已推送并全绿（run 43587721384，release-artifacts 产物
+> 成功）。P3 两项已实现：SARIF GitHub 映射与 CycloneDX VEX 分析状态（见上）。
+> 记录见 [开发进度](development-progress.md) 续十一至续二十二。其余项仍为计划。
 
 ## 1. 原则与约束
 
@@ -288,8 +289,13 @@
 
 ### P3 可选增强
 
-- CycloneDX VEX 导出（已知不可达/不受影响声明）。
-- SARIF 规则分类细化与 GitHub code scanning 规则映射。
+- **状态**：两项已实现并验收（2026-11-14，仓库公开后）：SARIF 规则分类细化与 GitHub code scanning
+  规则映射（已由 CI 上传）；CycloneDX VEX 分析状态（`sca sbom --package-map`，固定保守映射：
+  `unreachable`→`not_affected/code_not_reachable`、`reachable`/`unknown`→`in_triage`，见 sbom 契约 §9，
+  已通过 `go test ./internal/sbom` 与 `scripts/test-sbom.py` 官方 Schema 验收）。
+  其余项仍为计划。
+- CycloneDX VEX 导出（已知不可达/不受影响声明）——已实现。
+- SARIF 规则分类细化与 GitHub code scanning 规则映射——已实现。
 - 模型供应商扩展（Anthropic/Gemini 等）与工具并发；均需逐次授权与费用上限。
 - 硬件 VM 或等效系统调用隔离评估（替代 gVisor 用户态边界）。
 

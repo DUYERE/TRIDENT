@@ -12,6 +12,7 @@ import (
 
 	"trident/internal/project"
 	"trident/internal/r3"
+	"trident/internal/reach"
 	"trident/internal/sbom"
 	"trident/internal/sca"
 )
@@ -35,18 +36,22 @@ func runSCA(ctx context.Context, args []string, out io.Writer) error {
 	}
 	flags := flag.NewFlagSet("sca "+command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var snapshotDir, expectedHash, advisoryPath, mavenRepo, gradleUserHome, hashCatalog string
+	var snapshotDir, expectedHash, advisoryPath, mavenRepo, gradleUserHome, hashCatalog, packageMap string
 	flags.StringVar(&snapshotDir, "snapshot", "", "existing trusted snapshot directory")
 	flags.StringVar(&expectedHash, "snapshot-hash", "", "trusted SHA-256 returned by import; keep outside snapshot")
 	flags.StringVar(&advisoryPath, "advisories", "", "explicit local advisory JSON file; never read from the snapshot implicitly")
 	flags.StringVar(&mavenRepo, "maven-repo", "", "optional absolute local Maven repository used only to hash existing artifacts")
 	flags.StringVar(&gradleUserHome, "gradle-user-home", "", "optional absolute Gradle user home used only to hash cached artifacts")
 	flags.StringVar(&hashCatalog, "hash-catalog", "", "optional local JSON catalog of expected artifact SHA-256 values")
+	flags.StringVar(&packageMap, "package-map", "", "sbom only: optional JSON map from group:artifact to package prefixes; enables VEX reachability analysis")
 	if err := flags.Parse(args[1:]); err != nil {
 		return fmt.Errorf("invalid sca arguments: %w", err)
 	}
 	if flags.NArg() != 0 || snapshotDir == "" || expectedHash == "" {
 		return fmt.Errorf("sca %s requires --snapshot and --snapshot-hash and no positional arguments", command)
+	}
+	if packageMap != "" && command != "sbom" {
+		return fmt.Errorf("--package-map is only valid for sca sbom")
 	}
 	snapshot, err := project.Open(ctx, snapshotDir, expectedHash)
 	if err != nil {
@@ -66,7 +71,19 @@ func runSCA(ctx context.Context, args []string, out io.Writer) error {
 	if command == "tree" {
 		return json.NewEncoder(out).Encode(sca.Tree(report))
 	}
-	document, err := sbom.Build(report, sbom.Options{SnapshotHash: snapshot.Hash(), ToolVersion: sbom.ToolVersion, Partial: report.Partial})
+	// VEX declarations require caller-provided reachability evidence computed in
+	// this process; without a package map every candidate stays in_triage.
+	reachability := map[string]reach.Reachability{}
+	if packageMap != "" {
+		reachReport, err := reach.Inspect(ctx, snapshot, reach.Options{PackageMapPath: packageMap})
+		if err != nil {
+			return err
+		}
+		for _, item := range reachReport.Dependencies {
+			reachability[item.Module+"\x00"+item.Dependency+"\x00"+item.Version] = item
+		}
+	}
+	document, err := sbom.Build(report, sbom.Options{SnapshotHash: snapshot.Hash(), ToolVersion: sbom.ToolVersion, Partial: report.Partial, Reachability: reachability})
 	if err != nil {
 		return err
 	}

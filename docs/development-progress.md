@@ -1062,6 +1062,15 @@
 - 文档同步：`docs/deployment.md` §5 重写为三 job 实况（含红灯演练记录），§7 更新 CI 门槛现状；`docs/release-checklist.md` "CI 工作流模板"行改为"CI 门禁真实 runner 落地"并记录 run 结论，SARIF 行更新为已上传 code scanning；improvement-plan P2-1 状态块与头部块更新；版本串追加 `+ ci-offline-gate-live`。
 - 限制与 pending：`release-artifacts` 需要一次 `v*` tag push 演练（未执行）；code scanning 页面的告警呈现未人工复核；Java/Maven/Gradle、模型与运行时 CI job 仍需专用 runner 与密钥管理；本文档提交自身触发的 run 结论不回写文档（提交先于结论），后续以 Actions 页面为准。
 
+### 2026-11-14 续二十二：P2-1 tag 产物演练 + P3 CycloneDX VEX 分析状态
+
+- **tag 产物演练（P2-1 收尾）**：推送 tag `v0.2.0-p0.2`（与版本串一致）→ run 43587721384 全绿：`offline`、`db-governance`、`release-artifacts` 三个 job 全部 `success`——真实 runner 上产出 linux/windows amd64 二进制、CycloneDX SBOM、SARIF 与 SHA256 校验和 artifact；文档提交 run（43586028180）亦绿。
+- **P3 VEX**（`internal/sbom/sbom.go`、`cmd/trident/sca.go`）：`sca sbom` 新增 `--package-map`（仅 sbom 子命令，其余拒绝），提供时在本次进程内运行有界调用图并按固定保守映射生成 CycloneDX 1.5 VEX 声明：`unreachable` → `not_affected` + `code_not_reachable`（detail 写明有界边界：≤8 跳 import/type-ref 图，反射/动态分派/框架装配/外部配置不在声明范围）；`reachable` → `in_triage`（静态可达永不升级为 `exploitable`）；`unknown`/无输入 → `in_triage`（写明 reason）。每个 vulnerability 附 `trident:reachability`/`trident:reachability_tool=not_run`/`trident:reachability_claim` 属性；`metadata` 新增 `trident:vex_basis`。输出保持确定性（无时间戳）。
+- 测试：`internal/sbom/sbom_test.go` 新增三态映射、边界文案、metadata、无 map 基线不变与确定性断言；`scripts/test-sbom.py` 新增 [04]（真实 CLI + `--package-map` → `not_affected/code_not_reachable`、官方 CycloneDX 1.5 Schema 校验、两次字节一致、flag 误用拒绝）。CLI 实测：java-maven fixture 的 commons-text 无 import → `unreachable/no_path_from_module_entrypoints` → `not_affected/code_not_reachable`。
+- 契约：`docs/sbom-contract.md` 新增 §9 VEX 分析状态（映射表、声明边界、确定性、验收）。
+- 验收：`go test ./internal/sbom ./cmd/trident -count=1` 与 `python scripts/test-sbom.py`（5 项）通过。
+- 限制与 pending：`not_affected` 是最小可信形态（有界图负判定），不证明类加载/运行时利用/供应链完整性；下游应结合 `detail` 与 `trident:reachability_claim` 解读；code scanning 页面告警呈现仍未人工复核。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

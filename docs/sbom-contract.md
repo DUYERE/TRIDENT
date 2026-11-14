@@ -33,7 +33,6 @@ Web 控制台 `GET /api/sbom` 返回同一文档，`Content-Disposition` 为 `tr
 | component properties | `trident:module`、`trident:declaration_pom`、`trident:version_status`、`trident:runtime_status=not_run` |
 | `dependencies[]` | 根引用指向全部组件；每个组件声明为空依赖节点；不展开传递关系 |
 | `vulnerabilities[]` | 仅 `finding_status=candidate` 的公告匹配；`source.name=TRIDENT local advisory catalog`、`analysis.state=in_triage`、`ratings[].severity=unknown`、`affects[].ref` 指向对应组件 |
-
 `in_triage` 明确表示尚未完成运行时/可达性分析；`unknown` 不是严重度结论，`affects` 不是可利用性证明。
 
 ## 4. 限制
@@ -68,3 +67,18 @@ Web 控制台 `GET /api/sbom` 返回同一文档，`Content-Disposition` 为 `tr
 - `sca sbom` 复用 `sca inspect` 的 `--maven-repo`/`--gradle-user-home`/`--hash-catalog`；SBOM 只写 `status=observed` 且来源为本地仓库的 SHA-256，不写 `caller_catalog` 或 `mismatch` 记录。
 - `metadata.properties` 增加 `trident:artifact_hashes`；未配置仓库时为 `unavailable`，部分命中或 mismatch 为 `partial`，并沿用 `artifact_hash_local_only`、`artifact_signature_not_verified` 限制。
 - 验收：`scripts/test-artifact-hash.py` 断言 commons-text 组件含 jar/pom 两个 SHA-256 且与实际 fixture 字节一致；官方 Schema 校验由 `scripts/test-sbom.py` 保持通过。
+
+## 9. 2026-11-14 扩展：VEX 分析状态（P3）
+
+`sca sbom` 新增 `--package-map <file>`（仅 sbom 子命令有效，其余子命令拒绝）。提供时在本次进程内运行 `audit reachability` 的有界调用图，并按以下**固定保守映射**把每个公告候选的 `analysis` 升级为 VEX 声明；不提供时行为与 §3 完全一致（全部 `in_triage`）。
+
+| reachability | `analysis.state` | `analysis.justification` | 说明 |
+|---|---|---|---|
+| `unreachable` | `not_affected` | `code_not_reachable` | 有界 import/type-ref 图（≤8 跳）内无任何入口路径；detail 写明反射/动态分派/框架装配/外部配置不在声明范围内 |
+| `reachable` | `in_triage` | （无） | 静态可达**永不**升级为 `exploitable`；detail 写明路径数与运行时未验证 |
+| `unknown`（反射/缺映射/超限/无入口/版本未解析） | `in_triage` | （无） | detail 写明具体 `reason` |
+
+- 证据属性：每个 vulnerability 附 `trident:reachability=<status>`、`trident:reachability_tool=not_run`、`trident:reachability_claim=<reason>`；`metadata.properties` 增加 `trident:vex_basis`（提供 map 时 `bounded_entry_call_graph`，否则 `unverified`）。
+- **声明边界**：`not_affected` 只表达"本快照有界图中不可达"，不证明类加载、运行时利用或供应链完整性；`runtime_status=not_run` 永不改变。这是 VEX 声明的最小可信形态，下游消费者应结合 detail 与 `trident:reachability_claim` 解读。
+- 确定性：同一快照 + 同一 package-map + 同一公告目录 → 字节一致（无时间戳）。
+- 验收：`go test ./internal/sbom`（三态映射与边界文案）与 `scripts/test-sbom.py` [04]（官方 Schema 校验 `not_affected/code_not_reachable`、确定性、flag 仅限 sbom 子命令）。

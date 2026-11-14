@@ -108,6 +108,35 @@ def main():
         validator.validate(no_catalog)
         require(not no_catalog.get("vulnerabilities"), "unexpected advisory match without a catalog")
 
+        # VEX analysis: with a caller-provided package map the bounded call graph
+        # finds no import of commons-text, so the candidate is declared
+        # not_affected / code_not_reachable with the boundary spelled out.
+        package_map = parent / "package-map.json"
+        package_map.write_text(json.dumps({"schema_version": 1, "dependencies": {
+            "org.apache.commons:commons-text": ["org.apache.commons.commons-text"]}}), encoding="utf-8")
+        vex_first = run("sca", "sbom", *common, "--advisories", str(ADVISORY), "--package-map", str(package_map))
+        vex_second = run("sca", "sbom", *common, "--advisories", str(ADVISORY), "--package-map", str(package_map))
+        require(vex_first == vex_second, "VEX SBOM output is not deterministic")
+        vex = json.loads(vex_first)
+        validator.validate(vex)
+        vex_props = {item["name"]: item["value"] for item in vex["vulnerabilities"][0]["properties"]}
+        meta_props = {item["name"]: item["value"] for item in vex["metadata"]["properties"]}
+        require(vex["vulnerabilities"][0]["analysis"]["state"] == "not_affected"
+                and vex["vulnerabilities"][0]["analysis"]["justification"] == "code_not_reachable",
+                f"VEX analysis mismatch: {vex['vulnerabilities'][0]['analysis']}")
+        require("not_run" in vex["vulnerabilities"][0]["analysis"]["detail"], "VEX detail must keep runtime_status=not_run")
+        require(vex_props.get("trident:reachability") == "unreachable"
+                and vex_props.get("trident:runtime_status") == "not_run",
+                f"VEX reachability properties: {vex_props}")
+        require(meta_props.get("trident:vex_basis") == "bounded_entry_call_graph"
+                and meta_props.get("trident:runtime_status") == "not_run",
+                f"VEX metadata basis: {meta_props}")
+
+        # --package-map is a sbom-only flag.
+        misuse = subprocess.run([str(binary), "sca", "inspect", *common, "--package-map", str(package_map)],
+                                cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", timeout=60)
+        require(misuse.returncode != 0, "--package-map accepted outside sca sbom")
+
         result = subprocess.run([str(binary), "sca", "sbom", "--snapshot", str(snapshot),
                                  "--snapshot-hash", "0" * 64], cwd=ROOT, env=env,
                                 capture_output=True, text=True, encoding="utf-8", timeout=60)
@@ -118,7 +147,8 @@ def main():
         print("[01] deterministic CycloneDX 1.5 document: PASS")
         print("[02] official schema validation: PASS")
         print("[03] declaration-only and runtime_status=not_run claims: PASS")
-        print("[04] snapshot and fixture are byte-identical; no Maven/Java/model/database execution: PASS")
+        print("[04] VEX not_affected/code_not_reachable from bounded call graph with deterministic output: PASS")
+        print("[05] snapshot and fixture are byte-identical; no Maven/Java/model/database execution: PASS")
         print("TRIDENT SBOM acceptance passed.")
 
 

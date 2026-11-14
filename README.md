@@ -118,6 +118,8 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit findings --snapshot "$T
 
 `audit reachability` 在类级 import/同包类型引用图上从入口做有界 BFS（深度/节点/边/路径上限），并用调用者显式提供的 `--package-map`（`group:artifact` → 包前缀）映射声明依赖。分类为 `reachable` / `unreachable` / `unknown`：`reachable` 附入口→中间类→依赖的路径证据（文件 SHA-256 + 行号）；`unreachable` 仅表示本快照有界图中无路径；缺少映射、模块无入口、版本未解析、反射或超限均为 `unknown`。**三条路径都不证明类加载或运行时利用**，`runtime_status` 保持 `not_run`。
 
+`sca sbom --package-map` 在同一进程内复用该有界调用图，为公告候选生成 CycloneDX 1.5 VEX 分析声明（固定保守映射）：`unreachable` → `not_affected` + `code_not_reachable`（detail 写明反射/动态分派/框架装配边界），`reachable` 与 `unknown` → `in_triage`（静态可达永不升级为 `exploitable`）。输出确定性、无时间戳；声明边界见 [SBOM 契约 §9](docs/sbom-contract.md)。
+
 ```bash
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit sarif --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH"
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit reachability --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" --package-map '/path/to/package-map.json'
