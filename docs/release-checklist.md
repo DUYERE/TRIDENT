@@ -87,6 +87,7 @@ python scripts/benchmark.py 3
 | Gradle 有效依赖树（离线） | `python scripts/test-gradle-resolve.py` | 通过（Gradle 8.14.3：3 模块/5 依赖/2 传递；需 `TRIDENT_GRADLE` 或 PATH，离线缓存 POM 缺失时 skip） |
 | 依赖升级验证 | `python scripts/test-upgrade.py` | 通过：commons-text 1.9→1.10.0，基线测试与升级后测试均通过，快照完整；Gradle 声明仅生成补丁 |
 | 权限/越权控制清单 | `python scripts/test-authz.py` | 通过：5 个控制/11 个入口，6 protected、2 public、2 unprotected、1 unknown；2 条 CWE-306 `inconclusive` finding |
+| 运行时 HTTP 验证自动化 | `python scripts/test-runtime.py` + 真实 Tomcat/MySQL | 通过：loopback 4/4；真实环境 15/15（登录页 200、未登录 302、登录后 200、跨会话 302、错误密码不建会话），`runtime_status=observed` |
 
 ## 5. 版本兼容与已知边界
 
@@ -95,6 +96,7 @@ python scripts/benchmark.py 3
 - 公告区间是调用者声明判据，不是 Maven 版本语义的完整实现；`import_reachable` 不是调用可达性。
 - Gradle 有效树优先 `runtimeClasspath`、其次 `compileClasspath`，含 `*RuntimeClasspath`/`*CompileClasspath` 后缀回退；不解释 Android variant、version catalog、BOM/platform 或插件脚本副作用。
 - 静态 finding 的 `runtime_status` 恒为 `not_run`；R3 的 `runtime_status=isolated_validation_only`。
+- `runtime http` 的 `runtime_status=observed` 只覆盖调用者声明的请求与断言，不是漏洞利用或生产安全证明，也不自动回写 finding。
 - gVisor 需要 Docker 注册 `runsc`；Docker 不是硬件 VM。
 
 ## 6. 发布门槛

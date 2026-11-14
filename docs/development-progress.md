@@ -15,7 +15,7 @@
 | R2 只读 Web 分析控制台 | 已实现并完成本地验收；单快照、loopback、令牌鉴权、只读 JSON API 与嵌入前端；不改变分析语义，不提供 Agent 控制 API | `web-console-contract.md`、`internal/webui/`、`cmd/trident/web.go` |
 | R2 Agent 分析工具 | 已实现并完成本地验收与真实模型/真实项目使用；5 个分析工具、分析缓存、Run 公告配置、实际读取行引用与证据账本桥接 | `agent-contract.md`、`internal/tools/analysis.go`、`internal/agent/` |
 | R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射；无传递树/制品哈希/可达性 | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
-| R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/maven-compile/maven-test/javac/JUnit、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；支持新文件/BOM/多文件补丁；真实 Java/Maven/JUnit、真实模型合成补丁、真实项目编译级补丁与集中式访问控制运行时单测已验收；真实 Tomcat/MySQL HTTP 权限测试已完成；硬件 VM 与生产验证未实现 | `patch-contract.md`、`internal/r3/`、`cmd/trident/patch.go`、`docs/evidence/2026-11-14-market-access-control.patch` |
+| R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/maven-compile/maven-test/javac/JUnit、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；支持新文件/BOM/多文件补丁；真实 Java/Maven/JUnit、真实模型合成补丁、真实项目编译级补丁、集中式访问控制运行时单测与真实 Tomcat/MySQL HTTP 权限测试已完成；运行时 HTTP 验证执行器已实现（显式 origin、cookie session、有界断言）；硬件 VM 与生产验证未实现 | `patch-contract.md`、`runtime-contract.md`、`internal/r3/`、`internal/httpverify/`、`cmd/trident/patch.go`、`cmd/trident/runtime.go`、`docs/evidence/2026-11-14-market-access-control.patch` |
 
 ## 2026-11-12：已完成快照切片（上轮基线）
 
@@ -930,6 +930,14 @@
 - 集成：`audit findings` 新增 `authz_controls`/`authz_unprotected`/`authz_findings`、`missing_authentication_or_authorization` kind、`route`/`method`/`control_absence` 证据与 `authz_*` limitations；Web 控制台新增“认证/授权缺失”分类。
 - 新增 `tests/fixtures/java-authz`、`go test ./internal/authz` 与 `python scripts/test-authz.py`：5 个控制、11 个入口，6 protected/2 public/2 unprotected/1 unknown；2 条 finding 均为 `inconclusive`、CWE-306、`runtime_status=not_run`，快照与 fixture 字节级不变。
 - 限制：不评估 Spring EL、filter-chain 全局顺序、自定义 AOP/网关、context-path、部署配置；`unprotected` 不是未授权访问证明。
+
+### 2026-11-14 续八：运行时 HTTP 验证自动化
+
+- 新增 `internal/httpverify` 与 `trident runtime http`：按调用者 JSON 计划顺序执行请求，支持每 session 内存 cookie、状态码、`Location` 前缀、响应体包含/不包含与响应头包含；不跟随重定向、不并发、不使用代理、默认 TLS 校验。
+- 安全边界：必须是显式 `--approve-target` 的精确 origin；loopback 还需 `--allow-loopback`；单计划最多 64 请求/1 MiB，单响应最多 64 KiB；`form`/`json`/header 值不写入报告，`location` 只保留路径。
+- 输出：`analysis_kind=http_runtime_assertions_v1`、`runtime_status=observed`、逐请求断言与 `coverage`；截断体的“不包含”断言为 `inconclusive`。运行时结果不自动修改静态 finding 的 `runtime_status`。
+- 新增 `python scripts/test-runtime.py`：loopback 服务 4 条请求全部通过，覆盖 session 复用、302 不跟随、凭据不落报告、错误断言失败、未批准 origin 与未授权 loopback 拒绝。
+- 真实环境复测：Tomcat 9.0.106 + MySQL 8.0.46 部署 `D:\Code\Java\market` 补丁，15 条请求覆盖登录页、未登录 302、管理员/员工登录后 200、跨会话 302 与错误密码不建立会话，结果 `status=passed`、15/15、`runtime_status=observed`。该结果只证明这些请求的响应，不证明其他漏洞或生产安全。
 
 ## 维护规则
 

@@ -6,3 +6,5 @@ runs/
 secrets/
 
 tests/fixtures/**/target/
+
+logs/

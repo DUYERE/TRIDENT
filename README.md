@@ -182,6 +182,10 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident patch verify \
 
 报告以 `validation_passed`/`validation_failed`/`patch_failed` 等状态区分结果，`runtime_status=isolated_validation_only`，不把隔离副本结果升级为生产可利用性或修复上线证明。契约见 [R3 补丁契约](docs/patch-contract.md)；真实 Java/Maven 验收为 `python scripts/test-patch.py`，AI 补丁 + Docker 验收为 `python scripts/test-patch-ai.py`。
 
+### 运行时 HTTP 验证（显式目标授权）
+
+`trident runtime http --plan <plan.json> --approve-target <origin> [--allow-loopback]` 按调用者提供的请求计划顺序执行 HTTP 断言，支持每个 session 的 cookie 复用、状态码、`Location` 前缀、响应体包含/不包含与响应头包含。默认不跟随重定向、不并发、不使用代理、响应体上限 64 KiB；`form`/`json`/`header` 值不会写入报告。只有显式 `--approve-target` 的 origin 会被访问，loopback 还需 `--allow-loopback`。输出 `runtime_status=observed`，但只证明这些请求的实际响应，不构成漏洞利用、数据泄露或授权绕过的完整证明，也不自动修改静态 finding 的 `runtime_status`。契约见 [运行时验证契约](docs/runtime-contract.md)；本机验收为 `python scripts/test-runtime.py`。
+
 ## 已实现的历史基础（P0.1 / P0.2）
 
 - Go + PostgreSQL，显式、按文件校验和验证的前向迁移；普通启动不建库、不自动迁移。
@@ -238,6 +242,18 @@ python 'E:/pentest agent/TRIDENT/scripts/test-patch.py'
 # [02i] AI 补丁生成 + process/Docker 沙箱验证；loopback 模型，不调用真实 LLM。
 python 'E:/pentest agent/TRIDENT/scripts/test-patch-ai.py'
 
+# [02j] 权限/越权控制清单；不执行 Java/模型。
+python 'E:/pentest agent/TRIDENT/scripts/test-authz.py'
+
+# [02k] 依赖升级验证；离线 Maven 基线与升级后测试。
+python 'E:/pentest agent/TRIDENT/scripts/test-upgrade.py'
+
+# [02l] Gradle 有效依赖树；需 TRIDENT_GRADLE 或 PATH 中的 Gradle。
+python 'E:/pentest agent/TRIDENT/scripts/test-gradle-resolve.py'
+
+# [02m] 运行时 HTTP 验证；loopback 服务、不访问外部网络。
+python 'E:/pentest agent/TRIDENT/scripts/test-runtime.py'
+
 # [03] 显式迁移、真实数据库测试、离线演示、只读迁移检查。
 python 'E:/pentest agent/TRIDENT/scripts/test-local.py'
 
@@ -262,15 +278,16 @@ docker compose --project-directory 'E:/pentest agent/TRIDENT' -f 'E:/pentest age
 
 | 路径 | 内容 |
 |---|---|
-| `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`dataflow.go`、`findings.go`、`reach.go`、`web.go`、`patch.go`、`agent.go` | version / project / sca / audit / web / patch / agent / migrate / check / bootstrap / demo-offline |
+| `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`dataflow.go`、`findings.go`、`reach.go`、`web.go`、`patch.go`、`runtime.go`、`agent.go` | version / project / sca / audit / web / patch / runtime / agent / migrate / check / bootstrap / demo-offline |
 | `internal/sca/` | 离线 Maven/Gradle 声明解析、属性/父 POM/依赖管理、公告精确/区间/别名匹配与模块树；Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准） |
 | `internal/audit/`、`internal/authz/`、`internal/dataflow/` | Spring MVC/JAX-RS/Servlet 注解级入口清单；权限/越权控制清单；10 类 Source/Sink 有界数据流 |
+| `internal/httpverify/` | 显式 origin 授权的运行时 HTTP 断言、cookie session 与有界证据 |
 | `internal/findings/`、`internal/sarif/`、`internal/reach/` | 统一 finding/假设/证据模型；SARIF 2.1.0；有界 import 可达性 |
 | `internal/webui/` | 只读 Web 控制台：令牌鉴权、JSON API、嵌入的暗色前端资源 |
 | `internal/sbom/` | 确定性 CycloneDX 1.5 序列化与 metadata/component/vulnerability 映射 |
 | `internal/r3/` | 快照工作区复制、统一 diff 应用、策略约束、离线 Maven/javac/JUnit（XML/JaCoCo）验证、质量评分、多轮修复与 Docker/gVisor |
-| `docs/sca-contract.md`、`docs/audit-contract.md`、`docs/dataflow-contract.md`、`docs/findings-contract.md`、`docs/web-console-contract.md`、`docs/sbom-contract.md`、`docs/patch-contract.md`、`docs/release-checklist.md` | SCA、入口清单、数据流、证据模型、Web、SBOM、R3 与发布检查表 |
-| `scripts/test-sca.py`、`test-audit.py`、`test-authz.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-intel.py`、`test-upgrade.py`、`test-patch.py`、`benchmark.py` | 真实 CLI 与官方 Schema/真实 Java/Maven 验收和可复现基准 |
+| `docs/sca-contract.md`、`docs/audit-contract.md`、`docs/dataflow-contract.md`、`docs/findings-contract.md`、`docs/web-console-contract.md`、`docs/sbom-contract.md`、`docs/patch-contract.md`、`docs/runtime-contract.md`、`docs/release-checklist.md` | SCA、入口清单、数据流、证据模型、Web、SBOM、R3、运行时验证与发布检查表 |
+| `scripts/test-sca.py`、`test-audit.py`、`test-authz.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-intel.py`、`test-upgrade.py`、`test-runtime.py`、`test-patch.py`、`benchmark.py` | 真实 CLI 与官方 Schema/真实 Java/Maven/运行时验收和可复现基准 |
 | `internal/agent/`、`internal/tools/` | 只读主循环、受控工具与检查点/证据 |
 | `internal/model/openai/` | 官方 Go SDK Chat Completions 薄适配，无隐式外发 |
 | `internal/store/agent_runs*.go` | Run 所有者权限、CAS、预算与恢复 |
