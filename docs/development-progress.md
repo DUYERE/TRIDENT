@@ -1050,6 +1050,18 @@
 - 验收：`go test ./internal/sarif -count=1` 通过。
 - 限制与 pending：真实 GitHub code scanning 上传验收需 push/仓库授权（与 P2-1 同因 pending）；VEX 导出未做（`not_affected` 声明语义的证据门槛需产品决策，见续二十一前确认）。
 
+### 2026-11-14 续二十一：P2-1 CI 门禁真实 runner 落地（仓库公开后授权 push）
+
+- 前置尽职检查：仓库设为 public 后，对当前树与全部 24 个提交做凭据扫描（DSN/AWS/GitHub/OpenAI/Slack key 与弱信号 password/secret/api_key 赋值）；唯一命中为两处测试占位 DSN（`test:test@127.0.0.1:1`、`user:secret-password@example.invalid`）与两处 Go 测试占位 key（`test-explicit-key`、换行拒绝用例），无真实凭据。
+- push 授权后推送全部本地提交（`0c489df..6e18c81`）。baseline run 43585245302（HEAD `6e18c81`）`completed success`——首次真实 runner 全绿记录。
+- `.github/workflows/ci.yml` 扩展（commit `d6826da`，run 43585400725 全绿）：
+  - `offline` job 增加 SARIF 上传 code scanning（`github/codeql-action/upload-sarif@v3`，job 级 `security-events: write`，顶层保持 `contents: read`）。
+  - 新增 `db-governance` job：真实 runner 上运行 `scripts/test-db-governance.py`（脚本自管一次性 digest 固定的 PostgreSQL 18 容器，runner 自带 docker），`success`。
+  - 新增 `release-artifacts` job：`v*` tag push 触发，构建 linux/windows amd64 二进制（`-trimpath -ldflags "-s -w"`）、固定 fixture 生成 SBOM + SARIF、SHA256 校验和、上传 artifact；不创建 GitHub Release，保持最小权限。本次 run 按条件 skipped（非 tag push），tag 构建尚未演练。
+- 红灯可复现演练（P2-1 验收标准）：提交故意失败探针 `e1119d3`（`internal/webui/redprobe_test.go` 的 `t.Fatal`）→ run 43585523523 `completed failure`，失败步骤为 `offline -> Go tests and vet`，证明门禁失败关闭；`git revert` 为 `97a04e7` → run 43585811775 恢复。
+- 文档同步：`docs/deployment.md` §5 重写为三 job 实况（含红灯演练记录），§7 更新 CI 门槛现状；`docs/release-checklist.md` "CI 工作流模板"行改为"CI 门禁真实 runner 落地"并记录 run 结论，SARIF 行更新为已上传 code scanning；improvement-plan P2-1 状态块与头部块更新；版本串追加 `+ ci-offline-gate-live`。
+- 限制与 pending：`release-artifacts` 需要一次 `v*` tag push 演练（未执行）；code scanning 页面的告警呈现未人工复核；Java/Maven/Gradle、模型与运行时 CI job 仍需专用 runner 与密钥管理；本文档提交自身触发的 run 结论不回写文档（提交先于结论），后续以 Actions 页面为准。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

@@ -24,8 +24,11 @@
 > `go test ./internal/webui` 与 `scripts/test-web.py` 验收，生产备份演练/RTO-RPO 与真实监控系统
 > 联调仍待真实生产设施；P3 可选增强中的 SARIF 规则分类细化与 GitHub code scanning 规则映射已实现
 > （`security-severity`/`precision`/`tags`/确定性 `partialFingerprints`，见 findings 契约 2026-11-14 扩展）
-> 并通过 `go test ./internal/sarif` 验收，真实 GitHub 上传验收仍需 push 授权。
-> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六、续十七、续十八、续十九、续二十。其余项仍为计划。
+> 并通过 `go test ./internal/sarif` 验收，SARIF 已由 CI 上传 GitHub code scanning（run 43585400725）；
+> P2-1 CI 门禁已在真实 runner 验证：`offline` 与 `db-governance` job 全绿（run 43585245302、
+> 43585400725），故意红灯探针可复现失败（run 43585523523，revert 恢复），`release-artifacts` job
+> 已提供待打 tag 演练。
+> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五、续十六、续十七、续十八、续十九、续二十、续二十一。其余项仍为计划。
 
 ## 1. 原则与约束
 
@@ -235,6 +238,11 @@
 
 ### P2-1 CI 与发布流水线落地
 
+- **状态**：核心已实现并在真实 GitHub runner 验证（2026-11-14，仓库已公开）。`offline` job（Go 测试
+  + 10 个离线 CLI 验收 + SARIF 生成并上传 code scanning）与 `db-governance` job（一次性 PostgreSQL 18
+  容器演练）run 43585245302、43585400725 全绿；故意红灯探针 `e1119d3` 使 `Go tests and vet` 失败
+  （run 43585523523），revert 后恢复，门禁可证失败关闭。`release-artifacts` job 已提供（`v*` tag 触发）
+  但尚未打 tag 演练；Java/Maven/Gradle、模型与运行时 job 仍需专用 runner 与密钥管理。
 - **目标**：把模板变成可观测的真实门禁。
 - **实现要点**：
   - 确认 GitHub Actions 首次运行结果；增加 PostgreSQL service job（`test-db-governance.py`）与
@@ -242,8 +250,9 @@
   - SARIF 上传与 code scanning 集成；失败时保留日志 artifact。
   - 增加 release tag 触发的构建产物（二进制 + SBOM + SARIF）与校验和。
 - **验收标准**：
-  - 至少一次真实 runner 全绿记录；失败路径（故意改坏测试）可复现红灯。
-  - 更新 `docs/release-checklist.md`、`docs/deployment.md`。
+  - 至少一次真实 runner 全绿记录（已满足：run 43585245302、43585400725）；失败路径（故意改坏测试）
+    可复现红灯（已满足：run 43585523523）。
+  - 更新 `docs/release-checklist.md`、`docs/deployment.md`（已完成）。
 - **非目标**：不把模型/真实项目外发放进公共 CI。
 
 ### P2-2 Web 控制台与多用户

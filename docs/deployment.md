@@ -140,9 +140,13 @@ TRIDENT_DATABASE_URL="$TRIDENT_RESTORE_URL" ./trident check
 
 ## 5. CI 与 SARIF
 
-- 工作流模板：[`.github/workflows/ci.yml`](../.github/workflows/ci.yml)。它在 Ubuntu 上运行 Go 测试、离线 CLI 验收，并上传 `trident.sarif` 构建产物。
-- 本地等价检查：`powershell -File scripts/verify-offline.ps1`（需要 Python 3.12+ 与 `jsonschema`）。
-- CI 不调用模型、不访问数据库、不执行 Java/Maven/Gradle 构建；这些需要独立授权与专用 runner。
+- 工作流：[`.github/workflows/ci.yml`](../.github/workflows/ci.yml)，三个 job（2026-11-14 起在真实 GitHub runner 验证）：
+  - `offline`：Go 测试/vet + 10 个离线 CLI 验收脚本 + 构建 CLI + 生成 SARIF；SARIF 上传为 code scanning（`github/codeql-action/upload-sarif@v3`，需 `security-events: write`）并保留 artifact。
+  - `db-governance`：`scripts/test-db-governance.py` 在一次性 digest 固定的 PostgreSQL 18 容器中演练最小权限与迁移/运行分离（runner 自带 docker，脚本自管容器生命周期）。
+  - `release-artifacts`：仅 `v*` tag push 触发；构建 linux/windows amd64 二进制（`-trimpath`）、从固定 fixture 生成 SBOM 与 SARIF、SHA256 校验和，上传 artifact（不创建 GitHub Release，保持 `contents: read`）。
+- 本地等价检查：`powershell -File scripts/verify-offline.ps1`（需要 Python 3.12+ 与 `jsonschema`；本地比 CI 多 4 个脚本）。
+- CI 不调用模型、不执行 Java/Maven/Gradle 构建；db-governance 只触碰自身启动的一次性容器。
+- 失败路径已在真实 runner 复现：故意失败探针提交（`e1119d3`）使 `Go tests and vet` 红灯（run 43585523523），随后 revert 恢复；门禁可证失败关闭。
 - SARIF 只包含静态 finding，`runtime_status` 仍为 `not_run`；不要用它声明运行时验证通过。
 
 ## 6. 版本矩阵（已测试）
@@ -163,6 +167,6 @@ TRIDENT_DATABASE_URL="$TRIDENT_RESTORE_URL" ./trident check
 - 硬件 VM 或等效隔离；当前 Docker/gVisor 不是硬件边界。
 - 本地容器分权与恢复演练已通过，但未在独立生产环境执行和审计。
 - 完整 Java AST/调用图/跨方法污点、制品哈希与依赖到入口调用可达性。
-- CI 中的 Java/Maven/Gradle、模型与运行时 job 需要专用 runner、授权和密钥管理。
+- CI 中的 Java/Maven/Gradle、模型与运行时 job 需要专用 runner、授权和密钥管理（DB 治理 job 已落地；SARIF 已接 code scanning）。
 - 监控告警、生产级备份恢复（数据量/时限/异地）与容量/成本报告。
 - TLS 反向代理示例未经真实域名/证书联调（命令结构与安全要求已在契约固化）；OIDC 仅预留 `role` 接口。
