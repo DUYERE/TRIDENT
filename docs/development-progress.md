@@ -996,6 +996,15 @@
 - 真实环境 15 条 Tomcat/MySQL 计划未纳入仓库，本次变更未重跑；该结果仅覆盖当时的声明请求，不是生产安全证明。
 - 限制：不渲染浏览器、不自动发现账号或密码、不绕过验证码；token 仅来自登录响应 HTML 的显式选择器，不做 JS 计算或多次刷新；`runtime_status=observed` 不回写静态 finding。
 
+### 2026-11-14 续十五：P1-2 静态—运行时关联报告
+
+- 新增 `internal/correlate`（`0.2.0-p1.2+r1-static-runtime-correlation-v1`）与 `trident runtime correlate --findings <json> --runtime <json> --out <file>`：读取 `audit findings` 与 `runtime http` 两份 JSON，生成独立的 `static_runtime_correlation_v1` 报告；不读快照、不联网、不调用模型。
+- 关联语义：仅按静态 `endpoint.path` + `http_methods` 精确对照运行时 `results[].path/method`，输出 `correlated`（恰好 1 条）、`ambiguous`（≥2 条，典型为角色矩阵）与 `not_correlated`（0 条）；无 endpoint 的 finding 记为 `not_correlated` + `finding_has_no_endpoint`，未命中的运行时结果列入 `unmatched_runtime[]`；未声明方法按不受限处理并附 wildcard limitation。
+- 报告输出 `findings_source`/`runtime_source`（路径 + SHA-256）、逐 finding 的静态 route/method 证据 ID 与运行时 `id/observed_status/location/body_sha256/role/matrix`、三态覆盖与未命中列表；固定限制 `correlation_not_exploit_proof`、`runtime_observed_not_exploit_proof`、`route_method_exact_match`、`static_findings_not_modified`。`correlated` 不证明参数可控、控制缺失或可利用。
+- 输入只读：不修改 findings/runtime JSON 字节，不改变 finding 的 `status`/`runtime_status`；输出必须为新文件且不得覆盖任一输入；未观测运行时（`runtime_status!=observed` 或空结果）、重复 finding ID、缺失 `id/method/path`、非 `/` 路径均失败关闭。
+- 验收：`go test ./internal/correlate` 通过（三态、无端点、未命中运行时结果、wildcard、拒绝条件、确定性）；`python scripts/test-runtime.py` 通过（`/dologin` 唯一匹配、`/admin` 歧义、`/missing` 无匹配、依赖 finding 无 endpoint；原 findings 字节不变；两次关联输出字节一致；覆盖输入/缺失输入/未观测运行时失败关闭）。
+- 限制：路径按注解级字面量比较，不解析 context path、部署前缀、路径变量或归一化；不自动定级、不生成利用链、不替代人工复核。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。

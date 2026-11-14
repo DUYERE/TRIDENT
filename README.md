@@ -194,7 +194,9 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident patch verify \
 
 ### 运行时 HTTP 验证（显式目标授权）
 
-`trident runtime http --plan <plan.json> --approve-target <origin> [--allow-loopback]` 按调用者提供的请求计划顺序执行 HTTP 断言，支持每个 session 的 cookie 复用、状态码、`Location` 前缀、响应体包含/不包含与响应头包含。可选 `roles` 声明多角色登录步骤（凭据用 `${ENV:NAME}` 占位符，不写入计划）与 CSRF token 来源（`meta[name=...]`/`input[name=...]`，注入表单字段或请求头）；`matrix` 按角色 × 请求 × 期望执行并聚合每角色覆盖。默认不跟随重定向、不并发、不使用代理、响应体上限 64 KiB；`form`/`json`/`header` 值、解析后的凭据与 token 不会写入报告。只有显式 `--approve-target` 的 origin 会被访问，loopback 还需 `--allow-loopback`。输出 `runtime_status=observed`，但只证明这些请求的实际响应，不构成漏洞利用、数据泄露或授权绕过的完整证明，也不自动修改静态 finding 的 `runtime_status`。契约见 [运行时验证契约](docs/runtime-contract.md)；本机验收为 `python scripts/test-runtime.py`。
+`trident runtime http --plan <plan.json> --approve-target <origin> [--allow-loopback]` 按调用者提供的请求计划顺序执行 HTTP 断言，支持每个 session 的 cookie 复用、状态码、`Location` 前缀、响应体包含/不包含与响应头包含。可选 `roles` 声明多角色登录步骤（凭据用 `${ENV:NAME}` 占位符，不写入计划）与 CSRF token 来源（`meta[name=...]`/`input[name=...]`，注入表单字段或请求头）；`matrix` 按角色 × 请求 × 期望执行并聚合每角色覆盖。默认不跟随重定向、不并发、不使用代理、响应体上限 64 KiB；`form`/`json`/`header` 值、解析后的凭据与 token 不会写入报告。只有显式 `--approve-target` 的 origin 会被访问，loopback 还需 `--allow-loopback`。输出 `runtime_status=observed`，但只证明这些请求的实际响应，不构成漏洞利用、数据泄露或授权绕过的完整证明，也不自动修改静态 finding 的 `runtime_status`。
+
+`trident runtime correlate --findings <findings.json> --runtime <runtime.json> --out <correlation.json>` 把 `audit findings` 与 `runtime http` 两份报告按 `endpoint.path` + `http_methods` 对照 `results[].path/method`，输出 `correlated`（恰好一条匹配）、`ambiguous`（多条，典型为角色矩阵）与 `not_correlated`（无匹配，含无 endpoint 的依赖 finding），并附两侧证据引用与未命中运行时结果。两份输入只读，输出必须是新文件且不得覆盖输入；报告固定 `runtime_status=observed` 与 `correlation_not_exploit_proof` 限制——关联只表示该路由存在观测响应，不证明参数可控、控制缺失或可利用。契约见 [运行时验证契约](docs/runtime-contract.md)；本机验收为 `go test ./internal/correlate` 与 `python scripts/test-runtime.py`。
 
 ### 发布、CI 与部署
 
@@ -298,7 +300,8 @@ docker compose --project-directory 'E:/pentest agent/TRIDENT' -f 'E:/pentest age
 | `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`dataflow.go`、`findings.go`、`reach.go`、`java_model.go`、`web.go`、`patch.go`、`runtime.go`、`agent.go` | version / project / sca / audit / web / patch / runtime / agent / migrate / check / bootstrap / demo-offline |
 | `internal/sca/` | 离线 Maven/Gradle 声明解析、属性/父 POM/依赖管理、公告精确/区间/别名匹配与模块树；Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准） |
 | `internal/audit/`、`internal/authz/`、`internal/dataflow/` | Spring MVC/JAX-RS/Servlet 注解级入口清单；权限/越权控制清单；10 类 Source/Sink 有界数据流 |
-| `internal/httpverify/` | 显式 origin 授权的运行时 HTTP 断言、cookie session 与有界证据 |
+| `internal/httpverify/` | 显式 origin 授权的运行时 HTTP 断言、cookie session、角色矩阵/CSRF 与有界证据 |
+| `internal/correlate/` | 静态 findings 与运行时报告的只读 route/method 关联（`correlated`/`ambiguous`/`not_correlated`） |
 | `internal/findings/`、`internal/sarif/`、`internal/reach/`、`internal/javaast/` | 统一 finding/假设/证据模型；SARIF 2.1.0；类级有界入口可达性；受限 Java 语义模型与方法级调用图 |
 | `internal/webui/` | 只读 Web 控制台：令牌鉴权、JSON API、嵌入的暗色前端资源 |
 | `internal/sbom/` | 确定性 CycloneDX 1.5 序列化与 metadata/component/vulnerability 映射 |

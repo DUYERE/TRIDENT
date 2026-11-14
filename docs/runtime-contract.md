@@ -86,15 +86,38 @@
   `no_proxy_or_concurrency`、`target_allowlist_exact_origin`。
 - 失败或未批准目标返回非零；已执行请求的报告仍输出到 stdout。
 
-## 5. 验收
+## 5. 静态—运行时关联（`runtime correlate`）
+
+`trident runtime correlate --findings <json> --runtime <json> --out <file>` 读取两份已完成报告，生成独立的关联报告。它不访问网络、不读取快照或模型，也不修改任一输入。
+
+- 输入校验：`schema_version=1`；`analysis_kind` 必须分别为 `unified_finding_evidence_v1` 与 `http_runtime_assertions_v1`；运行时报告必须 `runtime_status=observed` 且至少有一条结果；重复 finding ID、缺失 `id/method/path`、路径不以 `/` 开头均失败关闭。
+- 输出必须是新文件（`O_EXCL`），且不得与 `--findings`/`--runtime` 指向同一文件；否则返回非零且不写文件。
+- 匹配语义：仅按静态 `endpoint.path` 与 `endpoint.http_methods` 精确对照 `results[].path/method`。静态未声明方法视为不受方法限制（wildcard），可匹配任一观测方法，并追加 `method_unrestricted_matches_any_observed_method`。
+  - `correlated`：恰好 1 条匹配的运行时结果。
+  - `ambiguous`：≥2 条匹配（典型为多角色矩阵单元）。
+  - `not_correlated`：0 条匹配，`reason=no_runtime_result_with_matching_route_and_method`；无 `endpoint` 的 finding 记为 `not_correlated` 且 `reason=finding_has_no_endpoint`，不静默丢弃。
+- 输出身份：`schema_version=1`、`tool_version=0.2.0-p1.2+r1-static-runtime-correlation-v1`、`analysis_kind=static_runtime_correlation_v1`、`runtime_status=observed`。
+- `findings_source`/`runtime_source`：两侧文件路径、SHA-256、`schema_version`、`analysis_kind`；运行时侧另附 `plan_name`、`origin`、`status`。
+- `results[]`：`finding_id/kind/finding_status/finding_runtime_status/endpoint/match/reason/finding_evidence_ids/runtime_results[]`。静态证据只引用 `route`/`method`，最多 16 条；运行时证据复制 `id/method/path/status/observed_status/location/body_sha256/role/matrix`，不含凭据、Cookie 或响应体。
+- `unmatched_runtime[]`：未被任一 finding 命中的运行时结果，按 `id` 排序。
+- `coverage`：finding 总数、有/无端点数量、三态计数、运行时结果总数与命中/未命中数量。
+- 固定限制：`correlation_not_exploit_proof`、`runtime_observed_not_exploit_proof`、`route_method_exact_match`、`static_findings_not_modified`。
+- 关联不改变 finding 的 `status` 或 `runtime_status`；`correlated` 只表示该路由/方法存在观测结果，不证明参数可控、控制缺失或可利用。
+- 成功时 stdout 输出摘要 JSON（输出路径、字节数、三态计数）；输入错误或拒绝覆盖时返回非零。
+
+## 6. 验收
 
 - `go test ./internal/httpverify`：计划校验（含 roles/matrix 结构、CSRF 选择器、角色会话隔离）、cookie session、
   302 不跟随、失败断言、截断体 inconclusive、origin/loopback 授权、角色矩阵与 CSRF 注入、缺失 token inconclusive。
+- `go test ./internal/correlate`：唯一匹配、多匹配歧义、无匹配、无端点 finding、未命中运行时结果、
+  wildcard 方法、未观测运行时/重复 finding ID 拒绝与输出确定性。
 - `python scripts/test-runtime.py`：本地 loopback HTTP 服务，4 条基础请求全部通过，验证 session 复用、重定向不跟随、
   凭据不落报告、错误断言失败、未批准 origin 与未授权 loopback 拒绝；角色矩阵 2 个角色 × 2 登录 + 2 请求 + 4 单元
   共 10 次执行全部 `passed`、每角色 `4/4`、`login_status=complete`、`csrf=token_injected`、凭据与 token 不出现在 stdout；
   缺失 token → `inconclusive` + `csrf_token_not_found`/`role_login_incomplete`；未设置的 `${ENV:NAME}` →
-  `credential_placeholder_unresolved`；共享 session 的角色计划被拒绝。
+  `credential_placeholder_unresolved`；共享 session 的角色计划被拒绝。关联断言覆盖三态：`/dologin` 唯一匹配为
+  `correlated`、`/admin` 双请求为 `ambiguous`、`/missing` 为 `not_correlated`、依赖 finding 为 `finding_has_no_endpoint`；
+  原 findings 字节不变、重复运行字节一致、覆盖输入/缺失输入/未观测运行时均失败关闭。
 - 真实环境：此前 Tomcat 9.0.106 + MySQL 8.0.46（`D:\Code\Java\market` 补丁部署）15 条请求计划为
   15/15 `passed`、`runtime_status=observed`；该计划未纳入本仓库，本次变更未重跑。该结果只证明这些请求的响应，
   不证明其他漏洞或生产安全。

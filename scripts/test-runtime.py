@@ -6,6 +6,7 @@ network is used.
 """
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -128,6 +129,13 @@ def run_cli(binary, env, plan, approved, allow_loopback=True):
                           encoding="utf-8", errors="replace", timeout=120)
 
 
+def run_correlate(binary, env, findings, runtime, out):
+    args = [str(binary), "runtime", "correlate", "--findings", str(findings),
+            "--runtime", str(runtime), "--out", str(out)]
+    return subprocess.run(args, cwd=ROOT, env=env, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=120)
+
+
 def main():
     env = os.environ.copy()
     for name in ("TRIDENT_DATABASE_URL", "TRIDENT_TOKEN", "TRIDENT_MODEL_API_KEY",
@@ -172,6 +180,94 @@ def main():
                 and by_id["admin-unauth"]["location"] == "/login",
                 "redirect was followed or location lost")
         require(by_id["admin-auth"]["observed_status"] == 200, "session cookie was not reused")
+
+        # P1-2: static findings and runtime evidence are linked in a separate
+        # report; neither input is modified and no finding status is upgraded.
+        findings_doc = {
+            "schema_version": 1,
+            "analysis_kind": "unified_finding_evidence_v1",
+            "findings": [
+                {"id": "df:CWE-89:/dologin:user", "kind": "sql_injection",
+                 "status": "static_confirmed", "runtime_status": "not_run",
+                 "endpoint": {"path": "/dologin", "http_methods": ["POST"],
+                              "file": "src/Login.java", "sha256": "0" * 64,
+                              "start_line": 1, "end_line": 2},
+                 "evidence": [{"id": "ev:route", "kind": "route"},
+                              {"id": "ev:sink", "kind": "sink"}]},
+                {"id": "df:CWE-79:/admin:q", "kind": "xss",
+                 "status": "static_confirmed", "runtime_status": "not_run",
+                 "endpoint": {"path": "/admin", "http_methods": ["GET"],
+                              "file": "src/Admin.java", "sha256": "1" * 64,
+                              "start_line": 3, "end_line": 4},
+                 "evidence": []},
+                {"id": "df:CWE-22:/missing:x", "kind": "path_traversal",
+                 "status": "inconclusive", "runtime_status": "not_run",
+                 "endpoint": {"path": "/missing", "http_methods": ["GET"],
+                              "file": "src/File.java", "sha256": "2" * 64,
+                              "start_line": 5, "end_line": 6},
+                 "evidence": []},
+                {"id": "sca:CVE-TEST:app:org.example:demo:1.0", "kind": "vulnerable_dependency",
+                 "status": "inconclusive", "runtime_status": "not_run",
+                 "evidence": []},
+            ],
+        }
+        findings_path = parent / "findings.json"
+        findings_path.write_text(json.dumps(findings_doc, ensure_ascii=False), encoding="utf-8")
+        findings_bytes = findings_path.read_bytes()
+        runtime_path = parent / "runtime.json"
+        runtime_path.write_text(result.stdout, encoding="utf-8")
+        correlation_path = parent / "correlation.json"
+        correlation = run_correlate(binary, env, findings_path, runtime_path, correlation_path)
+        require(correlation.returncode == 0, correlation.stderr.strip() or "correlation failed")
+        require(findings_path.read_bytes() == findings_bytes, "correlation modified the findings report")
+        correlated = json.loads(correlation_path.read_text(encoding="utf-8"))
+        require(correlated["analysis_kind"] == "static_runtime_correlation_v1"
+                and correlated["runtime_status"] == "observed",
+                f"correlation identity mismatch: {correlated.get('analysis_kind')}")
+        require(correlated["findings_source"]["sha256"]
+                == hashlib.sha256(findings_bytes).hexdigest(),
+                "correlation did not pin the findings bytes")
+        matches = {item["finding_id"]: item for item in correlated["results"]}
+        require(matches["df:CWE-89:/dologin:user"]["match"] == "correlated"
+                and matches["df:CWE-89:/dologin:user"]["runtime_results"][0]["id"] == "do-login",
+                f"unique correlation mismatch: {matches['df:CWE-89:/dologin:user']}")
+        require(matches["df:CWE-89:/dologin:user"]["finding_evidence_ids"] == ["ev:route"],
+                "static route evidence reference missing")
+        require(matches["df:CWE-79:/admin:q"]["match"] == "ambiguous"
+                and len(matches["df:CWE-79:/admin:q"]["runtime_results"]) == 2,
+                f"ambiguous correlation mismatch: {matches['df:CWE-79:/admin:q']}")
+        require(matches["df:CWE-22:/missing:x"]["match"] == "not_correlated"
+                and matches["df:CWE-22:/missing:x"]["reason"]
+                == "no_runtime_result_with_matching_route_and_method",
+                f"missing correlation mismatch: {matches['df:CWE-22:/missing:x']}")
+        require(matches["sca:CVE-TEST:app:org.example:demo:1.0"]["match"] == "not_correlated"
+                and matches["sca:CVE-TEST:app:org.example:demo:1.0"]["reason"] == "finding_has_no_endpoint",
+                "finding without endpoint was not reported")
+        require(correlated["coverage"]["correlated"] == 1
+                and correlated["coverage"]["ambiguous"] == 1
+                and correlated["coverage"]["not_correlated"] == 2,
+                f"correlation coverage mismatch: {correlated['coverage']}")
+        require(any(item.startswith("correlation_not_exploit_proof")
+                    for item in correlated["limitations"]),
+                "correlation is not marked as non-exploitation evidence")
+        second_path = parent / "correlation-again.json"
+        second = run_correlate(binary, env, findings_path, runtime_path, second_path)
+        require(second.returncode == 0, second.stderr.strip() or "repeated correlation failed")
+        require(correlation_path.read_bytes() == second_path.read_bytes(),
+                "correlation output is not deterministic")
+        overwrite = run_correlate(binary, env, findings_path, runtime_path, findings_path)
+        require(overwrite.returncode != 0, "correlation overwrote the findings input")
+        require(findings_path.read_bytes() == findings_bytes, "refused overwrite still modified findings")
+        missing_input = run_correlate(binary, env, parent / "absent.json", runtime_path,
+                                      parent / "unused.json")
+        require(missing_input.returncode != 0, "missing findings input was accepted")
+        unobserved = {"schema_version": 1, "analysis_kind": "http_runtime_assertions_v1",
+                      "runtime_status": "not_run", "results": []}
+        unobserved_path = parent / "unobserved.json"
+        unobserved_path.write_text(json.dumps(unobserved), encoding="utf-8")
+        unobserved_run = run_correlate(binary, env, findings_path, unobserved_path,
+                                       parent / "unobserved-correlation.json")
+        require(unobserved_run.returncode != 0, "unobserved runtime report was accepted")
 
         env["TRIDENT_TEST_PASS"] = "secret-runtime"
         login_steps = lambda user: [
@@ -298,7 +394,8 @@ def main():
                        "credentials_redacted", "failing_assertion", "origin_allowlist",
                        "loopback_approval", "role_matrix", "csrf_token_injection",
                        "csrf_missing_inconclusive", "credential_placeholder_required",
-                       "role_session_isolation"],
+                       "role_session_isolation", "correlation_three_states",
+                       "correlation_read_only", "correlation_deterministic"],
         }))
 
 

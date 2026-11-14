@@ -12,8 +12,10 @@
 > P0-4 权限链语义（`SecurityFilterChain` 顺序与 `securityMatcher` 作用域、受限方法注解 SpEL、
 > context-path 外部路径）已实现并通过 `scripts/test-authz.py` 与 `go test ./internal/authz` 验收；
 > P1-1 运行时角色矩阵与 CSRF（`roles`/`matrix`、`${ENV:NAME}` 凭据占位符、有界 token 提取与注入）
-> 已实现并通过 `scripts/test-runtime.py` 与 `go test ./internal/httpverify` 验收。
-> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四。其余项仍为计划。
+> 已实现并通过 `scripts/test-runtime.py` 与 `go test ./internal/httpverify` 验收；P1-2 静态—运行时关联
+> （`runtime correlate` 三态关联、只读输入、独立报告）已实现并通过 `go test ./internal/correlate` 与
+> `scripts/test-runtime.py` 验收。
+> 记录见 [开发进度](development-progress.md) 续十一、续十二、续十三、续十四、续十五。其余项仍为计划。
 
 ## 1. 原则与约束
 
@@ -150,14 +152,25 @@
 
 ### P1-2 运行时证据与静态 finding 的关联报告
 
+- **状态**：已实现（`internal/correlate` `0.2.0-p1.2+r1-static-runtime-correlation-v1`、`trident runtime correlate`）。
 - **目标**：在“不回写静态状态”的前提下，给出可审阅的静态—运行时关联。
 - **实现要点**：
-  - 新增 `trident runtime correlate --findings <json> --runtime <json> --out <file>`：按 route/method
+  - `trident runtime correlate --findings <json> --runtime <json> --out <file>` 按 route/method
     关联，输出 `correlated|not_correlated|ambiguous` 与两侧证据引用。
   - 关联报告独立文件，包含 `runtime_status=observed` 与“非利用证明”限制；不修改原 finding JSON。
+- **实现结果**：
+  - 仅精确比较 `endpoint.path` 与 `http_methods`；未声明方法按不受限处理并记录 wildcard 限制。
+    无 endpoint 的 finding 输出 `not_correlated` + `finding_has_no_endpoint`，不静默丢弃；
+    未命中任何 finding 的运行时结果进入 `unmatched_runtime[]`。
+  - 报告固定 `analysis_kind=static_runtime_correlation_v1`，两侧附带文件路径与 SHA-256；
+    `correlated` 只表示存在观测响应，不证明参数可控或控制缺失。
+  - 输出必须为新文件且不得覆盖任一输入；未观测运行时（`runtime_status!=observed` 或无结果）、
+    重复 finding ID、缺失 `id/method/path` 均失败关闭。
 - **验收标准**：
-  - `scripts/test-runtime.py` 增加关联断言：唯一匹配、多匹配歧义、无匹配三态；原 finding 字节不变。
-  - 契约更新 `docs/findings-contract.md`、`docs/runtime-contract.md`。
+  - `go test ./internal/correlate` 覆盖三态、无端点、未命中运行时结果、wildcard、拒绝条件与确定性。
+  - `scripts/test-runtime.py` 增加关联断言：唯一匹配、多匹配歧义、无匹配三态；原 finding 字节不变；
+    输出确定性；覆盖/缺失/未观测输入失败关闭（已通过）。
+  - 契约更新 `docs/findings-contract.md`、`docs/runtime-contract.md`（已完成）。
 - **非目标**：不做自动定级、不生成利用链、不替代人工复核。
 
 ### P1-3 补丁验证与回滚增强

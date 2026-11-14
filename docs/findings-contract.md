@@ -145,3 +145,15 @@ Finding ID：
   - `unverified`：`unknown` 或未提供 `--package-map`；原因为具体 reason（如 `package_mapping_missing`、`reflection_not_resolved`）。
 - 不改变 finding `status`（仍为 `inconclusive`）与 `runtime_status=not_run`；`reachable` 只是静态调用证据，不是可攻击性结论。原始 finding JSON 不回写运行时结果。
 - 验收：`python scripts/test-reachability.py` 断言 `java-maven` 的 commons-text 声明在 `jdbc-app` 内为 `unsupported`，无 package map 时为 `unverified`；`python scripts/test-findings.py` 的原有断言不变。
+
+## 2026-11-14 扩展：静态—运行时关联（独立报告）
+
+- 新增 `trident runtime correlate --findings <json> --runtime <json> --out <file>`：读取本片输出的 findings JSON 与 `trident runtime http` 的运行时 JSON，生成独立的 `static_runtime_correlation_v1` 报告。它不读取快照、不联网、不调用模型。
+- 关联只按 `findings[].endpoint.path` + `http_methods` 对照 `results[].path/method`：
+  - `correlated`：恰好一条运行时结果匹配；`ambiguous`：多条（如多角色矩阵单元）；`not_correlated`：无匹配。
+  - 无 `endpoint` 的 finding（典型为依赖候选）记为 `not_correlated` 且 `reason=finding_has_no_endpoint`，不静默丢弃。
+  - 静态未声明方法视为不受方法限制，可匹配任一观测方法，并输出 `method_unrestricted_matches_any_observed_method`。
+- 报告保留两侧证据引用：finding 的 `route`/`method` 证据 ID 与 endpoint 文件/SHA-256/行号；运行时 `results[].id`、`observed_status`、`location`、`body_sha256`、`role`、`matrix`。未命中任何 finding 的运行时结果列入 `unmatched_runtime[]`。
+- 固定限制：`correlation_not_exploit_proof`、`runtime_observed_not_exploit_proof`、`route_method_exact_match`、`static_findings_not_modified`。
+- **不回写**：不修改 findings JSON 或运行时 JSON 的字节，不改变 finding 的 `status`/`runtime_status`，不把 `correlated` 升级为漏洞结论。`correlated` 只表示该路由/方法存在观测响应，不证明参数可控、控制缺失或可利用。
+- 验收：`go test ./internal/correlate`；`python scripts/test-runtime.py` 断言三态、原始 findings 字节不变、输出确定性，以及覆盖输入/缺失输入/未观测运行时失败关闭。
