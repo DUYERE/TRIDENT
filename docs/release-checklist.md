@@ -90,8 +90,9 @@ python scripts/benchmark.py 3
 | 运行时 HTTP 验证自动化 | `python scripts/test-runtime.py` + 真实 Tomcat/MySQL | 通过：loopback 4/4；真实环境 15/15（登录页 200、未登录 302、登录后 200、跨会话 302、错误密码不建会话），`runtime_status=observed` |
 | 离线全量门禁 | `powershell -File scripts/verify-offline.ps1` | 通过（Go 测试/vet + 10 个离线 CLI 验收脚本） |
 | CI 工作流模板 | `.github/workflows/ci.yml` | 已提供并在本地核对 YAML/命令；未在 GitHub runner 实际执行 |
-| 部署/备份/升级文档 | `docs/deployment.md` | 已提供构建、迁移、备份恢复、凭据分权与版本矩阵；未做生产恢复演练 |
-| 最小权限角色模板 | `db/roles.example.sql` | 已提供 migrator/runtime/readonly 分离模板；未在独立生产库执行 |
+| 部署/备份/升级文档 | `docs/deployment.md` | 已提供构建、迁移、备份恢复、凭据分权与版本矩阵；生产恢复演练仍待完成 |
+| 最小权限角色与迁移/运行分权 | `python scripts/test-db-governance.py` | 通过：一次性 PostgreSQL 18 容器；`migrate` 幂等、runtime/readonly 可 `check`、runtime 建表/建角色与 readonly 写入被拒绝、新表默认权限生效、`bootstrap` 与 `demo-offline` 在 runtime 账号下完成写入；未在独立生产库执行 |
+| 备份恢复演练 | `python scripts/test-db-governance.py` | 通过：`pg_dump --format=custom` → 新库 `pg_restore` → `trident check` → `principals`/`tasks`/`tool_calls`/`approvals`/`schema_migrations` 行数一致；不含生产数据量、备份窗口与恢复时限 |
 | 基准报告 | `python scripts/benchmark.py 3` + `docs/benchmark-report.md` | 通过：4 个合成 fixture、7 条只读命令；仅 wall-clock，不含 DB/模型/Java/Maven |
 
 ## 5. 版本兼容与已知边界
@@ -108,5 +109,5 @@ python scripts/benchmark.py 3
 
 1. 所有第 4 节可在本机离线复现的门槛通过，且工作区有对应 Git commit。
 2. 真实模型、真实项目快照外发、真实项目 AI 补丁分别取得逐次书面授权，并记录端点、模型、快照 hash、调用上限与费用上限。
-3. 若声明“生产可用”，还需独立完成部署、备份恢复演练、凭据分权、监控、SARIF/CI 集成和硬件 VM 或等效隔离评审。
+3. 若声明“生产可用”，还需独立完成生产部署、生产级备份恢复演练（真实数据量/时限/异地）、凭据分权审计、监控、SARIF/CI 集成和硬件 VM 或等效隔离评审。
 4. 不得把合成样本、loopback 模型、静态分析或隔离副本结果表述为生产漏洞利用或修复上线证明。

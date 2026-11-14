@@ -38,7 +38,9 @@ export TRIDENT_MIGRATION_ACTOR='release-operator'
 - `check` 只读校验 Schema 与迁移校验和，不建库、不改表。
 - `migrate` 显式前向应用 `db/migrations/`，要求操作者标识；普通启动不会自动迁移。
 - 生产建议先在备份/克隆库演练，再对主库执行；迁移账号只授予 `USAGE, CREATE`，运行账号只授予 DML。
-- 最小权限模板见 [`db/roles.example.sql`](../db/roles.example.sql)。模板中的密码占位符必须由密钥管理系统替换，且需要在真实表 owner 与数据库名下复核；本项目尚未在独立生产环境执行该模板。
+- 最小权限模板见 [`db/roles.example.sql`](../db/roles.example.sql)。模板中的密码占位符必须由密钥管理系统替换，且需要在真实表 owner 与数据库名下复核。
+- 本地一次性容器演练：`python scripts/test-db-governance.py`（PostgreSQL 18 固定镜像）。已实测通过：`trident_migrator` 可重复执行 `migrate`；`trident_runtime`/`trident_readonly` 可通过 `check`；runtime 建表、建角色被拒绝；readonly 写入被拒绝；新建表继承默认权限（runtime DML、readonly 只读）；`bootstrap` 与 `demo-offline` 在 runtime 账号下完成真实写入。演练库与随机密码随容器销毁，不接触既有测试库。
+- 该演练不等同于生产环境执行：生产仍需在真实表 owner、数据库名和密钥系统下复核，并完成审计与回滚审批。
 
 ## 4. 备份与恢复
 
@@ -54,6 +56,7 @@ TRIDENT_DATABASE_URL="$TRIDENT_RESTORE_URL" ./trident check
 - Agent Run/Step 表为 append-only 审计记录，备份应包含它们；当前没有自动物理清理。
 - 恢复后先用 `check` 验证迁移校验和，再启动 Web/Agent。
 - 备份文件包含授权与证据元数据，按敏感数据管理；不要放入仓库或公开对象存储。
+- 恢复演练：`python scripts/test-db-governance.py` 已在一次性 PostgreSQL 18 容器内完成 `pg_dump --format=custom` → 新库 `pg_restore` → `trident check` → 行数比对（`principals`、`tasks`、`tool_calls`、`approvals`、`schema_migrations`），结果一致。该演练覆盖工具与 Schema，不覆盖生产数据量、备份窗口、异地存储与恢复时限。
 
 ## 5. CI 与 SARIF
 
@@ -78,7 +81,7 @@ TRIDENT_DATABASE_URL="$TRIDENT_RESTORE_URL" ./trident check
 ## 7. 未完成的生产门槛
 
 - 硬件 VM 或等效隔离；当前 Docker/gVisor 不是硬件边界。
-- 生产数据库迁移/运行账号分权已在模板中给出，但未在独立生产环境执行和审计。
+- 本地容器分权与恢复演练已通过，但未在独立生产环境执行和审计。
 - 完整 Java AST/调用图/跨方法污点、制品哈希与依赖到入口调用可达性。
 - CI 中的 Java/Maven/Gradle、模型与运行时 job 需要专用 runner、授权和密钥管理。
-- TLS/多用户控制台、监控告警、备份恢复演练与容量/成本报告。
+- TLS/多用户控制台、监控告警、生产级备份恢复（数据量/时限/异地）与容量/成本报告。

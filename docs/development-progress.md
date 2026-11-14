@@ -948,6 +948,14 @@
 - 新增 `docs/benchmark-report.md`：`python scripts/benchmark.py 3`，4 个合成 fixture × 7 条只读命令，仅 wall-clock；不含 DB/模型/Java/Maven。
 - 仍未完成：CI 的 Java/Maven/Gradle、模型与运行时 job 需专用 runner 和授权；生产凭据分权/备份恢复演练、多用户/TLS、硬件 VM 与完整 AST/调用图仍未验证。
 
+### 2026-11-14 续十：数据库分权与备份恢复演练
+
+- 新增 `scripts/test-db-governance.py`：在一次性 PostgreSQL 18 固定镜像容器中创建 `trident_drill` 库与 `trident_migrator`/`trident_runtime`/`trident_readonly` 三个随机密码角色，演练结束随容器销毁；不接触既有测试库，不写磁盘密码。
+- 分权结果：`trident_migrator` 连续两次 `migrate` 成功（幂等）；runtime/readonly 均可执行 `trident check`；runtime 执行 `migrate`、建表与建角色均被拒绝；readonly 写入被拒绝；migrator 新建表自动继承默认权限，runtime 可 INSERT/UPDATE、readonly 只读。
+- 应用路径：`bootstrap` 与 `demo-offline` 使用 runtime 账号完成真实写入（`principals` ≥ 2），证明最小权限角色足以支撑现有应用 DML。
+- 备份恢复：容器内 `pg_dump --format=custom` → 新建 `trident_drill_restore` → `pg_restore` → `trident check` 通过；`principals`、`tasks`、`tool_calls`、`approvals`、`schema_migrations` 行数与源库一致。
+- 限制：演练库是本机一次性容器，不等于生产环境；未覆盖生产数据量、备份窗口、异地存储、恢复时限、密钥管理和审计审批。CI runner 实际执行与硬件 VM 隔离仍未验证。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。
