@@ -893,7 +893,19 @@
   - 修复 `scorePatch` 同时读取 `TestSummary` 与 `JUnitXML` 时的测试数重复计数。
 - 最终补丁通过 TRIDENT 自身验证：`patch verify --profile maven-test --patch docs/evidence/2026-11-14-market-access-control.patch` → `validation_passed`、`mvn -o -B -q test` 退出 0、tests=4/failures=0/errors=0、quality 75/B、`original_snapshot_intact=true`、`runtime_status=isolated_validation_only`。
 - 补丁工件：`docs/evidence/2026-11-14-market-access-control.patch`（4 个文件，+207/-0：POM 测试依赖、LoginInterceptor、spring-mvc.xml 拦截配置、JUnit 测试）。
-- 未覆盖：真实 Tomcat/MySQL 部署下的 HTTP 权限验证、其他安全缺陷、Gradle 有效树、硬件 VM。原项目目录未被修改。
+- 未覆盖：真实 Tomcat/MySQL 部署下的 HTTP 权限验证、其他安全缺陷、Gradle 有效树、硬件 VM（HTTP 权限验证已在续四补齐）。原项目目录未被修改。
+
+### 2026-11-14 续四：真实 Tomcat/MySQL HTTP 权限验证
+
+- 环境：MySQL 8.0.46 容器 `trident-market-mysql`（127.0.0.1:3307，仅容器内改测试密码哈希）；Tomcat 9.0.106 监听 18080，JDK 8u202；部署补丁后的 `chaoshi.war`。SQL 导入 `market_optimized.sql`，共 11 张表。
+- 未认证结果：
+  - `/chaoshi/manager/login`、`/chaoshi/staff/login` → 200。
+  - `/chaoshi/manager/getbyid?managerid=15203111`、`/manager/flatform/main`、`/manager/toupdate` → 302 到 `/chaoshi/manager/login`。
+  - `/chaoshi/staff/flatform/main`、`/staff/flatform/product/getlist`、`/staff/flatform/custom/getall` → 302 到 `/chaoshi/staff/login`。
+- 已认证结果：管理员 `15203111` 与员工 `15203122` 使用同一测试密码登录均 302 到各自 `/flatform/main`；随后 manager main/getbyid/toupdate 与 staff main/product/custom/getbyid 全部 200。
+- 隔离与负例：manager 会话访问 staff 端点 → 302 到 `/staff/login`；员工错误密码 → 200 登录页且后续访问 main 仍 302。
+- 说明：`/staff/flatform/product/getall` 不存在对应映射（实际为 `getlist`），返回 500，不计入权限绕过；验证改用真实映射。
+- 结论：集中式拦截器在真实 Tomcat/MySQL 部署下生效；仅证明未登录访问被拒绝和登录后放行，不证明其他漏洞、授权粒度或生产配置安全。原项目 `D:\Code\Java\market` 未被修改（非 Git 仓库，全部改动只在临时副本）。
 
 ## 维护规则
 
