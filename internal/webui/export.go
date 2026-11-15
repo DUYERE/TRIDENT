@@ -21,8 +21,8 @@ func (c *Console) handleExportReport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "analysis_failed", err.Error())
 		return
 	}
-	manifest := c.snapshot.Manifest()
-	short := c.snapshot.Hash()
+	manifest := c.snapshotRef().Manifest()
+	short := c.snapshotRef().Hash()
 	if len(short) > 12 {
 		short = short[:12]
 	}

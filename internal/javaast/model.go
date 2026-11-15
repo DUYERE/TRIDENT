@@ -281,6 +281,30 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Model, error) {
 	return report, nil
 }
 
+// methodKey identifies one name-scoped candidate set on a type.
+type methodKey struct {
+	fqn  string
+	name string
+}
+
+// typeMemberKey identifies a field lookup on a type.
+type typeMemberKey struct {
+	fqn  string
+	name string
+}
+
+// fieldHit is the memoized result of a field lookup, including a miss.
+type fieldHit struct {
+	owner *Type
+	field *Field
+}
+
+// typePair is a memoized subtype relation.
+type typePair struct {
+	child  string
+	parent string
+}
+
 type index struct {
 	units       []*Unit
 	unitByPath  map[string]*Unit
@@ -297,6 +321,14 @@ type index struct {
 	typeCount   int
 	methodCount int
 	fieldCount  int
+
+	// Derived caches. Call resolution is the hot path: without these, every
+	// observed call re-resolves each parameter of each overload candidate and
+	// re-walks the type hierarchy, which is super-linear in real projects.
+	paramTypes map[*Method][]string
+	candidates map[methodKey][]*Method
+	fields     map[typeMemberKey]*fieldHit
+	subtypes   map[typePair]bool
 
 	constantsFolded  int
 	annotationCount  int
@@ -320,6 +352,10 @@ func newIndex(units []*Unit) *index {
 		folding:    map[*Field]bool{},
 		boundaries: map[string]map[string]bool{},
 		callKeys:   map[string]bool{},
+		paramTypes: map[*Method][]string{},
+		candidates: map[methodKey][]*Method{},
+		fields:     map[typeMemberKey]*fieldHit{},
+		subtypes:   map[typePair]bool{},
 	}
 	for _, unit := range units {
 		ix.unitByPath[unit.Path] = unit
@@ -348,6 +384,17 @@ func newIndex(units []*Unit) *index {
 			if fqn := ix.resolveType(decl.Unit, decl.Parent, raw); fqn != "" {
 				decl.Implements = append(decl.Implements, fqn)
 			}
+		}
+	}
+	// Erased parameter types are fixed once inheritance is resolved, so overload
+	// scoring never has to re-resolve them per observed call.
+	for _, decl := range ix.all {
+		for _, method := range decl.Methods {
+			resolved := make([]string, len(method.Params))
+			for i, param := range method.Params {
+				resolved[i] = ix.resolveType(decl.Unit, decl, param.TypeRaw)
+			}
+			ix.paramTypes[method] = resolved
 		}
 	}
 	return ix
@@ -817,6 +864,10 @@ func isConstantField(field *Field) bool {
 }
 
 func (ix *index) findField(decl *Type, name string) (*Type, *Field) {
+	key := typeMemberKey{fqn: decl.FQN, name: name}
+	if hit, ok := ix.fields[key]; ok {
+		return hit.owner, hit.field
+	}
 	seen := map[string]bool{}
 	for current := decl; current != nil; {
 		if seen[current.FQN] {
@@ -825,6 +876,7 @@ func (ix *index) findField(decl *Type, name string) (*Type, *Field) {
 		seen[current.FQN] = true
 		for _, field := range current.Fields {
 			if field.Name == name {
+				ix.fields[key] = &fieldHit{owner: current, field: field}
 				return current, field
 			}
 		}
@@ -837,6 +889,7 @@ func (ix *index) findField(decl *Type, name string) (*Type, *Field) {
 		}
 		current = parent
 	}
+	ix.fields[key] = &fieldHit{}
 	return nil, nil
 }
 
@@ -1203,6 +1256,10 @@ func (ix *index) receiverType(decl *Type, locals map[string]string, receiver str
 }
 
 func (ix *index) methodCandidates(decl *Type, name string) []*Method {
+	key := methodKey{fqn: decl.FQN, name: name}
+	if cached, ok := ix.candidates[key]; ok {
+		return cached
+	}
 	var out []*Method
 	seen := map[string]bool{}
 	var walk func(*Type)
@@ -1224,6 +1281,7 @@ func (ix *index) methodCandidates(decl *Type, name string) []*Method {
 		}
 	}
 	walk(decl)
+	ix.candidates[key] = out
 	return out
 }
 
@@ -1278,6 +1336,7 @@ func (ix *index) score(method *Method, argTypes []string) (int, bool) {
 	if varargs && len(argTypes) < len(params)-1 {
 		return 0, false
 	}
+	resolved := ix.paramTypes[method]
 	total := 0
 	for index, arg := range argTypes {
 		raw := params[len(params)-1].TypeRaw
@@ -1287,7 +1346,16 @@ func (ix *index) score(method *Method, argTypes []string) (int, bool) {
 		if varargs && index >= len(params)-1 {
 			raw = strings.TrimSuffix(strings.TrimSuffix(raw, "[]"), "...")
 		}
-		param := ix.resolveType(method.Class.Unit, method.Class, raw)
+		param := ""
+		if resolved != nil {
+			if index < len(resolved) {
+				param = resolved[index]
+			} else if len(resolved) > 0 {
+				param = strings.TrimSuffix(strings.TrimSuffix(resolved[len(resolved)-1], "[]"), "...")
+			}
+		} else {
+			param = ix.resolveType(method.Class.Unit, method.Class, raw)
+		}
 		score, ok := ix.matchType(arg, param, raw)
 		if !ok {
 			return 0, false
@@ -1346,6 +1414,10 @@ func (ix *index) isSubtype(child, parent string) bool {
 	if child == parent {
 		return true
 	}
+	key := typePair{child: child, parent: parent}
+	if cached, ok := ix.subtypes[key]; ok {
+		return cached
+	}
 	seen := map[string]bool{}
 	var walk func(string) bool
 	walk = func(name string) bool {
@@ -1377,7 +1449,9 @@ func (ix *index) isSubtype(child, parent string) bool {
 		}
 		return false
 	}
-	return walk(child)
+	result := walk(child)
+	ix.subtypes[key] = result
+	return result
 }
 
 func (ix *index) concreteImplementations(parent string, method *Method) []*Method {

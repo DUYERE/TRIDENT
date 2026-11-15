@@ -30,6 +30,7 @@ const (
 	MaxPropertyDepth        = 16
 	MaxDependenciesPerPOM   = 4096
 	MaxAdvisoryBytes        = 1 << 20
+	MaxAdvisoryFiles        = 512
 	MaxAdvisoryVersionCases = 256
 )
 
@@ -44,6 +45,10 @@ type Options struct {
 	// AdvisoryPath is an explicit local advisory JSON file supplied by the
 	// caller. Repository content is never treated as an advisory catalog.
 	AdvisoryPath string
+	// AdvisoryDir loads every *.json catalog directly inside one directory,
+	// sorted by name. It is mutually exclusive with AdvisoryPath and exists so
+	// callers do not have to concatenate catalogs by hand.
+	AdvisoryDir string
 	// MavenRepo and GradleUserHome are explicit local artifact repositories
 	// used only to hash already-present jars/poms. Nothing is downloaded.
 	MavenRepo      string
@@ -327,10 +332,18 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 	report.Partial = report.Partial || artifactPartial
 	report.Limitations = append(report.Limitations, artifactLimitations...)
 
+	if opts.AdvisoryPath != "" && opts.AdvisoryDir != "" {
+		return Report{}, fmt.Errorf("%w: use either an advisory file or a directory", ErrAdvisory)
+	}
 	advisories, err := loadAdvisories(opts.AdvisoryPath)
 	if err != nil {
 		return Report{}, err
 	}
+	directoryAdvisories, err := loadAdvisoryDir(opts.AdvisoryDir)
+	if err != nil {
+		return Report{}, err
+	}
+	advisories = append(advisories, directoryAdvisories...)
 	report.Coverage.AdvisoriesLoaded = len(advisories)
 	report.Advisories = advisoryInfo(advisories)
 	if len(advisories) == 0 {

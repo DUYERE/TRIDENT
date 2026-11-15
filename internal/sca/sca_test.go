@@ -464,3 +464,33 @@ func TestLoadAdvisoriesRejectsUnsafeOrUnknownFormats(t *testing.T) {
 		t.Fatalf("missing advisory: %v", err)
 	}
 }
+
+func TestAdvisoryDirectoryMergesAndFailsClosed(t *testing.T) {
+	source := filepath.Join("..", "..", "tests", "fixtures", "java-maven", "advisories", "CVE-2022-42889.json")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err = os.WriteFile(filepath.Join(dir, "a.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("ignored"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalogs, err := loadAdvisoryDir(dir)
+	if err != nil || len(catalogs) != 1 || catalogs[0].AdvisoryID != "CVE-2022-42889" {
+		t.Fatalf("directory load failed: %v catalogs=%d", err, len(catalogs))
+	}
+
+	// A second catalog carrying the same advisory id must not silently win.
+	if err = os.WriteFile(filepath.Join(dir, "b.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = loadAdvisoryDir(dir); !errors.Is(err, ErrAdvisory) {
+		t.Fatalf("duplicate advisory must fail closed, got %v", err)
+	}
+	if _, err = loadAdvisoryDir(filepath.Join(dir, "missing")); !errors.Is(err, ErrAdvisory) {
+		t.Fatalf("missing directory must fail closed, got %v", err)
+	}
+}

@@ -49,18 +49,19 @@ func (c *Console) handleSARIF(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReachability runs the bounded reachability engine over the snapshot
-// when the caller supplied --package-map at startup. Result is cached like the
-// analysis state; an unusable package map fails the startup instead.
+// when a package map is configured. Result is cached like the analysis state
+// and dropped whenever the configuration or the snapshot changes.
 func (c *Console) handleReachability(w http.ResponseWriter, r *http.Request) {
-	if c.packageMap == "" {
+	cfg := c.currentConfig()
+	if cfg.PackageMapPath == "" {
 		writeError(w, http.StatusPreconditionFailed, "package_map_missing",
-			"start the console with --package-map to enable reachability; import attribution requires caller-supplied prefixes")
+			"未配置 package map：在设置页填写依赖到包前缀的映射后即可启用可达性视图")
 		return
 	}
 	c.reachMu.Lock()
 	defer c.reachMu.Unlock()
 	if c.reachState == nil {
-		report, err := reach.Inspect(r.Context(), c.snapshot, reach.Options{PackageMapPath: c.packageMap})
+		report, err := reach.Inspect(r.Context(), c.snapshotRef(), reach.Options{PackageMapPath: cfg.PackageMapPath})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "reachability_failed", err.Error())
 			return
@@ -73,12 +74,13 @@ func (c *Console) handleReachability(w http.ResponseWriter, r *http.Request) {
 // handleRuntimeReport serves a caller-supplied correlation report produced by
 // `runtime http correlate --out`; the console never executes runtime checks.
 func (c *Console) handleRuntimeReport(w http.ResponseWriter, _ *http.Request) {
-	if c.runtimeReportPath == "" {
+	cfg := c.currentConfig()
+	if cfg.RuntimeReport == "" {
 		writeError(w, http.StatusPreconditionFailed, "runtime_report_missing",
-			"start the console with --runtime-report <file> to display a correlation report")
+			"未配置运行时关联报告：在设置页填写 correlate 报告路径后即可显示")
 		return
 	}
-	data, err := os.ReadFile(c.runtimeReportPath)
+	data, err := os.ReadFile(cfg.RuntimeReport)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "runtime_report_unreadable", err.Error())
 		return

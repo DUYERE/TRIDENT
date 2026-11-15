@@ -31,3 +31,21 @@ func TestRunWebRejectsUnsafeArguments(t *testing.T) {
 		t.Fatalf("wildcard listener must be rejected: %v", err)
 	}
 }
+
+func TestRunWebExplainsBadArguments(t *testing.T) {
+	// A missing dash turns the flag into a positional argument; the error must
+	// name it instead of printing a bare usage line.
+	err := runWeb(context.Background(), []string{"workspace", ".trident", "--token", "123"}, io.Discard)
+	if err == nil {
+		t.Fatal("positional arguments must fail")
+	}
+	if !strings.Contains(err.Error(), "--workspace") || !strings.Contains(err.Error(), "缺少 --") {
+		t.Fatalf("missing-dash diagnostic is not actionable: %v", err)
+	}
+
+	// A short token must be reported as a token problem with its actual length.
+	err = runWeb(context.Background(), []string{"--workspace", t.TempDir(), "--token", "123"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "--token") || !strings.Contains(err.Error(), "当前 3 字节") {
+		t.Fatalf("short token diagnostic is not actionable: %v", err)
+	}
+}

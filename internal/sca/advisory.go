@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -62,6 +63,50 @@ type advisoryCatalog struct {
 		EffectiveDependencyTreeAvailable bool     `json:"effective_dependency_tree_available"`
 		RuntimeExploitTestAvailable      bool     `json:"runtime_exploit_test_available"`
 	} `json:"coverage"`
+}
+
+// loadAdvisoryDir loads every *.json catalog directly inside dir. Entry order
+// is sorted by file name so the merged catalog list stays deterministic.
+// Symlinks, subdirectories and oversized files fail closed.
+func loadAdvisoryDir(dir string) ([]*advisoryCatalog, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	info, err := os.Lstat(dir)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("%w: advisory directory must be a real directory", ErrAdvisory)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("%w: advisory directory unreadable", ErrAdvisory)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	if len(names) > MaxAdvisoryFiles {
+		return nil, fmt.Errorf("%w: advisory directory has too many catalogs", ErrAdvisory)
+	}
+	merged := make([]*advisoryCatalog, 0, len(names))
+	seen := map[string]string{}
+	for _, name := range names {
+		catalogs, err := loadAdvisories(filepath.Join(dir, name))
+		if err != nil {
+			return nil, err
+		}
+		for _, catalog := range catalogs {
+			if previous, dup := seen[catalog.AdvisoryID]; dup {
+				return nil, fmt.Errorf("%w: duplicate advisory %s in %s and %s", ErrAdvisory, catalog.AdvisoryID, previous, name)
+			}
+			seen[catalog.AdvisoryID] = name
+			merged = append(merged, catalog)
+		}
+	}
+	return merged, nil
 }
 
 func loadAdvisories(advisoryPath string) ([]*advisoryCatalog, error) {
@@ -307,4 +352,22 @@ func matchAdvisories(dependencies []Dependency, advisories []*advisoryCatalog) [
 		return a.DeclaredVersion < b.DeclaredVersion
 	})
 	return matches
+}
+
+// CountAdvisories validates an advisory file or directory and returns how many
+// catalogs it would contribute to an analysis. Callers use it to reject a bad
+// configuration before persisting it.
+func CountAdvisories(path, dir string) (int, error) {
+	if path != "" && dir != "" {
+		return 0, fmt.Errorf("%w: use either an advisory file or a directory", ErrAdvisory)
+	}
+	fileCatalogs, err := loadAdvisories(path)
+	if err != nil {
+		return 0, err
+	}
+	directoryCatalogs, err := loadAdvisoryDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	return len(fileCatalogs) + len(directoryCatalogs), nil
 }

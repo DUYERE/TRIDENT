@@ -763,7 +763,14 @@ func parseTypeAt(tokens []token, start int) (string, int) {
 	return name, index
 }
 
+// skipAngles returns the index just past a balanced <...> group. Unbalanced
+// input (for example the comparison operator in "a < b") consumes only the
+// opening token: callers loop until the index stops pointing at "<", so a
+// non-advancing return value would hang the scanner.
 func skipAngles(tokens []token, start int) int {
+	if start >= len(tokens) || tokens[start].text != "<" {
+		return start
+	}
 	depth := 0
 	for index := start; index < len(tokens); index++ {
 		switch tokens[index].text {
@@ -776,7 +783,7 @@ func skipAngles(tokens []token, start int) int {
 			}
 		}
 	}
-	return start
+	return start + 1
 }
 
 func (p *parser) captureArguments(close string) []string {

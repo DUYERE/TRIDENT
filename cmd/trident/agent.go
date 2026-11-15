@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -191,6 +192,14 @@ func runAgent(ctx context.Context, args []string, out io.Writer) error {
 	result, e := agent.Execute(ctx, runner, client, registry, ackUnknown)
 	if encodeErr := json.NewEncoder(out).Encode(result); encodeErr != nil {
 		return encodeErr
+	}
+	// A budget stop is a terminal Run state, not a startup failure: report which
+	// ceiling was hit and that no conclusion was produced.
+	if errors.Is(e, store.ErrBudget) {
+		if final, getErr := s.GetAgentRun(ctx, ss, run.ID); getErr == nil {
+			return fmt.Errorf("Run %d 达到预算上限并停止（model %d/%d · tool %d/%d · tokens %d/%d）；budget_exhausted 不是分析结论，需要提高预算后用新的 --key 重跑",
+				final.ID, final.ModelCalls, final.Limits.MaxModelCalls, final.ToolCalls, final.Limits.MaxToolCalls, final.TokensUsed, final.Limits.MaxTokens)
+		}
 	}
 	return e
 }

@@ -27,7 +27,9 @@ import (
 	"time"
 
 	"trident/internal/audit"
+	"trident/internal/authz"
 	"trident/internal/findings"
+	"trident/internal/javaast"
 	"trident/internal/project"
 	"trident/internal/reach"
 	"trident/internal/sca"
@@ -50,10 +52,18 @@ const (
 	DefaultLimit = 50
 	MaxLimit     = 200
 	MaxBodyBytes = 4 << 10
+
+	// MaxJavaModelFiles bounds the optional semantic model. Its memory grows with
+	// the whole project, unlike the other analyzers that stream file by file.
+	MaxJavaModelFiles = 2000
+	// MaxConfigBytes bounds the runtime configuration payload.
+	MaxConfigBytes = 256 << 10
 )
 
 var (
 	ErrUnauthorized = errors.New("console access token required")
+	// ErrNoProject means the workspace console has not imported a project yet.
+	ErrNoProject = errors.New("no project selected")
 	//go:embed assets/*
 	assets embed.FS
 )
@@ -62,6 +72,9 @@ type Options struct {
 	SnapshotDir  string
 	SnapshotHash string
 	AdvisoryPath string
+	// AdvisoryDir loads every *.json catalog inside one directory; it is
+	// mutually exclusive with AdvisoryPath.
+	AdvisoryDir string
 	// Token is the legacy single-user token. TokensFile and Token are mutually
 	// exclusive; the file form carries per-user identities as SHA-256 hashes.
 	Token      string
@@ -74,6 +87,23 @@ type Options struct {
 	RuntimeReport string
 	// AgentDSN opens a read-only observation database for the Agent view.
 	AgentDSN string
+	// AgentToken authenticates the console against the Agent database when
+	// chat is enabled. It is a principal token, never persisted by the console.
+	AgentToken string
+	// EnableAgentChat turns the console into an Agent control plane: the page
+	// may create runs and call the model. Off by default on purpose.
+	EnableAgentChat bool
+	// AgentEndpoint, AgentModel and AgentKeyEnv bind the model used by chat.
+	AgentEndpoint string
+	AgentModel    string
+	AgentKeyEnv   string
+	// Workspace enables one-click mode: the console may import another local
+	// source directory, persist path configuration and re-run analysis. Without
+	// it the console stays pinned to the snapshot supplied at start.
+	Workspace string
+	// ProjectSource records where the pinned snapshot was imported from. It is
+	// display metadata only and is never read again.
+	ProjectSource string
 	// Version is the product build string shown in the console footer.
 	Version string
 }
@@ -81,18 +111,29 @@ type Options struct {
 // Console owns the pinned snapshot and the cached analysis reports. It must be
 // closed by the caller; it is safe for concurrent HTTP handlers.
 type Console struct {
-	snapshot          *project.Snapshot
-	advisoryPath      string
-	tokens            *tokenRegistry
-	singleToken       string // plaintext of the legacy single-token mode; empty in file mode
-	version           string
-	startedAt         time.Time
-	accessLog         *accessLogger
-	packageMap        string
-	runtimeReportPath string
-	reachState        *reach.Report
-	reachMu           sync.Mutex
-	agentStore        *store.Store
+	snapshot      *project.Snapshot
+	snapshotDir   string
+	snapMu        sync.RWMutex
+	projectSource string
+	workspace     string
+	tokens        *tokenRegistry
+	singleToken   string // plaintext of the legacy single-token mode; empty in file mode
+	version       string
+	startedAt     time.Time
+	accessLog     *accessLogger
+	reachState    *reach.Report
+	reachMu       sync.Mutex
+	agentStore    *store.Store
+	agentWrite    *store.Store
+	agentSession  store.Session
+	chat          agentChat
+	chatMu        sync.Mutex
+	chatActive    int64
+	chatError     string
+
+	cfgMu  sync.Mutex
+	config consoleConfig
+	models modelsFile
 
 	requestsTotal     atomic.Int64
 	unauthorizedTotal atomic.Int64
@@ -134,10 +175,26 @@ type metricsAnalysis struct {
 	LastError      string `json:"last_error"`
 }
 
+// consoleConfig holds the mutable path configuration. Values are resolved on
+// every analysis so a configuration change never needs a restart.
+type consoleConfig struct {
+	AdvisoryPath   string `json:"advisories_path"`
+	AdvisoryDir    string `json:"advisories_dir"`
+	PackageMapPath string `json:"package_map_path"`
+	RuntimeReport  string `json:"runtime_report"`
+}
+
+func (c consoleConfig) advisoryOptions() sca.Options {
+	return sca.Options{AdvisoryPath: c.AdvisoryPath, AdvisoryDir: c.AdvisoryDir}
+}
+
 type analysisState struct {
 	findings findings.Report
 	sca      sca.Report
 	audit    audit.Report
+	authz    authz.Report
+	model    *javaast.Model
+	modelErr string
 	duration time.Duration
 	at       time.Time
 	err      error
@@ -146,8 +203,13 @@ type analysisState struct {
 // New opens an existing trusted snapshot. The expected hash must come from a
 // record kept outside the snapshot, exactly like the CLI.
 func New(ctx context.Context, opts Options) (*Console, error) {
-	if opts.SnapshotDir == "" || opts.SnapshotHash == "" {
-		return nil, fmt.Errorf("web console requires an existing --snapshot and trusted --snapshot-hash")
+	// A workspace console may start without a project: the user picks one in the
+	// browser. A pinned console still needs an existing snapshot and digest.
+	if (opts.SnapshotDir == "") != (opts.SnapshotHash == "") {
+		return nil, fmt.Errorf("--snapshot and --snapshot-hash must be supplied together")
+	}
+	if opts.SnapshotDir == "" && opts.Workspace == "" {
+		return nil, fmt.Errorf("web console requires either --project/--workspace or --snapshot with --snapshot-hash")
 	}
 	token := strings.TrimSpace(opts.Token)
 	if opts.TokensFile != "" && token != "" {
@@ -174,27 +236,147 @@ func New(ctx context.Context, opts Options) (*Console, error) {
 		}
 		registry = newSingleTokenRegistry(token)
 	}
-	snapshot, err := project.Open(ctx, opts.SnapshotDir, opts.SnapshotHash)
-	if err != nil {
-		return nil, err
+	var snapshot *project.Snapshot
+	if opts.SnapshotDir != "" {
+		opened, err := project.Open(ctx, opts.SnapshotDir, opts.SnapshotHash)
+		if err != nil {
+			return nil, err
+		}
+		snapshot = opened
 	}
 	version := opts.Version
 	if version == "" {
 		version = Product
 	}
-	console := &Console{snapshot: snapshot, advisoryPath: opts.AdvisoryPath, tokens: registry, singleToken: token, version: version, startedAt: time.Now().UTC(), packageMap: opts.PackageMap, runtimeReportPath: opts.RuntimeReport}
+	console := &Console{
+		snapshot:      snapshot,
+		snapshotDir:   opts.SnapshotDir,
+		projectSource: opts.ProjectSource,
+		workspace:     opts.Workspace,
+		tokens:        registry,
+		singleToken:   token,
+		version:       version,
+		startedAt:     time.Now().UTC(),
+		config: consoleConfig{
+			AdvisoryPath:   opts.AdvisoryPath,
+			AdvisoryDir:    opts.AdvisoryDir,
+			PackageMapPath: opts.PackageMap,
+			RuntimeReport:  opts.RuntimeReport,
+		},
+	}
+	if opts.Workspace != "" {
+		persisted, err := loadWorkspaceConfig(opts.Workspace)
+		if err != nil {
+			closeSnapshot(snapshot)
+			return nil, err
+		}
+		// Explicit flags win over the persisted file so a one-off override is
+		// possible without hand-editing the workspace.
+		console.config = mergeConfig(persisted, console.config)
+		if console.chat.model == "" && persisted.AgentModel != "" {
+			console.chat.model = persisted.AgentModel
+		}
+		// Record the served project so the next start only needs --workspace.
+		source := opts.ProjectSource
+		if source == "" && persisted.Project != nil {
+			source = persisted.Project.Source
+		}
+		persisted.Project = &workspaceProj{
+			Source:       source,
+			SnapshotDir:  opts.SnapshotDir,
+			SnapshotHash: opts.SnapshotHash,
+		}
+		persisted.AdvisoryPath = console.config.AdvisoryPath
+		persisted.AdvisoryDir = console.config.AdvisoryDir
+		persisted.PackageMap = console.config.PackageMapPath
+		persisted.RuntimeReport = console.config.RuntimeReport
+		if err := saveWorkspaceConfig(opts.Workspace, persisted); err != nil {
+			closeSnapshot(snapshot)
+			return nil, err
+		}
+		if snapshot != nil {
+			manifest := snapshot.Manifest()
+			console.rememberProject(projectEntry{
+				Source: source, SnapshotDir: opts.SnapshotDir, Hash: opts.SnapshotHash,
+				Files: manifest.TotalFiles, Bytes: manifest.TotalBytes,
+				ImportedAt: time.Now().UTC().Format(time.RFC3339),
+			})
+		}
+	}
 	if opts.AgentDSN != "" {
 		observation, err := store.Open(ctx, opts.AgentDSN, false)
 		if err != nil {
-			_ = snapshot.Close()
+			closeSnapshot(snapshot)
 			return nil, err
 		}
 		console.agentStore = observation
 	}
+	if opts.AgentKeyEnv == "" {
+		opts.AgentKeyEnv = "TRIDENT_MODEL_API_KEY"
+	}
+	console.chat = agentChat{
+		enabled: false, endpoint: opts.AgentEndpoint, model: opts.AgentModel,
+		outputParam: "max_tokens", keyEnv: opts.AgentKeyEnv, advisories: opts.AdvisoryPath,
+	}
+	if opts.Workspace != "" {
+		if loaded, err := loadModels(opts.Workspace); err != nil {
+			closeSnapshot(snapshot)
+			return nil, err
+		} else if len(loaded.Profiles) > 0 {
+			console.models = loaded
+		}
+	}
+	if len(console.models.Profiles) == 0 {
+		seed := seedProfile(opts.AgentEndpoint, opts.AgentModel, opts.AgentKeyEnv)
+		if seed.Endpoint != "" && seed.Model != "" {
+			console.models = modelsFile{SchemaVersion: modelsSchemaVersion, Profiles: []modelProfile{seed}, Default: seed.ID}
+		} else {
+			console.models = modelsFile{SchemaVersion: modelsSchemaVersion, Profiles: []modelProfile{}}
+		}
+	}
+	if len(console.models.Profiles) > 0 && console.models.Default == "" {
+		console.models.Default = console.models.Profiles[0].ID
+	}
+	if opts.Workspace != "" && len(console.models.Profiles) > 0 {
+		// Persist the seeded library once so the file is visible and editable
+		// instead of being rebuilt from flags on every start.
+		if _, statErr := os.Stat(modelsPath(opts.Workspace)); statErr != nil {
+			_ = saveModels(opts.Workspace, console.models)
+		}
+	}
+	// The library is the source of truth for endpoint/model/key variable once it
+	// exists, so a saved profile survives a restart without repeating the flags.
+	console.applyModels(console.models)
+
+	switch {
+	case !opts.EnableAgentChat:
+		console.chat.reason = "对话未启用：启动时加 --enable-agent-chat，并配置 --agent-dsn / --agent-token / 模型"
+	case opts.AgentDSN == "":
+		console.chat.reason = "对话需要 --agent-dsn 指向可写数据库"
+	case opts.AgentToken == "":
+		console.chat.reason = "对话需要 --agent-token（具备创建 Run 权限的主体令牌）"
+	case opts.AgentEndpoint == "" || opts.AgentModel == "":
+		console.chat.reason = "对话需要 --agent-endpoint 与 --agent-model"
+	default:
+		writable, err := store.Open(ctx, opts.AgentDSN, false)
+		if err != nil {
+			console.chat.reason = "打开可写 Agent 数据库失败：" + err.Error()
+			break
+		}
+		session, err := writable.Authenticate(ctx, opts.AgentToken)
+		if err != nil {
+			writable.Close()
+			console.chat.reason = "Agent 令牌无效或已撤销"
+			break
+		}
+		console.agentWrite = writable
+		console.agentSession = session
+		console.chat.enabled = true
+	}
 	if opts.AccessLog != "" {
 		logger, err := newAccessLogger(opts.AccessLog)
 		if err != nil {
-			_ = snapshot.Close()
+			closeSnapshot(snapshot)
 			return nil, err
 		}
 		console.accessLog = logger
@@ -221,23 +403,70 @@ func (c *Console) TokenIDs() []string { return c.tokens.TokenIDs() }
 // MultiToken reports whether the console was started from a token file.
 func (c *Console) MultiToken() bool { return c.tokens.source != "" }
 
-// SnapshotHash returns the pinned snapshot digest.
-func (c *Console) SnapshotHash() string { return c.snapshot.Hash() }
+// closeSnapshot closes a snapshot only when one is open. A workspace console can
+// legitimately run with no project.
+func closeSnapshot(snapshot *project.Snapshot) {
+	if snapshot != nil {
+		_ = snapshot.Close()
+	}
+}
+
+// snapshotRef returns the snapshot currently being served. The console may swap
+// it at runtime in workspace mode, so handlers must never cache the pointer.
+func (c *Console) snapshotRef() *project.Snapshot {
+	c.snapMu.RLock()
+	defer c.snapMu.RUnlock()
+	return c.snapshot
+}
+
+// SnapshotHash returns the pinned snapshot digest, or "" when no project is open.
+func (c *Console) SnapshotHash() string {
+	if snapshot := c.snapshotRef(); snapshot != nil {
+		return snapshot.Hash()
+	}
+	return ""
+}
+
+func (c *Console) currentConfig() consoleConfig {
+	c.cfgMu.Lock()
+	defer c.cfgMu.Unlock()
+	return c.config
+}
 
 func (c *Console) Close() error {
-	err := c.snapshot.Close()
+	c.snapMu.RLock()
+	var err error
+	if c.snapshot != nil {
+		err = c.snapshot.Close()
+	}
+	c.snapMu.RUnlock()
 	if logErr := c.accessLog.Close(); logErr != nil && err == nil {
 		err = logErr
 	}
 	if c.agentStore != nil {
 		c.agentStore.Close()
 	}
+	if c.agentWrite != nil {
+		c.agentWrite.Close()
+	}
 	return err
 }
 
-// analyze runs SCA, the endpoint inventory, bounded dataflow and the unified
-// evidence model once, then serves every page from the cached report. A failed
-// analysis is cached as a terminal error instead of being retried per request.
+// resetAnalysis drops the cached analysis and the lazily built reachability
+// report. Callers must hold no lock; the next request re-runs every analyzer.
+func (c *Console) resetAnalysis() {
+	c.mu.Lock()
+	c.state = nil
+	c.mu.Unlock()
+	c.reachMu.Lock()
+	c.reachState = nil
+	c.reachMu.Unlock()
+}
+
+// analyze runs SCA, the endpoint inventory, bounded dataflow, the authorization
+// inventory and the unified evidence model once, then serves every page from the
+// cached report. A failed analysis is cached as a terminal error instead of
+// being retried per request.
 func (c *Console) analyze(ctx context.Context) (*analysisState, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -247,9 +476,18 @@ func (c *Console) analyze(ctx context.Context) (*analysisState, error) {
 	}
 	started := time.Now()
 	state := &analysisState{}
-	scaReport, scaErr := sca.Inspect(ctx, c.snapshot, sca.Options{AdvisoryPath: c.advisoryPath})
-	endpointReport, auditErr := audit.Inspect(ctx, c.snapshot)
-	findingReport, findingErr := findings.Analyze(ctx, c.snapshot, findings.Options{AdvisoryPath: c.advisoryPath})
+	snapshot := c.snapshotRef()
+	if snapshot == nil {
+		state.err = fmt.Errorf("%w: no project selected", ErrNoProject)
+		state.at = time.Now().UTC()
+		c.state = state
+		return state, state.err
+	}
+	cfg := c.currentConfig()
+	scaReport, scaErr := sca.Inspect(ctx, snapshot, cfg.advisoryOptions())
+	endpointReport, auditErr := audit.Inspect(ctx, snapshot)
+	findingReport, findingErr := findings.Analyze(ctx, snapshot, findings.Options{AdvisoryPath: cfg.AdvisoryPath, PackageMapPath: cfg.PackageMapPath})
+	authzReport, authzErr := authz.Analyze(ctx, snapshot)
 	switch {
 	case findingErr != nil:
 		state.err = fmt.Errorf("analysis failed: %w", findingErr)
@@ -257,10 +495,25 @@ func (c *Console) analyze(ctx context.Context) (*analysisState, error) {
 		state.err = fmt.Errorf("SCA analysis failed: %w", scaErr)
 	case auditErr != nil:
 		state.err = fmt.Errorf("endpoint inventory failed: %w", auditErr)
+	case authzErr != nil:
+		state.err = fmt.Errorf("authorization inventory failed: %w", authzErr)
 	default:
 		state.findings = findingReport
 		state.sca = scaReport
 		state.audit = endpointReport
+		state.authz = authzReport
+	}
+	// The Java semantic model is optional: it is the only analyzer whose memory
+	// grows with the whole project, so a very large snapshot keeps it disabled
+	// instead of exhausting the process.
+	if state.err == nil {
+		if files := endpointReport.Coverage.JavaFilesScanned; files > MaxJavaModelFiles {
+			state.modelErr = fmt.Sprintf("项目包含 %d 个 Java 文件，超过代码模型上限 %d；已跳过语义模型", files, MaxJavaModelFiles)
+		} else if model, modelErr := javaast.Analyze(ctx, snapshot); modelErr != nil {
+			state.modelErr = modelErr.Error()
+		} else {
+			state.model = &model
+		}
 	}
 	state.duration = time.Since(started)
 	state.at = time.Now().UTC()
@@ -300,7 +553,28 @@ func (c *Console) Handler() http.Handler {
 	mux.HandleFunc("GET /api/reachability", c.handleReachability)
 	mux.HandleFunc("GET /api/runtime-report", c.handleRuntimeReport)
 	mux.HandleFunc("GET /api/agent/runs", c.handleAgentRuns)
+	mux.HandleFunc("GET /api/agent/threads", c.handleAgentThreads)
+	mux.HandleFunc("GET /api/agent/chat/state", c.handleAgentChatState)
+	mux.HandleFunc("GET /api/agent/models", c.handleModelProfiles)
+	mux.HandleFunc("POST /api/agent/models", c.handleModelProfileUpsert)
+	mux.HandleFunc("POST /api/agent/models/default", c.handleModelProfileDefault)
+	mux.HandleFunc("POST /api/agent/models/remove", c.handleModelProfileRemove)
+	mux.HandleFunc("POST /api/agent/models/probe", c.handleModelProbe)
+	mux.HandleFunc("POST /api/agent/chat", c.handleAgentChat)
+	mux.HandleFunc("POST /api/agent/chat/cancel", c.handleAgentChatCancel)
 	mux.HandleFunc("GET /api/agent/steps", c.handleAgentSteps)
+	mux.HandleFunc("GET /api/authz", c.handleAuthz)
+	mux.HandleFunc("GET /api/model", c.handleModel)
+	mux.HandleFunc("GET /api/model/type", c.handleModelType)
+	mux.HandleFunc("GET /api/config", c.handleConfig)
+	mux.HandleFunc("POST /api/config", c.handleConfigUpdate)
+	mux.HandleFunc("POST /api/project", c.handleProjectImport)
+	mux.HandleFunc("GET /api/projects", c.handleProjects)
+	mux.HandleFunc("POST /api/projects", c.handleProjectCreate)
+	mux.HandleFunc("POST /api/projects/select", c.handleProjectSelect)
+	mux.HandleFunc("POST /api/projects/forget", c.handleProjectForget)
+	mux.HandleFunc("GET /api/fs", c.handleFilesystem)
+	mux.HandleFunc("POST /api/analysis/rerun", c.handleAnalysisRerun)
 	mux.HandleFunc("GET /export/report", c.handleExportReport)
 	mux.HandleFunc("GET /healthz", c.handleHealthz)
 	return c.middleware(mux)
@@ -394,6 +668,23 @@ func escapeLabelValue(value string) string {
 	return strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\"", "\\\"").Replace(value)
 }
 
+// requiresProject reports whether a route needs an open snapshot. Project
+// management, configuration, probes and metrics stay usable before the first
+// import so the browser can bootstrap itself.
+func requiresProject(path string) bool {
+	if !strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/export/") {
+		return false
+	}
+	switch {
+	case path == "/api/session", path == "/api/health", path == "/api/metrics",
+		path == "/api/config", path == "/api/fs",
+		path == "/api/projects", path == "/api/projects/select", path == "/api/projects/forget",
+		path == "/api/agent/chat/state", path == "/api/agent/models":
+		return false
+	}
+	return true
+}
+
 func (c *Console) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -441,6 +732,12 @@ func (c *Console) middleware(next http.Handler) http.Handler {
 					return
 				}
 			}
+		}
+		if gated && requiresProject(r.URL.Path) && c.snapshotRef() == nil {
+			c.forbiddenTotal.Add(1)
+			c.accessLog.record(entry, r, http.StatusConflict)
+			writeError(w, http.StatusConflict, "no_project", "尚未导入项目：请先在「项目」页选择本地源码目录")
+			return
 		}
 		recorder := &statusRecorder{ResponseWriter: w}
 		next.ServeHTTP(recorder, r)
@@ -559,7 +856,7 @@ func (c *Console) handleHealth(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	ready := c.state != nil && c.state.err == nil
 	c.mu.Unlock()
-	writeJSON(w, http.StatusOK, healthResponse{SchemaVersion: SchemaVersion, Status: "ok", Product: Product, SnapshotHash: c.snapshot.Hash(), AnalysisReady: ready, RuntimeStatus: "not_run"})
+	writeJSON(w, http.StatusOK, healthResponse{SchemaVersion: SchemaVersion, Status: "ok", Product: Product, SnapshotHash: c.SnapshotHash(), AnalysisReady: ready, RuntimeStatus: "not_run"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

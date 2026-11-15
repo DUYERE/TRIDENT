@@ -193,3 +193,40 @@ func annotationByName(t *testing.T, method MethodInfo, name string) Annotation {
 	t.Fatalf("annotation %s not found on %s", name, method.Name)
 	return Annotation{}
 }
+
+// TestUnbalancedAngleBracketsTerminate guards the scanner against a hang: a
+// comparison operator inside a method body looks like an unclosed generic
+// argument list, and a non-advancing skipAngles used to loop forever on real
+// projects.
+func TestUnbalancedAngleBracketsTerminate(t *testing.T) {
+	source := `package demo;
+
+public class Compare {
+    public boolean less(int a, int b) {
+        return a < b;
+    }
+
+    public boolean both(int a, int b, int c) {
+        return a < b && b < c;
+    }
+}
+`
+	unit, err := ParseFile("Compare.java", "sha", []byte(source))
+	if err != nil {
+		t.Fatalf("comparison operators must not fail the parse: %v", err)
+	}
+	if len(unit.Types) != 1 || len(unit.Types[0].Methods) != 2 {
+		t.Fatalf("unexpected declarations: %+v", unit.Types)
+	}
+}
+
+func TestSkipAnglesAlwaysAdvances(t *testing.T) {
+	tokens := []token{{text: "<"}, {text: "a"}, {text: "+"}, {text: "b"}}
+	if next := skipAngles(tokens, 0); next <= 0 {
+		t.Fatalf("unbalanced group must advance, got %d", next)
+	}
+	balanced := []token{{text: "<"}, {text: "String"}, {text: ">"}, {text: "x"}}
+	if next := skipAngles(balanced, 0); next != 3 {
+		t.Fatalf("balanced group must end after '>', got %d", next)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"trident/internal/audit"
+	"trident/internal/authz"
 	"trident/internal/dataflow"
 	"trident/internal/findings"
 	"trident/internal/project"
@@ -110,6 +111,33 @@ type statusCounts struct {
 	Refuted      int `json:"refuted"`
 }
 
+// severitySummary is one bar of the severity distribution. It is shared by the
+// overview chart and the findings filter so both use the same buckets.
+type severitySummary struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Total int    `json:"total"`
+}
+
+func severityBuckets() []severitySummary {
+	return []severitySummary{
+		{Key: "high", Label: "高"},
+		{Key: "medium", Label: "中"},
+		{Key: "low", Label: "低"},
+		{Key: "unknown", Label: "未知"},
+	}
+}
+
+// severityKey folds unset and unrecognised values into "unknown" so a finding
+// never disappears from the distribution.
+func severityKey(value string) string {
+	switch value {
+	case "high", "medium", "low":
+		return value
+	}
+	return "unknown"
+}
+
 type categorySummary struct {
 	Key          string `json:"key"`
 	Label        string `json:"label"`
@@ -118,6 +146,28 @@ type categorySummary struct {
 	Confirmed    int    `json:"static_confirmed"`
 	Inconclusive int    `json:"inconclusive"`
 	Refuted      int    `json:"refuted"`
+}
+
+type authzSummary struct {
+	Available   bool   `json:"available"`
+	Protected   int    `json:"protected"`
+	Public      int    `json:"public"`
+	Unprotected int    `json:"unprotected"`
+	Unknown     int    `json:"unknown"`
+	Controls    int    `json:"controls"`
+	Chains      int    `json:"chains"`
+	Partial     bool   `json:"partial"`
+	Runtime     string `json:"runtime_status"`
+}
+
+type modelSummary struct {
+	Enabled       bool   `json:"enabled"`
+	Reason        string `json:"reason,omitempty"`
+	Types         int    `json:"types"`
+	Methods       int    `json:"methods"`
+	CallsResolved int    `json:"calls_resolved"`
+	CallsTotal    int    `json:"calls_total"`
+	Partial       bool   `json:"partial"`
 }
 
 type overviewResponse struct {
@@ -130,6 +180,9 @@ type overviewResponse struct {
 	Counts        statusCounts      `json:"counts"`
 	Coverage      findings.Coverage `json:"coverage"`
 	Categories    []categorySummary `json:"categories"`
+	Authz         authzSummary      `json:"authz"`
+	Model         modelSummary      `json:"model"`
+	Severities    []severitySummary `json:"severities"`
 	Limitations   []string          `json:"limitations"`
 }
 
@@ -139,18 +192,23 @@ func (c *Console) handleOverview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "analysis_failed", err.Error())
 		return
 	}
-	inspect, err := c.snapshot.Inspect(r.Context(), project.InspectOptions{})
+	inspect, err := c.snapshotRef().Inspect(r.Context(), project.InspectOptions{})
 	if err != nil {
 		mapProjectError(w, err)
 		return
 	}
-	manifest := c.snapshot.Manifest()
+	manifest := c.snapshotRef().Manifest()
 	counts := statusCounts{}
 	categories := make([]categorySummary, len(categoryOrder))
 	index := map[string]int{}
 	for i, meta := range categoryOrder {
 		categories[i] = categorySummary{Key: meta.Key, Label: meta.Label, CWE: meta.CWE}
 		index[meta.Key] = i
+	}
+	severities := severityBuckets()
+	severityIndex := map[string]int{}
+	for i := range severities {
+		severityIndex[severities[i].Key] = i
 	}
 	for _, finding := range state.findings.Findings {
 		counts.Total++
@@ -161,6 +219,12 @@ func (c *Console) handleOverview(w http.ResponseWriter, r *http.Request) {
 			counts.Refuted++
 		default:
 			counts.Inconclusive++
+		}
+		// Refuted findings stay in the status/category tallies (they are real
+		// analysis output) but not in the severity chart, which is about work
+		// that still stands.
+		if finding.Status != "refuted" {
+			severities[severityIndex[severityKey(finding.Severity)]].Total++
 		}
 		position, ok := index[categoryKey(finding.Kind)]
 		if !ok {
@@ -188,7 +252,7 @@ func (c *Console) handleOverview(w http.ResponseWriter, r *http.Request) {
 			Partial:                state.findings.Partial,
 			RuntimeStatus:          "not_run",
 			AnalysisKind:           state.findings.AnalysisKind,
-			AdvisoryConfigured:     c.advisoryPath != "",
+			AdvisoryConfigured:     c.currentConfig().AdvisoryPath != "" || c.currentConfig().AdvisoryDir != "",
 			JavaAST:                state.findings.Coverage.JavaAST,
 			TaintAnalysis:          state.findings.Coverage.TaintAnalysis,
 			SCAResolution:          state.findings.Coverage.ScaResolution,
@@ -197,13 +261,37 @@ func (c *Console) handleOverview(w http.ResponseWriter, r *http.Request) {
 			EndpointCoverage:       state.audit.Coverage,
 			SCACoverage:            state.sca.Coverage,
 		},
-		Counts:      counts,
-		Coverage:    state.findings.Coverage,
-		Categories:  categories,
+		Counts:     counts,
+		Coverage:   state.findings.Coverage,
+		Categories: categories,
+		Severities: severities,
+		Authz: authzSummary{
+			Available:   len(state.authz.Endpoints) > 0,
+			Protected:   state.authz.Coverage.Protected,
+			Public:      state.authz.Coverage.Public,
+			Unprotected: state.authz.Coverage.Unprotected,
+			Unknown:     state.authz.Coverage.Unknown,
+			Controls:    state.authz.Coverage.Controls,
+			Chains:      state.authz.Coverage.Chains,
+			Partial:     state.authz.Partial,
+			Runtime:     state.authz.RuntimeStatus,
+		},
 		Limitations: state.findings.Limitations,
 	}
+	if state.model != nil {
+		report.Model = modelSummary{
+			Enabled:       true,
+			Types:         state.model.Coverage.TypesIndexed,
+			Methods:       state.model.Coverage.MethodsIndexed,
+			CallsResolved: state.model.Coverage.CallsResolved,
+			CallsTotal:    state.model.Coverage.CallsObserved,
+			Partial:       state.model.Partial,
+		}
+	} else {
+		report.Model = modelSummary{Enabled: false, Reason: state.modelErr}
+	}
 	report.Snapshot = snapshotInfo{
-		Hash:          c.snapshot.Hash(),
+		Hash:          c.snapshotRef().Hash(),
 		Source:        manifest.Source,
 		Manifest:      manifest.Version,
 		PolicyVersion: manifest.PolicyVersion,
@@ -236,15 +324,16 @@ type findingSummary struct {
 }
 
 type findingsResponse struct {
-	SchemaVersion int              `json:"schema_version"`
-	Total         int              `json:"total"`
-	Filtered      int              `json:"filtered"`
-	Counts        statusCounts     `json:"counts"`
-	Items         []findingSummary `json:"items"`
-	Limit         int              `json:"limit"`
-	Offset        int              `json:"offset"`
-	Partial       bool             `json:"partial"`
-	Limitations   []string         `json:"limitations"`
+	SchemaVersion int               `json:"schema_version"`
+	Total         int               `json:"total"`
+	Filtered      int               `json:"filtered"`
+	Counts        statusCounts      `json:"counts"`
+	Severities    []severitySummary `json:"severities"`
+	Items         []findingSummary  `json:"items"`
+	Limit         int               `json:"limit"`
+	Offset        int               `json:"offset"`
+	Partial       bool              `json:"partial"`
+	Limitations   []string          `json:"limitations"`
 }
 
 func (c *Console) handleFindings(w http.ResponseWriter, r *http.Request) {
@@ -273,6 +362,11 @@ func (c *Console) handleFindings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	severity, err := queryText(r, "severity", 16)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 	query, err := queryText(r, "q", 256)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -280,6 +374,11 @@ func (c *Console) handleFindings(w http.ResponseWriter, r *http.Request) {
 	}
 	needle := strings.ToLower(query)
 	counts := statusCounts{}
+	severities := severityBuckets()
+	severityIndex := map[string]int{}
+	for i := range severities {
+		severityIndex[severities[i].Key] = i
+	}
 	matched := make([]findings.Finding, 0, len(state.findings.Findings))
 	for _, finding := range state.findings.Findings {
 		counts.Total++
@@ -300,9 +399,15 @@ func (c *Console) handleFindings(w http.ResponseWriter, r *http.Request) {
 		if needle != "" && !findingMatches(finding, needle) {
 			continue
 		}
+		// Faceted count: severity chips describe the current status/category/keyword
+		// slice, so selecting one never leaves a bucket that cannot be reached.
+		severities[severityIndex[severityKey(finding.Severity)]].Total++
+		if severity != "" && severity != "all" && severityKey(finding.Severity) != severity {
+			continue
+		}
 		matched = append(matched, finding)
 	}
-	response := findingsResponse{SchemaVersion: SchemaVersion, Total: counts.Total, Filtered: len(matched), Counts: counts, Items: []findingSummary{}, Limit: limit, Offset: offset, Partial: state.findings.Partial, Limitations: state.findings.Limitations}
+	response := findingsResponse{SchemaVersion: SchemaVersion, Total: counts.Total, Filtered: len(matched), Counts: counts, Severities: severities, Items: []findingSummary{}, Limit: limit, Offset: offset, Partial: state.findings.Partial, Limitations: state.findings.Limitations}
 	if offset < len(matched) {
 		end := offset + limit
 		if end > len(matched) {
@@ -357,15 +462,28 @@ func (c *Console) handleFinding(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "not_found", "finding not present in this snapshot report")
 }
 
+// endpointAuthz is the authorization decision attached to one endpoint. It is
+// carried beside audit.Endpoint so the audit package keeps its own contract.
+type endpointAuthz struct {
+	Symbol          string   `json:"symbol"`
+	Decision        string   `json:"decision"`
+	Requirement     string   `json:"requirement,omitempty"`
+	Reason          string   `json:"reason,omitempty"`
+	MatchedControls []string `json:"matched_controls,omitempty"`
+	RuntimeStatus   string   `json:"runtime_status"`
+}
+
 type endpointsResponse struct {
-	SchemaVersion int              `json:"schema_version"`
-	Total         int              `json:"total"`
-	Items         []audit.Endpoint `json:"items"`
-	Partial       bool             `json:"partial"`
-	Coverage      audit.Coverage   `json:"coverage"`
-	Limitations   []string         `json:"limitations"`
-	Limit         int              `json:"limit"`
-	Offset        int              `json:"offset"`
+	SchemaVersion int                      `json:"schema_version"`
+	Total         int                      `json:"total"`
+	Items         []audit.Endpoint         `json:"items"`
+	Authz         map[string]endpointAuthz `json:"authz"`
+	AuthzCounts   authzCounts              `json:"authz_counts"`
+	Partial       bool                     `json:"partial"`
+	Coverage      audit.Coverage           `json:"coverage"`
+	Limitations   []string                 `json:"limitations"`
+	Limit         int                      `json:"limit"`
+	Offset        int                      `json:"offset"`
 }
 
 func (c *Console) handleEndpoints(w http.ResponseWriter, r *http.Request) {
@@ -390,8 +508,29 @@ func (c *Console) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	needle := strings.ToLower(query)
+	decisionFilter := strings.TrimSpace(r.URL.Query().Get("authz"))
+	decisions := map[string]authz.EndpointDecision{}
+	counts := authzCounts{}
+	for _, item := range state.authz.Endpoints {
+		decisions[item.Symbol] = item
+		switch item.Decision {
+		case "protected":
+			counts.Protected++
+		case "public":
+			counts.Public++
+		case "unprotected":
+			counts.Unprotected++
+		default:
+			counts.Unknown++
+		}
+	}
 	matched := make([]audit.Endpoint, 0, len(state.audit.Endpoints))
 	for _, endpoint := range state.audit.Endpoints {
+		if decisionFilter != "" && decisionFilter != "all" {
+			if item, ok := decisions[endpoint.Symbol]; !ok || item.Decision != decisionFilter {
+				continue
+			}
+		}
 		if needle != "" {
 			fields := []string{endpoint.Path, endpoint.Symbol, endpoint.File, endpoint.Class, endpoint.Method, strings.Join(endpoint.HTTPMethods, ",")}
 			hit := false
@@ -407,13 +546,24 @@ func (c *Console) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 		}
 		matched = append(matched, endpoint)
 	}
-	response := endpointsResponse{SchemaVersion: SchemaVersion, Total: len(matched), Items: []audit.Endpoint{}, Partial: state.audit.Partial, Coverage: state.audit.Coverage, Limitations: state.audit.Limitations, Limit: limit, Offset: offset}
+	response := endpointsResponse{SchemaVersion: SchemaVersion, Total: len(matched), Items: []audit.Endpoint{}, Authz: map[string]endpointAuthz{}, AuthzCounts: counts, Partial: state.audit.Partial, Coverage: state.audit.Coverage, Limitations: state.audit.Limitations, Limit: limit, Offset: offset}
 	if offset < len(matched) {
 		end := offset + limit
 		if end > len(matched) {
 			end = len(matched)
 		}
 		response.Items = append(response.Items, matched[offset:end]...)
+	}
+	for _, endpoint := range response.Items {
+		item, ok := decisions[endpoint.Symbol]
+		if !ok {
+			response.Authz[endpoint.Symbol] = endpointAuthz{Decision: "unknown", Reason: "no_decision_for_symbol", RuntimeStatus: "not_run"}
+			continue
+		}
+		response.Authz[endpoint.Symbol] = endpointAuthz{
+			Symbol: item.Symbol, Decision: item.Decision, Requirement: item.Requirement,
+			Reason: item.Reason, MatchedControls: item.MatchedControls, RuntimeStatus: item.RuntimeStatus,
+		}
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -448,7 +598,7 @@ func (c *Console) handleFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	result, err := c.snapshot.List(r.Context(), project.ListOptions{Prefix: prefix, Limit: limit, Cursor: cursor})
+	result, err := c.snapshotRef().List(r.Context(), project.ListOptions{Prefix: prefix, Limit: limit, Cursor: cursor})
 	if err != nil {
 		mapProjectError(w, err)
 		return
@@ -477,7 +627,7 @@ func (c *Console) handleFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	result, err := c.snapshot.Read(r.Context(), project.ReadOptions{Path: filePath, StartLine: startLine, Limit: limit, Cursor: cursor})
+	result, err := c.snapshotRef().Read(r.Context(), project.ReadOptions{Path: filePath, StartLine: startLine, Limit: limit, Cursor: cursor})
 	if err != nil {
 		mapProjectError(w, err)
 		return
@@ -506,7 +656,7 @@ func (c *Console) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	result, err := c.snapshot.Search(r.Context(), project.SearchOptions{Query: query, Prefix: prefix, Limit: limit, Cursor: cursor})
+	result, err := c.snapshotRef().Search(r.Context(), project.SearchOptions{Query: query, Prefix: prefix, Limit: limit, Cursor: cursor})
 	if err != nil {
 		mapProjectError(w, err)
 		return
@@ -522,7 +672,7 @@ func (c *Console) handleSBOM(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "analysis_failed", err.Error())
 		return
 	}
-	document, err := sbom.Build(state.sca, sbom.Options{SnapshotHash: c.snapshot.Hash(), ToolVersion: sbom.ToolVersion, Partial: state.sca.Partial})
+	document, err := sbom.Build(state.sca, sbom.Options{SnapshotHash: c.snapshotRef().Hash(), ToolVersion: sbom.ToolVersion, Partial: state.sca.Partial})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "sbom_failed", err.Error())
 		return
@@ -532,7 +682,7 @@ func (c *Console) handleSBOM(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "SBOM encoding failed")
 		return
 	}
-	short := c.snapshot.Hash()
+	short := c.snapshotRef().Hash()
 	if len(short) > 12 {
 		short = short[:12]
 	}
@@ -556,7 +706,7 @@ func (c *Console) handleReport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "report encoding failed")
 		return
 	}
-	short := c.snapshot.Hash()
+	short := c.snapshotRef().Hash()
 	if len(short) > 12 {
 		short = short[:12]
 	}

@@ -8,3 +8,6 @@ secrets/
 tests/fixtures/**/target/
 
 logs/
+.trident/
+.workbuddy/
+*.exe~

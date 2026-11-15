@@ -9,23 +9,33 @@
     token: sessionStorage.getItem("trident.token") || "",
     overview: null,
     route: "overview",
-    findings: { items: [], total: 0, filtered: 0, counts: null, offset: 0, limit: 50, status: "all", category: "all", q: "", seq: 0, loading: false },
-    endpoints: { items: [], total: 0, offset: 0, limit: 50, q: "", coverage: null, seq: 0, loading: false },
+    findings: { items: [], total: 0, filtered: 0, counts: null, severities: [], offset: 0, limit: 50, status: "all", category: "all", severity: "all", q: "", seq: 0, loading: false },
+    endpoints: { items: [], total: 0, offset: 0, limit: 50, q: "", authz: "all", authzMap: {}, authzCounts: null, coverage: null, seq: 0, loading: false },
+    authz: { items: [], total: 0, offset: 0, limit: 50, q: "", decision: "all", limitations: [], seq: 0 },
+    model: { items: [], total: 0, offset: 0, limit: 50, q: "", seq: 0 },
+    config: null,
+    modelSettings: null,
+    browse: { path: "", parent: "", entries: [], roots: [], pick: "" },
     source: { mode: "files", prefix: "", files: [], cursor: "", total: 0, path: "", line: 0, file: null, search: null, searchQ: "" },
-    agent: { runs: [], openId: null, steps: [] },
+    agent: { chat: null, threads: [], openId: 0, steps: [], run: null, busy: false, timer: null, lastSeq: 0 },
     drawerId: null,
   };
 
   const routeMeta = {
+    projects: { title: "项目", eyebrow: "TRIDENT / PROJECTS" },
     overview: { title: "概览", eyebrow: "TRIDENT / OVERVIEW" },
     findings: { title: "安全发现", eyebrow: "TRIDENT / FINDINGS" },
     endpoints: { title: "HTTP 入口", eyebrow: "TRIDENT / ENDPOINTS" },
     dependencies: { title: "依赖与公告", eyebrow: "TRIDENT / DEPENDENCIES" },
     tree: { title: "依赖树", eyebrow: "TRIDENT / DEPENDENCY TREE" },
     reachability: { title: "可达性", eyebrow: "TRIDENT / REACHABILITY" },
+    authz: { title: "权限清单", eyebrow: "TRIDENT / AUTHORIZATION" },
+    model: { title: "代码模型", eyebrow: "TRIDENT / JAVA MODEL" },
     runtime: { title: "运行时关联", eyebrow: "TRIDENT / RUNTIME CORRELATION" },
-    agent: { title: "Agent 活动", eyebrow: "TRIDENT / AGENT OBSERVATION" },
+    agent: { title: "Agent 对话", eyebrow: "TRIDENT / AGENT CHAT" },
     source: { title: "源码浏览", eyebrow: "TRIDENT / SOURCE" },
+    settings: { title: "设置", eyebrow: "TRIDENT / SETTINGS" },
+    "settings-model": { title: "模型", eyebrow: "TRIDENT / SETTINGS / MODEL" },
     about: { title: "边界与关于", eyebrow: "TRIDENT / SYSTEM" },
   };
 
@@ -121,6 +131,23 @@
     parent_coordinates_mismatch: "父坐标不匹配",
     duplicate_declaration: "重复声明",
     version_unresolved: "版本未解析",
+    context_path_unknown: "上下文路径未知",
+    custom_auth_not_modeled: "自定义鉴权未建模",
+    filter_chain_order_bounded: "过滤器链顺序有界",
+    filter_chain_rule_order_bounded: "链内规则顺序有界",
+    lexical_control_inventory_not_ast: "控制清单为词法级",
+    manual_session_checks_are_unknown: "手工会话检查记为未知",
+    spel_subset_only: "SpEL 仅支持子集",
+    unprotected_is_inconclusive: "无控制不等于可未授权访问",
+    unresolved_controls_present: "存在未解析控制",
+    annotation_arguments_bounded: "注解参数有界",
+    java_subset_parser: "受限 Java 子集解析",
+    java_declarations_only: "仅声明级语义",
+    constant_folding_bounded: "常量折叠有界",
+    reflection_not_resolved: "反射未解析",
+    dynamic_proxy_and_aop_not_resolved: "动态代理/AOP 未解析",
+    external_types_not_resolved: "外部类型未解析",
+    classpath_not_resolved: "classpath 未解析",
   };
 
   const esc = (value) =>
@@ -153,7 +180,10 @@
     const key = at > 0 ? String(item).slice(0, at) : String(item);
     const text = at > 0 ? String(item).slice(at + 1).trim() : "";
     const title = limitationTitles[key];
-    return `<li class="limit-row"><svg class="icon"><use href="#i-info"/></svg><span><span class="limit-key">${esc(key)}</span>${title ? ` <b>${esc(title)}</b>` : ""}${text ? ` <span class="limit-text">${esc(text)}</span>` : ""}</span></li>`;
+    if (title) {
+      return `<li class="limit-row"><svg class="icon"><use href="#i-info"/></svg><span><b>${esc(title)}</b>${text ? ` <span class="limit-text trunc" title="${esc(text)}">${esc(text)}</span>` : ""}<span class="limit-key">${esc(key)}</span></span></li>`;
+    }
+    return `<li class="limit-row"><svg class="icon"><use href="#i-info"/></svg><span><span class="limit-key">${esc(key)}</span>${text ? ` <span class="limit-text">${esc(text)}</span>` : ""}</span></li>`;
   }
 
   function limitationList(items) {
@@ -204,9 +234,58 @@
   }
 
   function installChrome() {
+    // Collapsible rail: icon-only mode persists across reloads.
+    const applyNav = (mode) => {
+      document.body.dataset.nav = mode;
+      const toggle = $("#navCollapse");
+      if (toggle) {
+        toggle.title = mode === "collapsed" ? "展开侧边栏" : "收起侧边栏";
+        toggle.setAttribute("aria-label", toggle.title);
+      }
+    };
+    applyNav(localStorage.getItem("trident.nav") === "collapsed" ? "collapsed" : "expanded");
+    $("#navCollapse").addEventListener("click", () => {
+      const next = document.body.dataset.nav === "collapsed" ? "expanded" : "collapsed";
+      localStorage.setItem("trident.nav", next);
+      applyNav(next);
+    });
+    // Settings group: parent only toggles; navigation goes through its children.
+    const applySettings = (open) => {
+      document.body.dataset.settings = open ? "open" : "closed";
+      localStorage.setItem("trident.settings", open ? "open" : "closed");
+    };
+    applySettings(localStorage.getItem("trident.settings") !== "closed");
+    // Collapsed rail keeps icons only, so each item needs a hover label.
+    $$(".nav-item").forEach((item) => {
+      const label = $("span", item);
+      if (label) item.title = label.textContent.trim();
+    });
+    $$(".nav-parent").forEach((parent) => {
+      parent.addEventListener("click", (event) => {
+        event.preventDefault();
+        applySettings(document.body.dataset.settings !== "open");
+      });
+    });
+    $("#projectSwitcher").addEventListener("change", async (event) => {
+      const hash = event.target.value;
+      if (!hash || hash === (state.config && state.config.project.hash)) return;
+      try {
+        await api("/api/projects/select", { method: "POST", body: { hash } });
+        resetAnalysisState();
+        await ensureConfig(true);
+        await refreshProjectSwitcher();
+        toast("已切换项目", "ok");
+        await renderRoute();
+      } catch (error) {
+        toast(error.message, "bad");
+        await refreshProjectSwitcher();
+      }
+    });
     $("#exportBtn").addEventListener("click", exportReport);
     $("#exportHtmlBtn").addEventListener("click", exportHtmlReport);
     $("#themeToggle").addEventListener("click", toggleTheme);
+    const loginTheme = $("#loginThemeToggle") || $(".login-theme");
+    if (loginTheme) loginTheme.addEventListener("click", toggleTheme);
     applyTheme(localStorage.getItem("trident.theme") || "dark");
     $("#mobileNav").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
     document.addEventListener("click", (event) => {
@@ -230,7 +309,18 @@
         navigator.clipboard.writeText(copy.dataset.copy).then(() => toast("已复制到剪贴板", "ok")).catch(() => toast("复制失败", "bad"));
       }
     });
+    // The chat view renders [data-copy] outside the drawer; delegate once.
+    document.addEventListener("click", (event) => {
+      const copy = event.target.closest("[data-copy]");
+      if (!copy || copy.closest("#drawer")) return;
+      navigator.clipboard.writeText(copy.dataset.copy).then(() => toast("已复制到剪贴板", "ok")).catch(() => toast("复制失败", "bad"));
+    });
     document.addEventListener("keydown", (event) => {
+      if ((event.key === "Enter" || event.key === " ") && event.target.matches && event.target.matches("tr.clickable")) {
+        event.preventDefault();
+        event.target.click();
+        return;
+      }
       if (event.key === "Escape") {
         if (!$("#drawerLayer").hidden) closeDrawer();
         else $("#sidebar").classList.remove("open");
@@ -305,7 +395,9 @@
   function parseHash() {
     const raw = location.hash.replace(/^#\/?/, "");
     const split = raw.split("?");
-    const name = routeMeta[split[0]] ? split[0] : "overview";
+    let name = split[0];
+    if (!routeMeta[name] && routeMeta[name.replace(/\//g, "-")]) name = name.replace(/\//g, "-");
+    if (!routeMeta[name]) name = "overview";
     return { name, params: new URLSearchParams(split[1] || "") };
   }
 
@@ -322,24 +414,47 @@
     $("#pageTitle").textContent = routeMeta[name].title;
     $("#pageEyebrow").textContent = routeMeta[name].eyebrow;
     document.title = "TRIDENT · " + routeMeta[name].title;
-    $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.route === name));
+    $$(".nav-item").forEach((item) => {
+      const route = item.dataset.route;
+      const active = route === name || (route === "settings" && name === "settings-model" && !item.classList.contains("nav-parent"));
+      item.classList.toggle("active", active);
+    });
+    const settingsParent = $(".nav-parent[data-group=settings]");
+    if (settingsParent) settingsParent.classList.toggle("active", name === "settings" || name === "settings-model");
     const view = $("#view");
     view.innerHTML = skeletonView();
     view.scrollTop = 0;
     try {
-      if (name === "overview") await viewOverview();
+      if (name !== "projects") {
+        const config = await ensureConfig();
+        if (!config.project.hash) {
+          go("projects");
+          return;
+        }
+      }
+      if (name === "projects") await viewProjects();
+      else if (name === "overview") await viewOverview();
       else if (name === "findings") await viewFindings();
       else if (name === "endpoints") await viewEndpoints();
       else if (name === "dependencies") await viewDependencies();
       else if (name === "tree") await viewTree();
+      else if (name === "authz") await viewAuthz();
+      else if (name === "model") await viewModel();
       else if (name === "reachability") await viewReachability();
       else if (name === "runtime") await viewRuntime();
       else if (name === "agent") await viewAgent();
       else if (name === "source") await viewSource(params);
+      else if (name === "settings") await viewSettings();
+      else if (name === "settings-model") await viewSettingsModel();
       else if (name === "about") await viewAbout();
     } catch (error) {
       if (error.status === 401) {
         showLogin("会话已失效，请重新输入访问令牌。");
+        return;
+      }
+      if (error.status === 409 && /no_project|项目/.test(error.message)) {
+        await ensureConfig(true);
+        go("projects");
         return;
       }
       renderFailure(error);
@@ -349,6 +464,27 @@
   function renderFailure(error) {
     $("#view").innerHTML = `<div class="card"><div class="empty"><svg class="icon"><use href="#i-alert"/></svg><h4>无法加载该视图</h4><p>${esc(error.message || "未知错误")}</p><button class="btn" type="button" id="retryView">重试</button></div></div>`;
     $("#retryView").addEventListener("click", renderRoute);
+  }
+
+  async function refreshProjectSwitcher() {
+    const select = $("#projectSwitcher");
+    if (!select) return;
+    let projects = [];
+    try {
+      const payload = await api("/api/projects");
+      projects = payload.projects || [];
+    } catch (error) {
+      projects = [];
+    }
+    const current = (state.config && state.config.project && state.config.project.hash) || "";
+    if (!projects.length) {
+      select.innerHTML = `<option value="">未选择项目</option>`;
+      return;
+    }
+    select.innerHTML = projects.map((entry) => {
+      const name = String(entry.source || "").split(/[\\/]/).filter(Boolean).pop() || entry.hash.slice(0, 12);
+      return `<option value="${esc(entry.hash)}"${entry.hash === current ? " selected" : ""}>${esc(name)}</option>`;
+    }).join("");
   }
 
   async function ensureOverview(force) {
@@ -383,6 +519,15 @@
 
   async function viewOverview() {
     const overview = await ensureOverview();
+    // The thread list is optional: a console without an Agent database must
+    // still render the static overview.
+    let recent = [];
+    try {
+      const payload = await api("/api/agent/threads");
+      recent = (payload.threads || []).slice(0, 4);
+    } catch (error) {
+      recent = [];
+    }
     const snap = overview.snapshot;
     const counts = overview.counts;
     const coverage = overview.coverage;
@@ -407,14 +552,16 @@
       </section>
 
       <div class="tiles">
-        ${tile("folder", "teal", fmtNum(snap.total_files), "文件清单", `排除 ${fmtNum(snap.excluded_count)} 项`)}
-        ${tile("route", "blue", fmtNum(analysis.endpoint_coverage.endpoints_found), "HTTP 入口", `${fmtNum(analysis.endpoint_coverage.controllers_found)} 个控制器`)}
-        ${tile("bug", "rose", fmtNum(counts.total), "安全发现", `静态确认 ${fmtNum(counts.static_confirmed)}`)}
-        ${tile("alert", "amber", fmtNum(counts.inconclusive), "证据待定", `已反驳 ${fmtNum(counts.refuted)}`)}
-        ${tile("package", "violet", fmtNum(analysis.sca_coverage.dependencies_declared), "依赖声明", `${fmtNum(analysis.sca_coverage.poms_scanned)} 个 POM`)}
-        ${tile("flag", "amber", fmtNum(coverage.sca_advisory_candidates), "公告命中", `未命中 ${fmtNum(coverage.sca_advisory_not_affected)}`)}
-        ${tile("shield", "teal", snap.partial ? "部分" : "完整", "清单状态", "应用层只读快照")}
-        ${tile("clock", "blue", fmtNum(analysis.duration_ms) + "ms", "分析耗时", new Date(analysis.generated_at).toLocaleTimeString("zh-CN", { hour12: false }))}
+        ${tile("folder", "teal", fmtNum(snap.total_files), "文件清单", `排除 ${fmtNum(snap.excluded_count)} 项`, { route: "source" })}
+        ${tile("route", "blue", fmtNum(analysis.endpoint_coverage.endpoints_found), "HTTP 入口", `${fmtNum(analysis.endpoint_coverage.controllers_found)} 个控制器`, { route: "endpoints" })}
+        ${tile("bug", "rose", fmtNum(counts.total), "安全发现", `静态确认 ${fmtNum(counts.static_confirmed)}`, { route: "findings", status: "all" })}
+        ${tile("alert", "amber", fmtNum(counts.inconclusive), "证据待定", `已反驳 ${fmtNum(counts.refuted)}`, { route: "findings", status: "inconclusive" })}
+        ${tile("package", "violet", fmtNum(analysis.sca_coverage.dependencies_declared), "依赖声明", `${fmtNum(analysis.sca_coverage.poms_scanned)} 个 POM`, { route: "dependencies" })}
+        ${tile("flag", "amber", fmtNum(coverage.sca_advisory_candidates), "公告命中", `未命中 ${fmtNum(coverage.sca_advisory_not_affected)}`, { route: "dependencies" })}
+        ${tile("lock", "rose", fmtNum(overview.authz.unprotected), "无控制入口", `受保护 ${fmtNum(overview.authz.protected)} · 未知 ${fmtNum(overview.authz.unknown)}`, { route: "authz", decision: "unprotected" })}
+        ${tile("code", "blue", overview.model.enabled ? fmtNum(overview.model.types) : "—", "代码模型", overview.model.enabled ? `${fmtNum(overview.model.methods)} 个方法 · 调用 ${fmtNum(overview.model.calls_resolved)}/${fmtNum(overview.model.calls_total)}` : (overview.model.reason || "未生成"), { route: "model" })}
+        ${tile("shield", "teal", snap.partial ? "部分" : "完整", "清单状态", "应用层只读快照", { route: "about" })}
+        ${tile("clock", "blue", fmtNum(analysis.duration_ms) + "ms", "分析耗时", new Date(analysis.generated_at).toLocaleTimeString("zh-CN", { hour12: false }), { route: "about" })}
       </div>
 
       <div class="grid-2">
@@ -426,6 +573,15 @@
               <span class="legend-item"><span class="swatch ok"></span>静态确认 <b>${fmtNum(counts.static_confirmed)}</b></span>
               <span class="legend-item"><span class="swatch warn"></span>证据待定 <b>${fmtNum(counts.inconclusive)}</b></span>
               <span class="legend-item"><span class="swatch muted"></span>已反驳 <b>${fmtNum(counts.refuted)}</b></span>
+            </div>
+            <div class="sev-block">
+              <div class="sev-head"><span>严重度</span><span class="card-sub">排除已反驳</span></div>
+              ${(overview.severities || []).map((item) => `
+                <div class="sev-row actionable" role="link" tabindex="0" data-action="${esc(JSON.stringify({ route: "findings", severity: item.key }))}">
+                  <span class="sev-label">${esc(item.label)}</span>
+                  <span class="sev-track"><span class="sev-fill ${esc(item.key)}" data-pct="${counts.total ? Math.round((item.total / Math.max(counts.total - counts.refuted, 1)) * 100) : 0}"></span></span>
+                  <b class="sev-count">${fmtNum(item.total)}</b>
+                </div>`).join("")}
             </div>
             <div class="kv mt-14">
               ${kvRow("假设支持 / 反驳 / 未验证", `${coverage.hypotheses_supported} / ${coverage.hypotheses_unsupported} / ${coverage.hypotheses_unverified}`, "good")}
@@ -451,6 +607,22 @@
         </section>
       </div>
 
+      ${recent.length ? `
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-clock"/></svg>最近会话</h3><a class="card-link" href="#/agent">查看全部<svg class="icon"><use href="#i-chev-right"/></svg></a></div>
+        <div class="card-body tight">
+          <ul class="recent-threads">
+            ${recent.map((thread) => `
+              <li class="recent-thread actionable" role="link" tabindex="0" data-run="${thread.id}">
+                ${runStatePill(thread.state)}
+                <span class="recent-goal" title="${esc(thread.goal)}">${esc(thread.goal || "(无目标)")}</span>
+                <span class="recent-meta mono">#${thread.id} · ${thread.model_calls}M/${thread.tool_calls}T · ${fmtNum(thread.tokens_used)} tok</span>
+                <span class="recent-time">${esc((thread.updated_at || "").slice(5, 16).replace("T", " "))}</span>
+              </li>`).join("")}
+          </ul>
+        </div>
+      </section>` : ""}
+
       <section class="card section-gap">
         <div class="card-head"><h3><svg class="icon"><use href="#i-layer"/></svg>漏洞类别</h3><span class="card-sub">点击类别筛选发现</span></div>
         <div class="card-body">
@@ -475,6 +647,47 @@
       segment.title = `${value} 条`;
       bar.appendChild(segment);
     });
+    const activate = (element) => {
+      if (element.dataset.run) {
+        // Selecting a thread before routing reuses the chat view's own state.
+        state.agent = state.agent || {};
+        state.agent.openId = Number(element.dataset.run);
+        go("agent");
+        return;
+      }
+      let action = null;
+      try {
+        action = JSON.parse(element.dataset.action || "null");
+      } catch (error) {
+        action = null;
+      }
+      if (!action || !action.route) return;
+      if (action.route === "findings") {
+        state.findings.status = action.status || "all";
+        state.findings.category = action.category || "all";
+        state.findings.severity = action.severity || "all";
+        state.findings.offset = 0;
+      }
+      if (action.route === "authz") {
+        state.authz.decision = action.decision || "all";
+        state.authz.offset = 0;
+      }
+      go(action.route);
+    };
+    $$("[data-action], [data-run]", $("#view")).forEach((element) => {
+      element.addEventListener("click", () => activate(element));
+      element.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          activate(element);
+        }
+      });
+    });
+    // CSP forbids inline style attributes; widths are applied through CSSOM.
+    $$(".sev-fill", $("#view")).forEach((fill) => {
+      const pct = Math.max(0, Math.min(100, Number(fill.dataset.pct) || 0));
+      fill.style.width = pct + "%";
+    });
     $$("[data-category]", $("#view")).forEach((card) => {
       const select = () => {
         state.findings.category = card.dataset.category;
@@ -491,9 +704,28 @@
     });
   }
 
-  function tile(icon, tone, value, label, sub) {
-    return `<div class="tile"><span class="tile-icon ${tone}"><svg class="icon"><use href="#i-${icon}"/></svg></span><div class="tile-body"><div class="tile-val">${esc(value)}</div><div class="tile-label">${esc(label)}</div><div class="tile-sub">${esc(sub)}</div></div></div>`;
+  function tile(icon, tone, value, label, sub, action) {
+    const attrs = action
+      ? ` class="tile actionable" role="link" tabindex="0" data-action="${esc(JSON.stringify(action))}"`
+      : ` class="tile"`;
+    return `<div${attrs}><span class="tile-icon ${tone}"><svg class="icon"><use href="#i-${icon}"/></svg></span><div class="tile-body"><div class="tile-val">${esc(value)}</div><div class="tile-label">${esc(label)}</div><div class="tile-sub">${esc(sub)}</div></div></div>`;
   }
+
+  // The build string carries every shipped capability after " + ". Showing it
+  // raw turns the value column into a wall of text, so split it: short version
+  // in the row, tags behind a disclosure.
+  function describeBuild(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return { short: "—", tags: [], note: "" };
+    const note = (text.match(/\s*\(([^()]*)\)\s*$/) || [])[1] || "";
+    const body = note ? text.slice(0, text.lastIndexOf("(")).trim() : text;
+    const parts = body.split(" + ").map((item) => item.trim()).filter(Boolean);
+    return { short: parts[0] || body, tags: parts.slice(1), note };
+  }
+
+  // Build identifiers are joined with "+"; allow a break there so the value
+  // wraps at a segment boundary instead of splitting a capability name.
+  const versionText = (value) => String(value ?? "").replace(/\+/g, "+\u200b");
 
   function kvRow(key, value, tone) {
     return `<div class="kv-row"><span class="kv-key">${esc(key)}</span><span class="kv-val ${tone || ""}">${esc(value)}</span></div>`;
@@ -522,6 +754,10 @@
             <option value="all">全部类别</option>
             ${overview.categories.map((category) => `<option value="${esc(category.key)}">${esc(category.label)} · ${category.total}</option>`).join("")}
           </select>
+          <select class="select" id="severitySelect" aria-label="严重度筛选">
+            <option value="all">全部严重度</option>
+            ${["high", "medium", "low", "unknown"].map((key) => `<option value="${key}">${esc(severityLabel[key] || key)}</option>`).join("")}
+          </select>
           <input class="input wide" id="findingSearch" data-search placeholder="搜索路径、参数、依赖或 CWE…" value="${esc(findings.q)}" />
           <span class="spacer"></span>
           <span class="toolbar-count" id="findingCount">—</span>
@@ -542,6 +778,7 @@
       </section>
     `;
     $("#categorySelect").value = findings.category;
+    $("#severitySelect").value = findings.severity;
     $("#statusSeg").addEventListener("click", (event) => {
       const button = event.target.closest("[data-status]");
       if (!button) return;
@@ -552,6 +789,11 @@
     });
     $("#categorySelect").addEventListener("change", (event) => {
       findings.category = event.target.value;
+      findings.offset = 0;
+      loadFindings();
+    });
+    $("#severitySelect").addEventListener("change", (event) => {
+      findings.severity = event.target.value;
       findings.offset = 0;
       loadFindings();
     });
@@ -590,6 +832,7 @@
     const params = new URLSearchParams({ limit: findings.limit, offset: findings.offset });
     if (findings.status !== "all") params.set("status", findings.status);
     if (findings.category !== "all") params.set("category", findings.category);
+    if (findings.severity !== "all") params.set("severity", findings.severity);
     if (findings.q) params.set("q", findings.q);
     try {
       const data = await api("/api/findings?" + params.toString());
@@ -597,6 +840,18 @@
       findings.items = data.items;
       findings.filtered = data.filtered;
       findings.total = data.total;
+      findings.severities = data.severities || [];
+      // Faceted counts arrive with the page; label the options so a bucket with
+      // zero hits is obvious before selecting it.
+      $$("#severitySelect option").forEach((option) => {
+        const bucket = findings.severities.find((item) => item.key === option.value);
+        if (option.value === "all") {
+          const sum = findings.severities.reduce((total, item) => total + item.total, 0);
+          option.textContent = `全部严重度 · ${sum}`;
+        } else if (bucket) {
+          option.textContent = `${severityLabel[bucket.key] || bucket.key} · ${bucket.total}`;
+        }
+      });
       $("#findingCount").textContent = `${fmtNum(data.filtered)} / ${fmtNum(data.total)} 条 · 静态确认 ${data.counts.static_confirmed}`;
       if (!data.items.length) {
         rows.innerHTML = `<tr><td colspan="6">${emptyState("i-bug", "没有匹配的发现", "调整状态、类别或搜索条件。未观察到路径不代表目标安全。")}</td></tr>`;
@@ -625,7 +880,7 @@
       : finding.component
         ? finding.component.declaration_pom
         : "—";
-    return `<tr class="clickable" data-id="${esc(finding.id)}">
+    return `<tr class="clickable" tabindex="0" data-id="${esc(finding.id)}">
       <td>${statusPill(finding.status)}</td>
       <td><div class="id-cell"><strong>${esc(kindLabels[finding.kind] || finding.category)}</strong><span>${esc(finding.cwe)}</span></div></td>
       <td>${sevPill(finding.severity)}</td>
@@ -761,13 +1016,16 @@
     $("#view").innerHTML = `
       <section class="card">
         <div class="toolbar">
+          <div class="seg" id="endpointAuthzSeg">
+            ${[["all", "全部"], ["unprotected", "无控制"], ["unknown", "未知"], ["public", "公开"], ["protected", "受保护"]].map(([value, label]) => `<button type="button" data-authz="${value}" class="${endpoints.authz === value ? "active" : ""}">${label}</button>`).join("")}
+          </div>
           <input class="input wide" id="endpointSearch" data-search placeholder="搜索路径、控制器、方法或文件…" value="${esc(endpoints.q)}" />
           <span class="spacer"></span>
           <span class="toolbar-count" id="endpointCount">—</span>
         </div>
         <div class="table-wrap">
-          <table>
-            <thead><tr><th>方法</th><th>路径</th><th>控制器方法</th><th>文件</th><th>参数绑定</th><th>路径状态</th></tr></thead>
+          <table class="grid-fixed cols-endpoints">
+            <thead><tr><th>方法</th><th>路径</th><th>控制器方法</th><th>权限</th><th>文件</th><th>参数绑定</th></tr></thead>
             <tbody id="endpointRows"></tbody>
           </table>
         </div>
@@ -788,6 +1046,14 @@
         endpoints.offset = 0;
         loadEndpoints();
       }, 240);
+    });
+    $("#endpointAuthzSeg").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-authz]");
+      if (!button) return;
+      endpoints.authz = button.dataset.authz;
+      endpoints.offset = 0;
+      $$("#endpointAuthzSeg button").forEach((item) => item.classList.toggle("active", item === button));
+      loadEndpoints();
     });
     $("#endpointPrev").addEventListener("click", () => {
       endpoints.offset = Math.max(0, endpoints.offset - endpoints.limit);
@@ -814,17 +1080,21 @@
     rows.innerHTML = Array.from({ length: 6 }, () => `<tr><td colspan="6"><div class="sk sk-row"></div></td></tr>`).join("");
     const params = new URLSearchParams({ limit: endpoints.limit, offset: endpoints.offset });
     if (endpoints.q) params.set("q", endpoints.q);
+    if (endpoints.authz && endpoints.authz !== "all") params.set("authz", endpoints.authz);
     try {
       const data = await api("/api/endpoints?" + params.toString());
       if (seq !== endpoints.seq) return;
       endpoints.items = data.items;
       endpoints.total = data.total;
       endpoints.coverage = data.coverage;
-      $("#endpointCount").textContent = `${fmtNum(data.total)} 个入口 · 控制器 ${data.coverage.controllers_found}`;
+      endpoints.authzMap = data.authz || {};
+      endpoints.authzCounts = data.authz_counts || null;
+      const counts = data.authz_counts || {};
+      $("#endpointCount").textContent = `${fmtNum(data.total)} 个入口 · 控制器 ${data.coverage.controllers_found} · 无控制 ${fmtNum(counts.unprotected || 0)}`;
       if (!data.items.length) {
         rows.innerHTML = `<tr><td colspan="6">${emptyState("i-route", "没有匹配的入口", "调整检索条件。注解级清单不证明路由已部署。")}</td></tr>`;
       } else {
-        rows.innerHTML = data.items.map(endpointRow).join("");
+        rows.innerHTML = data.items.map((item) => endpointRow(item, data.authz ? data.authz[item.symbol] : null)).join("");
       }
       const start = data.total === 0 ? 0 : data.offset + 1;
       const end = Math.min(data.offset + data.items.length, data.total);
@@ -837,18 +1107,36 @@
     }
   }
 
-  function endpointRow(endpoint) {
+  const bindingLabels = {
+    RequestParam: "@QP",
+    PathVariable: "@PV",
+    RequestBody: "@Body",
+    RequestHeader: "@Hdr",
+    ModelAttribute: "@Model",
+    CookieValue: "@Cookie",
+    RequestPart: "@Part",
+  };
+  function bindingShort(bindings) {
+    if (!bindings || !bindings.length) return "";
+    return bindings.map((item) => bindingLabels[item] || item).join("/");
+  }
+
+  function endpointRow(endpoint, authz) {
     const params = endpoint.parameters || [];
-    const chips = params.slice(0, 3).map((parameter) => `<span class="param ${parameter.bindings && parameter.bindings.length ? "" : "unbound"}">${esc(parameter.name)}<b>${esc((parameter.bindings || []).join("/") || "unbound")}</b></span>`).join("");
-    const more = params.length > 3 ? `<span class="param">+${params.length - 3}</span>` : "";
+    const chips = params.slice(0, 1).map((parameter) => {
+      const bindings = (parameter.bindings || []).join("/") || "unbound";
+      const tag = bindingShort(parameter.bindings);
+      return `<span class="param ${tag ? "" : "unbound"}" title="${esc(parameter.name + " · " + bindings)}">${esc(parameter.name)}${tag ? `<b>${esc(tag)}</b>` : ""}</span>`;
+    }).join("");
+    const more = params.length > 1 ? `<span class="param" title="${esc(params.map((item) => item.name).join("、"))}">+${params.length - 1}</span>` : "";
     const pathTone = endpoint.path_status === "resolved" ? "muted" : "warn";
-    return `<tr class="clickable" data-file="${esc(endpoint.file)}" data-line="${endpoint.method_line || endpoint.start_line}">
+    return `<tr class="clickable" tabindex="0" data-file="${esc(endpoint.file)}" data-line="${endpoint.method_line || endpoint.start_line}" title="${esc((authz && authz.reason) || "")}">
       <td>${methodsBadges(endpoint.http_methods)}</td>
-      <td class="path">${esc(endpoint.path)}</td>
+      <td class="path" title="路径状态 ${esc(endpoint.path_status || "unknown")}">${esc(endpoint.path)}${endpoint.path_status && endpoint.path_status !== "resolved" ? ` <span class="status ${pathTone}">${esc(endpoint.path_status)}</span>` : ""}</td>
       <td class="strong">${esc(endpoint.symbol)}</td>
+      <td>${authz ? decisionPill(authz.decision) : '<span class="status muted">未评估</span>'}</td>
       <td class="file" title="${esc(endpoint.file)}">${esc(endpoint.file)}:${endpoint.start_line}</td>
-      <td>${chips}${more}</td>
-      <td><span class="status ${pathTone}">${esc(endpoint.path_status || "—")}</span></td>
+      <td><div class="param-cell">${chips}${more}</div></td>
     </tr>`;
   }
 
@@ -974,91 +1262,868 @@
       <div class="card section-gap"><div class="card-head"><h3><svg class="icon"><use href="#i-info"/></svg>限制</h3></div><div class="card-body">${limitationList(report.limitations || [])}</div></div>`;
   }
 
+  const runtimeReasonLabels = {
+    no_runtime_result_with_matching_route_and_method: "没有同路径同方法的运行时结果",
+    no_runtime_result_with_matching_route: "没有同路径的运行时结果",
+    runtime_result_ambiguous: "多条运行时结果对应同一条发现",
+    matched_route_and_method: "路径与方法均匹配",
+  };
+
+  const matchMeta = {
+    correlated: { label: "已关联", cls: "ok" },
+    not_correlated: { label: "未关联", cls: "muted" },
+    ambiguous: { label: "歧义", cls: "warn" },
+  };
+
   async function viewRuntime() {
     let report;
     try {
       report = await api("/api/runtime-report");
     } catch (error) {
       if (error.status === 412 || error.status === 404 || error.status === 422) {
-        $("#view").innerHTML = `<div class="card"><div class="empty"><svg class="icon"><use href="#i-info"/></svg><h4>暂无运行时关联报告</h4><p>${esc(error.message)}</p><code class="mono">trident runtime http correlate --findings findings.json --runtime runtime.json --out correlate.json</code><p>然后在启动控制台时附加 --runtime-report correlate.json</p></div></div>`;
+        $("#view").innerHTML = `<div class="card"><div class="empty"><svg class="icon"><use href="#i-flag"/></svg><h4>暂无运行时关联报告</h4><p>${esc(error.message)}</p><code class="mono">trident runtime http --plan plan.json --approve-target https://target</code><code class="mono">trident runtime correlate --findings findings.json --runtime runtime.json --out correlate.json</code><p>然后在「设置 → 路径与分析」里填写该报告路径，或启动时加 --runtime-report。</p></div></div>`;
         return;
       }
       throw error;
     }
     const cov = report.coverage || {};
+    const results = report.results || [];
+    const unmatched = report.unmatched_runtime || [];
+    const rows = results.map((item) => {
+      const meta = matchMeta[item.match] || { label: item.match || "未知", cls: "muted" };
+      const endpoint = item.endpoint || {};
+      return `<tr>
+        <td><span class="status ${meta.cls}">${esc(meta.label)}</span></td>
+        <td>${esc(kindLabels[item.kind] || item.kind)}</td>
+        <td class="path" title="${esc(endpoint.file || "")}">${esc(endpoint.path || "—")}</td>
+        <td>${methodsBadges(endpoint.http_methods || [])}</td>
+        <td>${statusPill(item.finding_status === "static_confirmed" ? "static_confirmed" : item.finding_status === "refuted" ? "refuted" : "inconclusive")}</td>
+        <td class="file" title="${esc(item.reason || "")}">${esc(runtimeReasonLabels[item.reason] || item.reason || "")}</td>
+      </tr>`;
+    }).join("");
+    const unmatchedRows = unmatched.map((item) => `<tr>
+      <td class="strong mono">${esc(item.id || "—")}</td>
+      <td>${methodsBadges([item.method || "GET"])}</td>
+      <td class="path">${esc(item.path || "")}</td>
+      <td>${item.status ? `<span class="status ${item.status === "passed" ? "ok" : "bad"}">${esc(item.status)}</span>` : "—"}</td>
+      <td class="num">${item.observed_status || "—"}</td>
+    </tr>`).join("");
     $("#view").innerHTML = `
-      <div class="hero"><div class="hero-copy"><span class="eyebrow">RUNTIME CORRELATION</span>
-        <h2>静态发现 × 运行时结果关联</h2>
-        <p>runtime_status=${esc(report.runtime_status || "not_run")} · 发现 ${fmtNum(cov.findings_total || 0)} · 运行时结果 ${fmtNum(cov.runtime_results || 0)} · 已关联 ${fmtNum(cov.correlated || 0)} / 歧义 ${fmtNum(cov.ambiguous || 0)} / 未关联 ${fmtNum(cov.not_correlated || 0)}。</p></div></div>
-      <div class="card section-gap"><div class="card-head"><h3><svg class="icon"><use href="#i-hash"/></svg>关联报告原文</h3>
-        <div class="card-head-actions"><button class="btn sm ghost" id="copyRuntimeJson" type="button"><svg class="icon"><use href="#i-copy"/></svg>复制 JSON</button></div></div>
-        <div class="card-body"><pre class="code-view mono p-12" style="max-height:520px">${esc(JSON.stringify(report, null, 2))}</pre></div></div>`;
-    $("#copyRuntimeJson").addEventListener("click", async () => {
-      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
-      toast("报告 JSON 已复制", "ok");
-    });
+      <section class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">RUNTIME CORRELATION</span>
+          <h2>静态发现 × 运行时结果关联</h2>
+          <p>关联只说明某条静态发现在本次运行时观测中有对应结果，不会把 finding 升级为已确认；runtime_status=${esc(report.runtime_status || "not_run")}。</p>
+          <div class="hero-meta">
+            <span class="chip">发现 ${fmtNum(cov.findings_total || 0)}</span>
+            <span class="chip">运行时结果 ${fmtNum(cov.runtime_results || 0)}</span>
+            <span class="chip"><span class="dot ok"></span>已关联 ${fmtNum(cov.correlated || 0)}</span>
+            <span class="chip">未关联 ${fmtNum(cov.not_correlated || 0)}</span>
+            <span class="chip">歧义 ${fmtNum(cov.ambiguous || 0)}</span>
+          </div>
+        </div>
+        <div class="hero-side">
+          <span class="chip mono">${esc(shortHash((report.findings_source || {}).sha256 || ""))}</span>
+        </div>
+      </section>
+
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-bug"/></svg>发现关联结果</h3><span class="card-sub">${fmtNum(results.length)} 条</span></div>
+        <div class="card-body tight">
+          <div class="table-wrap"><table class="grid-fixed cols-runtime">
+            <thead><tr><th>关联</th><th>类型</th><th>入口</th><th>方法</th><th>静态状态</th><th>说明</th></tr></thead>
+            <tbody>${rows || `<tr><td colspan="6">${emptyState("i-bug", "没有发现条目", "关联报告的发现来源为空。")}</td></tr>`}</tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-server"/></svg>未被引用的运行时结果</h3><span class="card-sub">${fmtNum(unmatched.length)} 条</span></div>
+        <div class="card-body tight">
+          <div class="table-wrap"><table class="grid-fixed cols-runtime">
+            <thead><tr><th>请求</th><th>方法</th><th>路径</th><th>断言</th><th class="right">HTTP</th></tr></thead>
+            <tbody>${unmatchedRows || `<tr><td colspan="5">${emptyState("i-server", "没有运行时结果", "本次运行时校验没有产生可关联的结果。")}</td></tr>`}</tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-info"/></svg>限制与边界</h3><span class="card-sub">关联不等于可利用</span></div>
+        <div class="card-body">${limitationList(report.limitations)}</div>
+      </section>
+
+      <details class="card section-gap raw-report">
+        <summary><svg class="icon"><use href="#i-hash"/></svg>关联报告原文（JSON）</summary>
+        <div class="card-body"><pre class="code-view mono">${esc(JSON.stringify(report, null, 2))}</pre></div>
+      </details>`;
+  }
+
+  // ── agent chat ─────────────────────────────────────────────────────────
+
+  const runStates = {
+    ready: { label: "待执行", cls: "muted" },
+    running: { label: "执行中", cls: "ok" },
+    completed: { label: "已完成", cls: "ok" },
+    failed: { label: "失败", cls: "bad" },
+    budget_exhausted: { label: "预算耗尽", cls: "warn" },
+    paused: { label: "已暂停", cls: "warn" },
+    unknown: { label: "状态不明", cls: "bad" },
+    cancelled: { label: "已取消", cls: "muted" },
+  };
+  const terminalStates = ["completed", "failed", "budget_exhausted", "paused", "unknown", "cancelled"];
+
+  function runStatePill(value) {
+    const meta = runStates[value] || { label: value || "未知", cls: "muted" };
+    const dot = meta.cls === "ok" ? "ok" : meta.cls === "bad" ? "bad" : meta.cls === "warn" ? "warn" : "";
+    return `<span class="status ${meta.cls}">${dot ? `<span class="dot ${dot}"></span>` : ""}${esc(meta.label)}</span>`;
+  }
+
+  // Local aliases only: renaming must never rewrite the durable run record, so
+  // the mapping lives in this browser's localStorage.
+  const aliasStoreKey = "trident.thread.aliases";
+  function loadAliases() {
+    try {
+      const value = JSON.parse(localStorage.getItem(aliasStoreKey) || "{}");
+      return value && typeof value === "object" ? value : {};
+    } catch (error) {
+      return {};
+    }
+  }
+  function threadAlias(thread) {
+    return String(loadAliases()[`${thread.snapshot_hash || ""}:${thread.id}`] || "");
+  }
+  function saveThreadAlias(thread, value) {
+    const all = loadAliases();
+    const key = `${thread.snapshot_hash || ""}:${thread.id}`;
+    const text = String(value || "").trim();
+    if (!text || text === thread.goal) delete all[key];
+    else all[key] = text;
+    try {
+      localStorage.setItem(aliasStoreKey, JSON.stringify(all));
+    } catch (error) {
+      /* renaming is a convenience; a full quota must not break the page */
+    }
   }
 
   async function viewAgent() {
-    let payload;
-    try {
-      payload = await api("/api/agent/runs");
-    } catch (error) {
-      if (error.status === 412) {
-        $("#view").innerHTML = `<div class="card"><div class="empty"><svg class="icon"><use href="#i-server"/></svg><h4>Agent 观察未启用</h4><p>${esc(error.message)}</p><code class="mono">trident web ... --agent-dsn "postgres://trident_readonly:...@127.0.0.1:5432/trident?sslmode=disable"</code><p>Run 仍通过 CLI 启动；控制台只读观察，无执行入口。</p></div></div>`;
-        return;
-      }
-      throw error;
-    }
-    const runState = (value) => ({cls: value === "running" ? "ok" : value === "done" ? "info" : value === "failed" || value === "timeout" ? "bad" : "muted", label: value});
-    state.agent = {runs: payload.runs || [], openId: state.agent && state.agent.openId, steps: null};
-    const rows = state.agent.runs.map((run) => `
-      <tr class="clickable" data-run="${run.id}"><td class="strong mono">#${run.id}</td>
-      <td class="wrap">${esc((run.goal || "").slice(0, 120))}</td>
-      <td><span class="status ${runState(run.state).cls}">${esc(run.state)}</span></td>
-      <td class="num">${fmtNum(run.model_calls)}/${fmtNum(run.limits && run.limits.max_model_calls)}</td>
-      <td class="num">${fmtNum(run.tool_calls)}/${fmtNum(run.limits && run.limits.max_tool_calls)}</td>
-      <td class="num">${fmtNum(run.tokens_used)}/${fmtNum(run.limits && run.limits.max_tokens)}</td>
-      <td class="file">${esc((run.updated_at || "").replace("T", " ").slice(0, 19))}</td></tr>`).join("");
+    const [chat, threadsPayload] = await Promise.all([
+      api("/api/agent/chat/state").catch((error) => ({ enabled: false, reason: error.message })),
+      api("/api/agent/threads").catch((error) => ({ threads: [], active_run: 0, error: error.message })),
+    ]);
+    const threads = threadsPayload.threads || [];
+    const openId = state.agent && state.agent.openId && threads.some((item) => item.id === state.agent.openId)
+      ? state.agent.openId
+      : (threadsPayload.active_run || (threads[0] && threads[0].id) || 0);
+    const query = (state.agent && state.agent.query) || "";
+    state.agent = { chat, threads, openId, steps: [], run: null, busy: Boolean(threadsPayload.active_run), timer: null, lastSeq: 0, query };
+
     $("#view").innerHTML = `
-      <div class="hero"><div class="hero-copy"><span class="eyebrow">AGENT OBSERVATION (READ-ONLY)</span>
-        <h2>Agent 活动时间线</h2>
-        <p>最近 ${fmtNum(payload.total)} 个 Run 的只读观察视图；Run 通过 CLI 启动，控制台无任何执行入口。点击行查看 step 时间线。</p></div></div>
-      <div class="card section-gap"><div class="card-body tight"><div class="table-wrap"><table>
-        <thead><tr><th>Run</th><th>目标</th><th>状态</th><th class="right">模型调用</th><th class="right">工具调用</th><th class="right">Token</th><th>更新时间</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="7" class="code-empty">暂无 Agent Run。先用 CLI 启动一个：trident agent run --goal ... --snapshot ...</td></tr>'}</tbody>
-      </table></div></div></div>
-      <div id="agentRunDetail"></div>`;
-    $$("tr[data-run]").forEach((row) => row.addEventListener("click", () => openAgentRun(Number(row.dataset.run))));
-    if (state.agent.openId) await openAgentRun(state.agent.openId);
+      <div class="chat-shell">
+        <aside class="chat-rail">
+          <div class="chat-rail-head">
+            <h3>会话</h3>
+            <button class="btn sm primary" type="button" id="newThread"><svg class="icon"><use href="#i-plus"/></svg>新建</button>
+          </div>
+          <div class="chat-rail-filter">
+            <svg class="icon"><use href="#i-search"/></svg>
+            <input id="chatSearch" class="input" placeholder="筛选会话…" autocomplete="off" value="${esc(state.agent.query)}">
+          </div>
+          <div class="chat-threads" id="chatThreads"></div>
+          <div class="chat-rail-foot">
+            <span class="chip mono">${esc(shortHash(chat.project_hash || state.config?.project?.hash || ""))}</span>
+            <span class="form-hint">仅显示当前项目的会话</span>
+          </div>
+        </aside>
+        <section class="chat-main">
+          <div class="chat-head" id="chatHead"></div>
+          <div class="chat-stream" id="chatStream"></div>
+          <form class="composer" id="composer">
+            ${chat.enabled ? `<div class="goal-presets">${[
+              ["未授权访问", "检查全部 HTTP 入口的访问控制：列出无控制与无法解析的入口，逐条给出文件、行号与依据；不要浏览无关目录。"],
+              ["SQL 注入", "追踪 HTTP 参数到 SQL 执行的数据流，列出可达的拼接点并引用实际读到的行号；无法验证的标注 UNVERIFIED INFERENCE。"],
+              ["路径遍历", "检查文件读取类入口的路径拼接与规范化，列出可被外部输入影响的调用点并给出行号证据。"],
+              ["依赖风险", "结合依赖声明与公告目录，检查是否存在命中已知漏洞的依赖，给出声明 POM 与公告编号。"],
+            ].map(([label, text]) => `<button type="button" class="chip chip-btn" data-preset="${esc(text)}">${esc(label)}</button>`).join("")}</div>` : ""}
+            <textarea id="chatGoal" rows="3" placeholder="${chat.enabled ? "描述这次分析目标，例如：审计 SQL 注入与未授权访问风险" : esc(chat.reason || "对话未启用")}" ${chat.enabled ? "" : "disabled"}></textarea>
+            <div class="composer-bar">
+              <label class="profile-pick">模型
+                <select id="chatProfile" ${chat.enabled ? "" : "disabled"}>
+                  ${(chat.profiles || []).map((profile) => `<option value="${esc(profile.id)}"${profile.default ? " selected" : ""}>${esc(profile.label || profile.model)}${profile.key_present ? "" : "（缺密钥）"}</option>`).join("")}
+                </select>
+              </label>
+              <label class="check"><input type="checkbox" id="chatEgress" ${chat.enabled ? "" : "disabled"}>批准把当前项目快照与本条目标发送给所选模型端点</label>
+              <span class="spacer"></span>
+              <span class="composer-status" id="composerStatus"></span>
+              <button class="btn primary" type="submit" id="chatSend" ${chat.enabled ? "" : "disabled"}>发送<svg class="icon"><use href="#i-chev-right"/></svg></button>
+            </div>
+          </form>
+        </section>
+      </div>`;
+
+    renderThreadList();
+    $("#newThread").addEventListener("click", () => {
+      state.agent.openId = 0;
+      state.agent.steps = [];
+      state.agent.run = null;
+      renderThreadList();
+      renderThread();
+      $("#chatGoal").focus();
+    });
+    $("#chatThreads").addEventListener("click", (event) => {
+      const row = event.target.closest("[data-thread]");
+      if (!row) return;
+      openThread(Number(row.dataset.thread));
+    });
+    $("#chatSearch").addEventListener("input", (event) => {
+      state.agent.query = event.target.value;
+      renderThreadList();
+    });
+    $("#composer").addEventListener("submit", (event) => {
+      event.preventDefault();
+      sendChat();
+    });
+    $("#chatGoal").addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        sendChat();
+      }
+    });
+    $$("#view [data-preset]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const goal = $("#chatGoal");
+        if (!goal) return;
+        goal.value = button.dataset.preset;
+        goal.focus();
+      });
+    });
+    if (!chat.enabled) {
+      $("#composerStatus").textContent = chat.reason || "";
+      $("#composerStatus").className = "composer-status warn-text";
+    } else if (!chat.key_present) {
+      $("#composerStatus").textContent = "服务端未找到模型密钥";
+      $("#composerStatus").className = "composer-status warn-text";
+    }
+    if (openId) await openThread(openId);
+    else renderThread();
   }
 
-  async function openAgentRun(runID) {
-    const payload = await api("/api/agent/steps?run_id=" + runID);
+  function startThreadRename(run) {
+    const head = $("#chatHead");
+    const title = head && head.querySelector("h2");
+    if (!head || !title) return;
+    const input = document.createElement("input");
+    input.className = "input";
+    input.value = threadAlias(run) || run.goal || "";
+    input.maxLength = 160;
+    title.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const commit = () => {
+      if (done) return;
+      done = true;
+      saveThreadAlias(run, input.value);
+      renderThreadList();
+      renderThread();
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        commit();
+      } else if (event.key === "Escape") {
+        done = true;
+        renderThread();
+      }
+    });
+    input.addEventListener("blur", commit);
+  }
+
+  function renderThreadList() {
+    const host = $("#chatThreads");
+    if (!host) return;
+    const all = state.agent.threads || [];
+    const query = String(state.agent.query || "").trim().toLowerCase();
+    const items = query
+      ? all.filter((thread) => `${threadAlias(thread)} ${thread.goal || ""}`.toLowerCase().includes(query))
+      : all;
+    if (!all.length) {
+      host.innerHTML = `<div class="chat-empty">当前项目还没有会话。写下目标并发送，第一轮分析就会出现在这里。</div>`;
+      return;
+    }
+    if (!items.length) {
+      host.innerHTML = `<div class="chat-empty">没有匹配的会话。</div>`;
+      return;
+    }
+    host.innerHTML = items.map((thread) => {
+      const alias = threadAlias(thread);
+      const title = alias || (thread.goal || "(无目标)");
+      return `<button class="chat-thread${thread.id === state.agent.openId ? " active" : ""}" type="button" data-thread="${thread.id}" title="${esc(alias ? `目标：${thread.goal}` : title)}">
+        <span class="chat-thread-title">${esc(title.length > 60 ? `${title.slice(0, 60)}…` : title)}</span>
+        <span class="chat-thread-meta">
+          ${runStatePill(thread.state)}
+          <span class="mono">#${thread.id}</span>
+          <span>${thread.model_calls}M/${thread.tool_calls}T</span>
+          <span class="chat-thread-time">${esc((thread.updated_at || "").slice(5, 16).replace("T", " "))}</span>
+        </span>
+      </button>`;
+    }).join("");
+  }
+
+  async function openThread(runID) {
+    stopPolling();
     state.agent.openId = runID;
-    state.agent.steps = payload.steps || [];
-    const run = payload.run || {};
-    const steps = state.agent.steps.map((step) => `
-      <li><div class="tree-node"><span class="status info mono">#${step.seq}</span>
-        <span class="chip mono">${esc(String(step.kind))}</span>
-        <span class="chip">${esc((step.created_at || "").replace("T", " ").slice(0, 19))}</span></div>
-      <div class="flow-detail mono" style="margin-top:4px">${esc(JSON.stringify(step.payload).slice(0, 300))}${JSON.stringify(step.payload).length > 300 ? "…" : ""}</div></li>`).join("");
-    $("#agentRunDetail").innerHTML = `
-      <div class="card mt-14"><div class="card-head"><h3><svg class="icon"><use href="#i-clock"/></svg>Run #${run.id} 时间线</h3>
-        <span class="card-sub">${esc((run.goal || "").slice(0, 90))}</span></div>
-        <div class="card-body"><div class="kv">
-          <div class="kv-row"><span class="kv-key">状态 / 原因</span><span class="kv-val">${esc(run.state)} ${esc(run.reason || "")}</span></div>
-          <div class="kv-row"><span class="kv-key">快照</span><span class="kv-val">${esc(shortHash(run.snapshot_hash || ""))}</span></div>
-          <div class="kv-row"><span class="kv-key">预算消耗（模型/工具/Token）</span><span class="kv-val">${fmtNum(run.model_calls)}/${fmtNum(run.tool_calls)}/${fmtNum(run.tokens_used)}</span></div>
-          <div class="kv-row"><span class="kv-key">最后事件序号</span><span class="kv-val">${fmtNum(run.last_seq)}</span></div>
+    renderThreadList();
+    $("#chatStream").innerHTML = `<div class="chat-loading">${skeletonView()}</div>`;
+    try {
+      const payload = await api("/api/agent/steps?run_id=" + runID + "&limit=1000");
+      state.agent.steps = payload.steps || [];
+      state.agent.run = payload.run || null;
+      state.agent.lastSeq = state.agent.steps.length ? state.agent.steps[state.agent.steps.length - 1].seq : 0;
+      renderThread();
+      if (state.agent.run && !terminalStates.includes(state.agent.run.state)) startPolling();
+    } catch (error) {
+      $("#chatStream").innerHTML = emptyState("i-alert", "无法加载会话", error.message);
+    }
+  }
+
+  function startPolling() {
+    stopPolling();
+    state.agent.busy = true;
+    updateComposerState();
+    state.agent.timer = setInterval(async () => {
+      if (!state.agent.openId) return stopPolling();
+      try {
+        const payload = await api("/api/agent/steps?run_id=" + state.agent.openId + "&limit=1000");
+        const steps = payload.steps || [];
+        if (steps.length !== state.agent.steps.length) {
+          state.agent.steps = steps;
+          state.agent.run = payload.run || state.agent.run;
+          state.agent.lastSeq = steps.length ? steps[steps.length - 1].seq : 0;
+          renderThread();
+          renderThreadList();
+        } else if (payload.run) {
+          state.agent.run = payload.run;
+        }
+        if (state.agent.run && terminalStates.includes(state.agent.run.state)) {
+          stopPolling();
+          renderThread();
+          await refreshThreads();
+        }
+      } catch (error) {
+        stopPolling();
+      }
+    }, 1500);
+  }
+
+  function stopPolling() {
+    if (state.agent && state.agent.timer) {
+      clearInterval(state.agent.timer);
+      state.agent.timer = null;
+    }
+    if (state.agent) {
+      state.agent.busy = false;
+      updateComposerState();
+    }
+  }
+
+  function updateComposerState() {
+    const send = $("#chatSend");
+    const status = $("#composerStatus");
+    if (!send || !status) return;
+    if (!state.agent.chat.enabled) return;
+    send.disabled = state.agent.busy;
+    status.className = "composer-status" + (state.agent.busy ? "" : "");
+    status.textContent = state.agent.busy ? "执行中…" : "";
+  }
+
+  async function sendChat() {
+    const goal = $("#chatGoal").value.trim();
+    if (!goal) {
+      toast("先写下目标", "bad");
+      $("#chatGoal").focus();
+      return;
+    }
+    if (!$("#chatEgress").checked) {
+      toast("需要勾选外发批准：快照与目标会发送到模型端点", "bad");
+      $("#chatEgress").focus();
+      return;
+    }
+    const button = $("#chatSend");
+    button.disabled = true;
+    button.textContent = "启动中…";
+    try {
+      const result = await api("/api/agent/chat", {
+        method: "POST",
+        body: {
+          goal,
+          approve_egress: true,
+          // Limits come from the selected profile; the page never overrides them.
+          profile_id: ($("#chatProfile") && $("#chatProfile").value) || "",
+        },
+      });
+      $("#chatGoal").value = "";
+      state.agent.busy = true;
+      await refreshThreads();
+      await openThread(result.run_id);
+      toast(`Run #${result.run_id} 已启动`, "ok");
+    } catch (error) {
+      toast(error.message, "bad");
+    } finally {
+      button.textContent = "发送";
+      button.disabled = false;
+      updateComposerState();
+    }
+  }
+
+  async function refreshThreads() {
+    try {
+      const payload = await api("/api/agent/threads");
+      state.agent.threads = payload.threads || [];
+      renderThreadList();
+    } catch (error) {
+      /* the thread list is not critical for sending */
+    }
+  }
+
+  function renderThread() {
+    const run = state.agent.run;
+    const head = $("#chatHead");
+    const stream = $("#chatStream");
+    if (!head || !stream) return;
+    if (!run) {
+      head.innerHTML = `<div class="chat-head-main"><h2>新的分析会话</h2><span class="form-hint">写入目标并批准外发后，Agent 会用只读工具读取当前项目快照。</span></div>`;
+      stream.innerHTML = `<div class="chat-intro">${emptyState("i-server", "还没有开始", "描述一个分析目标即可。Agent 只能读取快照，不会执行项目代码。")}</div>`;
+      return;
+    }
+    const alias = threadAlias(run);
+    head.innerHTML = `
+      <div class="chat-head-main">
+        <div class="chat-head-line">
+          ${runStatePill(run.state)}
+          <span class="mono chat-run-id">#${run.id}</span>
+          <span class="chip">${run.model_calls} 模型 / ${run.tool_calls} 工具</span>
+          <span class="chip">${fmtNum(run.tokens_used)} tokens</span>
         </div>
-        <ul class="flow mt-14">${steps || '<li class="code-empty">该 Run 还没有 step。</li>'}</ul></div></div>`;
-    const row = $(`tr[data-run="${runID}"]`);
-    if (row) { $$("tr[data-run]").forEach((r) => r.classList.remove("active-row")); row.classList.add("active-row"); }
-    $("#agentRunDetail").scrollIntoView({behavior: "smooth"});
+        <h2 title="${esc(run.goal)}">${esc(alias || (run.goal || "").slice(0, 120))}</h2>
+        ${alias ? `<p class="chat-goal-raw">目标：${esc(run.goal)}</p>` : ""}
+      </div>
+      <div class="chat-actions">
+        <button class="btn sm ghost" type="button" data-chat-action="rename" title="别名只保存在本机浏览器">重命名</button>
+        <button class="btn sm ghost" type="button" data-copy="${esc(run.goal || "")}">复制目标</button>
+        <button class="btn sm ghost" type="button" data-chat-action="rerun" title="用同一目标开一轮新会话">以此目标新建</button>
+      </div>`;
+    $$("[data-chat-action]", head).forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.dataset.chatAction === "rename") startThreadRename(run);
+        if (button.dataset.chatAction === "rerun") {
+          state.agent.openId = 0;
+          state.agent.steps = [];
+          state.agent.run = null;
+          renderThreadList();
+          renderThread();
+          const goal = $("#chatGoal");
+          if (goal) {
+            goal.value = run.goal || "";
+            goal.focus();
+          }
+        }
+      });
+    });
+    const blocks = buildBlocks(state.agent.steps);
+    stream.innerHTML = blocks.map(renderBlock).join("") || emptyState("i-clock", "等待第一个事件", "Run 刚创建，step 正在写入。");
+    stream.scrollTop = stream.scrollHeight;
+  }
+
+  // buildBlocks turns the append-only step log into readable messages: one
+  // assistant bubble per model turn, with its tool calls folded into a summary.
+  function buildBlocks(steps) {
+    const blocks = [];
+    let tools = null;
+    let pending = new Map();
+    steps.forEach((step) => {
+      const payload = step.payload || {};
+      switch (step.kind) {
+        case "run.created":
+          blocks.push({ type: "meta", text: `Run 创建 · 快照 ${shortHash(payload.snapshot_hash || "")}`, at: step.created_at });
+          break;
+        case "model.completed": {
+          tools = null;
+          const message = payload.message || {};
+          if (message.content) blocks.push({ type: "assistant", text: message.content, at: step.created_at });
+          const calls = message.calls || [];
+          if (calls.length) {
+            tools = { type: "tools", items: calls.map((call) => ({ name: call.name, args: call.arguments, result: null, status: "pending" })) };
+            blocks.push(tools);
+            pending = new Map(calls.map((call, index) => [call.id, { block: tools, index }]));
+          }
+          break;
+        }
+        case "tool.completed": {
+          const slot = pending.get(payload.id);
+          if (slot) {
+            const item = slot.block.items[slot.index];
+            item.result = payload.result;
+            item.status = "done";
+            item.name = payload.name || item.name;
+            pending.delete(payload.id);
+          } else {
+            blocks.push({ type: "tools", items: [{ name: payload.name || "tool", args: {}, result: payload.result, status: "done" }] });
+          }
+          break;
+        }
+        case "run.completed":
+          blocks.push({ type: "final", data: payload, at: step.created_at });
+          break;
+        case "run.failed":
+        case "run.paused":
+        case "run.budget_exhausted":
+        case "run.cancelled": {
+          const reason = payload.reason || payload.message || step.kind;
+          blocks.push({ type: "state", kind: step.kind, reason: String(reason), at: step.created_at });
+          break;
+        }
+        default:
+          break;
+      }
+    });
+    // One "过程" per stretch of tool work keeps the thread readable.
+    const merged = [];
+    blocks.forEach((block) => {
+      const previous = merged[merged.length - 1];
+      if (block.type === "tools" && previous && previous.type === "tools") {
+        previous.items.push(...block.items);
+        return;
+      }
+      merged.push(block);
+    });
+    return merged;
+  }
+
+  function renderBlock(block) {
+    if (block.type === "meta") {
+      return `<div class="chat-meta">${esc(block.text)}</div>`;
+    }
+    if (block.type === "assistant") {
+      // Models sometimes emit a JSON fragment as "content"; folding it keeps
+      // the readable answer separate from raw structured output.
+      if (looksStructured(block.text)) {
+        const raw = String(block.text).trim();
+        return `<details class="tool-block json-block"><summary><svg class="icon"><use href="#i-code"/></svg>模型结构化输出 · ${fmtNum(raw.length)} 字节</summary><pre class="json-pre">${esc(raw.slice(0, 4000))}${raw.length > 4000 ? "\n…" : ""}</pre></details>`;
+      }
+      return `<div class="msg msg-assistant"><div class="msg-body">${renderText(block.text)}</div></div>`;
+    }
+    if (block.type === "tools") {
+      const run = state.agent.run || {};
+      const terminal = terminalStates.includes(run.state);
+      const done = block.items.filter((item) => item.status === "done").length;
+      const waiting = block.items.length - done;
+      const note = terminal && waiting ? ` · ${waiting} 未执行` : waiting ? ` · ${waiting} 执行中` : "";
+      return `<details class="tool-block"${!terminal && waiting ? " open" : ""}>
+        <summary><svg class="icon"><use href="#i-code"/></svg>过程 · ${block.items.length} 次工具调用${note}</summary>
+        <ul>${block.items.map((item) => renderToolItem(item, terminal)).join("")}</ul>
+      </details>`;
+    }
+    if (block.type === "final") {
+      const data = block.data || {};
+      const hypotheses = data.hypotheses || [];
+      const limits = data.limitations || [];
+      const conclusionText = [
+        data.summary || "",
+        ...hypotheses.map((item) => `- ${stripInferenceLabel(item.statement || "")}`),
+        limits.length ? `限制：${limits.slice(0, 8).map((item) => String(item)).join("；")}` : "",
+      ].filter(Boolean).join("\n");
+      return `<div class="final-card">
+        <div class="final-head"><svg class="icon"><use href="#i-check"/></svg>分析结论<button class="btn sm ghost" type="button" data-copy="${esc(conclusionText)}"><svg class="icon"><use href="#i-copy"/></svg>复制结论</button></div>
+        <p class="final-summary">${renderText(data.summary || "")}</p>
+        ${hypotheses.length ? `<ol class="final-hypotheses">${hypotheses.map((item) => `
+          <li>
+            <p>${renderText(stripInferenceLabel(item.statement || ""))}</p>
+            ${(item.evidence || []).length ? `<div class="final-cites">${item.evidence.map((cite) => `<button class="cite" type="button" data-src="${esc(cite.path)}" data-line="${cite.start_line || 1}">${esc(String(cite.path).split("/").pop())}:${cite.start_line}-${cite.end_line}</button>`).join("")}</div>` : ""}
+          </li>`).join("")}</ol>` : ""}
+        ${limits.length ? `<div class="final-limits"><b>限制</b><ul>${limits.slice(0, 8).map((item) => `<li>${esc(String(item))}</li>`).join("")}</ul></div>` : ""}
+      </div>`;
+    }
+    if (block.type === "state") {
+      const checkpoint = /checkpoint/i.test(block.reason);
+      const hint = checkpoint
+        ? "会话上下文超过 48 KiB 检查点上限：拆成更小的目标再开一轮，或在「设置 → 模型」里提高该配置的默认上限后重试。"
+        : "";
+      return `<div class="state-card"><b>${esc(block.kind)}</b><p>${esc(block.reason)}</p>${hint ? `<p class="state-hint">${esc(hint)}</p>` : ""}</div>`;
+    }
+    return "";
+  }
+
+  function looksStructured(text) {
+    const value = String(text || "").trim();
+    if (!value) return false;
+    if (value.startsWith("{") || value.startsWith("[")) return true;
+    return /"(summary|hypotheses|limitations)"\s*:/.test(value) && value.length > 80;
+  }
+
+  // validateFinal prepends a label; the model sometimes writes its own. Keep one.
+  function stripInferenceLabel(text) {
+    return String(text).replace(/^\s*(\[UNVERIFIED INFERENCE[^\]]*\]\s*)+/i, "");
+  }
+
+  function renderToolItem(item, terminal) {
+    const args = item.args && Object.keys(item.args).length ? JSON.stringify(item.args) : "{}";
+    let summary = terminal ? "未执行（Run 已停止）" : "等待结果";
+    if (item.status === "done") {
+      const json = JSON.stringify(item.result);
+      summary = json.length > 140 ? json.slice(0, 140) + "…" : json;
+    }
+    return `<li class="${item.status === "done" ? "done" : terminal ? "skipped" : "pending"}">
+      <span class="tool-name">${esc(item.name)}</span>
+      <span class="tool-args mono">${esc(args.length > 90 ? args.slice(0, 90) + "…" : args)}</span>
+      <span class="tool-result mono">${esc(summary)}</span>
+    </li>`;
+  }
+
+  // renderText keeps the console XSS-safe: escape first, then apply a very small
+  // subset of markdown (paragraphs, bullet lists, inline code, bold).
+  function renderText(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+    const lines = text.split(/\n{2,}/);
+    return lines.map((chunk) => {
+      const items = chunk.split(/\n/).filter((line) => /^\s*[-*]\s+/.test(line));
+      if (items.length && items.length === chunk.split(/\n/).filter(Boolean).length) {
+        return `<ul>${items.map((line) => `<li>${inline(line.replace(/^\s*[-*]\s+/, ""))}</li>`).join("")}</ul>`;
+      }
+      return `<p>${inline(chunk).replace(/\n/g, "<br>")}</p>`;
+    }).join("");
+  }
+
+  function inline(value) {
+    return esc(value)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  }
+
+  // ── model settings ─────────────────────────────────────────────────────
+
+  async function viewSettingsModel() {
+    const [library, chat] = await Promise.all([
+      api("/api/agent/models").catch((error) => ({ profiles: [], default: "", error: error.message })),
+      api("/api/agent/chat/state").catch((error) => ({ enabled: false, reason: error.message })),
+    ]);
+    state.modelSettings = { library, chat, probes: (state.modelSettings && state.modelSettings.probes) || {} };
+    $("#view").innerHTML = `
+      <section class="card">
+        <div class="card-head model-head">
+          <div class="model-head-main">
+            <span class="model-icon"><svg class="icon"><use href="#i-server"/></svg></span>
+            <div>
+              <h3>模型</h3>
+              <p class="form-hint">模型库描述端点和模型；密钥只从服务端环境变量读取，配置文件里只记录变量名。</p>
+            </div>
+          </div>
+        </div>
+        <div class="tabs" id="modelTabs">
+          <button type="button" data-tab="library" class="active">模型库 <em>${(library.profiles || []).length}</em></button>
+          <button type="button" data-tab="budget">运行上限</button>
+        </div>
+        <div class="card-body" id="modelTabBody"></div>
+      </section>`;
+    const renderTab = (tab) => {
+      $$("#modelTabs button").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
+      $("#modelTabBody").innerHTML = tab === "budget" ? modelBudgetPanel(library) : modelLibraryPanel(library, chat);
+      if (tab === "library") wireModelLibrary();
+    };
+    $("#modelTabs").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-tab]");
+      if (button) renderTab(button.dataset.tab);
+    });
+    renderTab("library");
+  }
+
+  function modelLibraryPanel(library, chat) {
+    const profiles = library.profiles || [];
+    const probes = state.modelSettings.probes || {};
+    const rows = profiles.map((profile) => {
+      const isDefault = profile.id === library.default;
+      const probe = probes[profile.id];
+      const available = probe ? (probe.error ? `<span class="status bad">${esc(probe.error.slice(0, 40))}</span>` : `<span class="status ok">${fmtNum((probe.models || []).length)} 个可用</span>`) : '<span class="status muted">未测试</span>';
+      return `<tr class="${isDefault ? "active-row" : ""}">
+        <td><div class="id-cell"><strong>${esc(profile.label || profile.id)}</strong><span class="mono">${esc(profile.model)}</span></div></td>
+        <td class="mono file" title="${esc(profile.endpoint)}">${esc(profile.endpoint)}</td>
+        <td>${profile.key_present
+          ? '<span class="status ok"><span class="dot ok"></span>密钥已配置</span>'
+          : `<span class="status bad" title="设置环境变量 ${esc(profile.key_env)}"><span class="dot bad"></span>缺少 ${esc(profile.key_env)}</span>`}</td>
+        <td>${available}</td>
+        <td>${isDefault ? '<span class="status info">默认</span>' : '<span class="status muted">备用</span>'}</td>
+        <td class="right">
+          <div class="row-actions">
+            <button class="btn sm" type="button" data-probe="${esc(profile.id)}">测试</button>
+            ${isDefault ? "" : `<button class="btn sm" type="button" data-default="${esc(profile.id)}">设为默认</button>`}
+            <button class="btn sm ghost" type="button" data-edit="${esc(profile.id)}">编辑</button>
+            ${profiles.length > 1 ? `<button class="btn sm ghost" type="button" data-remove="${esc(profile.id)}">删除</button>` : ""}
+          </div>
+        </td>
+      </tr>`;
+    }).join("");
+    return `
+      <div class="model-summary">
+        <span>${fmtNum(profiles.length)} 个配置</span>
+        <span class="foot-sep"></span>
+        <span>默认 <b class="mono">${esc(profileLabel(library.default))}</b></span>
+        <span class="foot-sep"></span>
+        <span>${chat.enabled ? '<span class="status ok"><span class="dot ok"></span>对话可用</span>' : `<span class="status bad"><span class="dot bad"></span>${esc(chat.reason || "对话未启用")}</span>`}</span>
+      </div>
+      <div class="toolbar mt-14">
+        <span class="form-hint">密钥只存在环境变量里：例如 <code>TRIDENT_MODEL_API_KEY</code>、<code>TRIDENT_MODEL_API_KEY_BACKUP</code>。</span>
+        <span class="spacer"></span>
+        <button class="btn primary" type="button" id="newProfile"><svg class="icon"><use href="#i-plus"/></svg>新建配置</button>
+      </div>
+      <div class="table-wrap mt-14">
+        <table class="grid-fixed cols-models">
+          <thead><tr><th>配置</th><th>端点</th><th>密钥</th><th>端点探测</th><th>角色</th><th class="right">操作</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="6">${emptyState("i-server", "模型库是空的", "新建一个配置：填端点、模型和保存密钥的环境变量名。")}</td></tr>`}</tbody>
+        </table>
+      </div>
+      <div id="profileForm"></div>`;
+  }
+
+  function profileLabel(id) {
+    const profiles = (state.modelSettings && state.modelSettings.library.profiles) || [];
+    const found = profiles.find((item) => item.id === id);
+    return found ? (found.label || found.model) : (id || "—");
+  }
+
+  function modelBudgetPanel(library) {
+    const profiles = library.profiles || [];
+    return `
+      <div class="table-wrap">
+        <p class="form-hint mb-12">对话不再逐轮设置预算：每次 Run 直接使用所选配置的默认上限，可按配置分别调整。</p>
+        <table class="grid-fixed cols-budget">
+          <thead><tr><th>配置</th><th class="right">模型调用</th><th class="right">工具调用</th><th class="right">Token</th></tr></thead>
+          <tbody>${profiles.map((profile) => `<tr>
+            <td>${esc(profile.label || profile.id)}${profile.id === library.default ? ' <span class="status info">默认</span>' : ""}</td>
+            <td class="num">${fmtNum(profile.defaults.model_calls)}</td>
+            <td class="num">${fmtNum(profile.defaults.tool_calls)}</td>
+            <td class="num">${fmtNum(profile.defaults.tokens)}</td>
+          </tr>`).join("") || `<tr><td colspan="4">${emptyState("i-server", "没有配置", "先在模型库添加一个配置。")}</td></tr>`}</tbody>
+        </table>
+      </div>
+      <div class="kv mt-14">
+        ${kvRow("硬上限（配置值只能更低）", `${ChatLimits.modelCalls} / ${ChatLimits.toolCalls} / ${fmtNum(ChatLimits.tokens)}`)}
+        ${kvRow("并发", "同一控制台一次一个 Run", "warn")}
+        ${kvRow("检查点上限", "48 KiB；超限即停止，需拆分目标", "warn")}
+      </div>`;
+  }
+
+  const ChatLimits = { modelCalls: 32, toolCalls: 64, tokens: 400000 };
+
+  function wireModelLibrary() {
+    const newButton = $("#newProfile");
+    if (newButton) newButton.addEventListener("click", () => openProfileForm(null));
+    $$("[data-probe]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const id = button.dataset.probe;
+        button.disabled = true;
+        button.textContent = "测试中…";
+        try {
+          const result = await api("/api/agent/models/probe", { method: "POST", body: { id } });
+          state.modelSettings.probes[id] = result;
+          toast(result.error ? result.error : `端点可用，返回 ${result.models.length} 个模型`, result.error ? "bad" : "ok");
+          await viewSettingsModel();
+        } catch (error) {
+          toast(error.message, "bad");
+          button.disabled = false;
+          button.textContent = "测试";
+        }
+      });
+    });
+    $$("[data-default]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await api("/api/agent/models/default", { method: "POST", body: { id: button.dataset.default } });
+          toast("已设为默认模型", "ok");
+          await viewSettingsModel();
+        } catch (error) {
+          toast(error.message, "bad");
+        }
+      });
+    });
+    $$("[data-edit]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const profile = (state.modelSettings.library.profiles || []).find((item) => item.id === button.dataset.edit);
+        if (profile) openProfileForm(profile);
+      });
+    });
+    $$("[data-remove]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const id = button.dataset.remove;
+        if (!window.confirm(`删除配置「${profileLabel(id)}」？密钥本身在环境变量里，不受影响。`)) return;
+        try {
+          await api("/api/agent/models/remove", { method: "POST", body: { id } });
+          toast("已删除", "ok");
+          await viewSettingsModel();
+        } catch (error) {
+          toast(error.message, "bad");
+        }
+      });
+    });
+  }
+
+  function openProfileForm(profile) {
+    const editing = Boolean(profile);
+    const value = profile || { id: "", label: "", endpoint: "", model: "", key_env: "TRIDENT_MODEL_API_KEY", defaults: { model_calls: 12, tool_calls: 24, tokens: 131072 } };
+    $("#profileForm").innerHTML = `
+      <section class="profile-form">
+        <div class="profile-form-head">
+          <h4>${editing ? "编辑配置" : "新建配置"}</h4>
+          <button class="icon-btn" type="button" id="closeProfileForm"><svg class="icon"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="form-grid">
+          <label class="field"><span>显示名称</span><input class="input" id="pfLabel" value="${esc(value.label)}" placeholder="例如 DeepSeek 主模型"></label>
+          <label class="field"><span>端点（https）</span><input class="input" id="pfEndpoint" value="${esc(value.endpoint)}" placeholder="https://api.deepseek.com/v1"></label>
+          <label class="field"><span>模型 ID</span><input class="input" id="pfModel" value="${esc(value.model)}" placeholder="deepseek-v4-pro"></label>
+          <label class="field"><span>密钥环境变量</span><input class="input" id="pfKeyEnv" value="${esc(value.key_env)}" placeholder="TRIDENT_MODEL_API_KEY"></label>
+          <label class="field"><span>模型调用上限</span><input class="input" id="pfModels" type="number" min="1" max="32" value="${value.defaults.model_calls}"></label>
+          <label class="field"><span>工具调用上限</span><input class="input" id="pfTools" type="number" min="1" max="64" value="${value.defaults.tool_calls}"></label>
+          <label class="field"><span>Token 上限</span><input class="input" id="pfTokens" type="number" min="4096" max="400000" step="1024" value="${value.defaults.tokens}"></label>
+        </div>
+        <div class="form-row">
+          <button class="btn primary" type="button" id="saveProfile">${editing ? "保存" : "创建"}</button>
+          <span class="form-hint">配置里不会写入密钥；只记录从哪个环境变量读取。</span>
+        </div>
+      </section>`;
+    $("#closeProfileForm").addEventListener("click", () => { $("#profileForm").innerHTML = ""; });
+    $("#saveProfile").addEventListener("click", async () => {
+      const payload = {
+        id: editing ? profile.id : "",
+        label: $("#pfLabel").value.trim(),
+        endpoint: $("#pfEndpoint").value.trim(),
+        model: $("#pfModel").value.trim(),
+        key_env: $("#pfKeyEnv").value.trim(),
+        defaults: {
+          model_calls: Number($("#pfModels").value || 12),
+          tool_calls: Number($("#pfTools").value || 24),
+          tokens: Number($("#pfTokens").value || 131072),
+        },
+      };
+      const button = $("#saveProfile");
+      button.disabled = true;
+      button.textContent = "保存中…";
+      try {
+        await api("/api/agent/models", { method: "POST", body: payload });
+        toast(editing ? "已保存" : "已创建", "ok");
+        await viewSettingsModel();
+      } catch (error) {
+        toast(error.message, "bad");
+        button.disabled = false;
+        button.textContent = editing ? "保存" : "创建";
+      }
+    });
+    $("#pfLabel").focus();
   }
 
   // ── source workspace ───────────────────────────────────────────────────
+
+  // ── source workspace ───────────────────────────────────────────────────
+
+
 
   async function viewSource(params) {
     const path = params.get("path") || "";
@@ -1341,13 +2406,17 @@
     const snap = overview.snapshot;
     const analysis = overview.analysis;
     const tools = analysis.tool_versions;
+    const build = describeBuild(overview.tool_version);
+    // The card header already names the product; keep the row to the version.
+    const buildShort = build.short.startsWith(overview.product + " ") ? build.short.slice(overview.product.length + 1) : build.short;
     $("#view").innerHTML = `
       <div class="about-grid">
         <section class="card">
           <div class="card-head"><h3><svg class="icon"><use href="#i-shield"/></svg>产品与构建</h3><span class="card-sub">${esc(overview.product)}</span></div>
           <div class="card-body">
             <div class="kv">
-              ${kvRow("构建版本", overview.tool_version)}
+              <div class="kv-row"><span class="kv-key">构建版本</span><span class="kv-val" title="${esc(overview.tool_version)}">${esc(buildShort)}</span></div>
+              ${build.tags.length ? `<details class="build-detail"><summary>能力标记 ${build.tags.length} 项</summary><div class="build-tags">${build.tags.map((tag) => `<span class="chip mono">${esc(tag)}</span>`).join("")}</div>${build.note ? `<p class="form-hint">${esc(build.note)}</p>` : ""}</details>` : ""}
               ${kvRow("报告 Schema", "v" + overview.schema_version)}
               ${kvRow("进程启动", new Date(overview.started_at).toLocaleString("zh-CN", { hour12: false }))}
               ${kvRow("分析生成", new Date(analysis.generated_at).toLocaleString("zh-CN", { hour12: false }) + " · " + analysis.duration_ms + "ms")}
@@ -1361,7 +2430,7 @@
             <div class="kv">
               ${kvRow("SHA-256", snap.hash)}
               ${kvRow("源目录", snap.source)}
-              ${kvRow("Manifest / Policy", "v" + snap.manifest + " / " + snap.policy_version)}
+              ${kvRow("Manifest / Policy", "v" + snap.manifest_version + " / " + snap.policy_version)}
               ${kvRow("文件 / 字节", fmtNum(snap.total_files) + " / " + fmtBytes(snap.total_bytes))}
               ${kvRow("排除项", fmtNum(snap.excluded_count))}
               ${kvRow("清单状态", snap.partial ? "partial" : "complete", snap.partial ? "warn" : "good")}
@@ -1372,10 +2441,10 @@
           <div class="card-head"><h3><svg class="icon"><use href="#i-layer"/></svg>分析工具链</h3><span class="card-sub">全部离线</span></div>
           <div class="card-body">
             <div class="kv">
-              ${kvRow("findings（证据模型）", tools.findings)}
-              ${kvRow("sca（声明级）", tools.sca)}
-              ${kvRow("audit（入口清单）", tools.audit)}
-              ${kvRow("dataflow（有界流）", tools.dataflow)}
+              ${kvRow("findings（证据模型）", versionText(tools.findings))}
+              ${kvRow("sca（声明级）", versionText(tools.sca))}
+              ${kvRow("audit（入口清单）", versionText(tools.audit))}
+              ${kvRow("dataflow（有界流）", versionText(tools.dataflow))}
               ${kvRow("Java AST", valueLabel(analysis.java_ast), "warn")}
               ${kvRow("依赖可达性", valueLabel(analysis.dependency_reachability), "warn")}
               ${kvRow("运行时验证", valueLabel(analysis.runtime_status), "warn")}
@@ -1465,6 +2534,14 @@
       $("#login").hidden = true;
       $("#app").hidden = false;
       input.value = "";
+      const config = await ensureConfig(true);
+      if (!config.project.hash) {
+        // A fresh workspace has no project yet: land on the picker instead of
+        // firing analysis requests that can only return 409.
+        if (location.hash !== "#/projects") location.hash = "#/projects";
+        await renderRoute();
+        return;
+      }
       await ensureOverview(true);
       if (!location.hash) location.hash = "#/overview";
       else await renderRoute();
@@ -1486,12 +2563,714 @@
 
   function applyTheme(theme) {
     document.documentElement.dataset.theme = theme;
-    const toggle = $("#themeToggle");
-    if (toggle) {
+    // Both the login screen and the console topbar carry a toggle.
+    $$(".theme-toggle").forEach((toggle) => {
       toggle.title = theme === "light" ? "切换到暗色主题" : "切换到亮色主题";
       toggle.innerHTML = `<svg class="icon"><use href="#${theme === "light" ? "i-moon" : "i-sun"}"/></svg>`;
+    });
+  }
+
+  // ── authorization inventory ────────────────────────────────────────────
+
+  const decisionMeta = {
+    protected: { label: "受保护", cls: "ok" },
+    public: { label: "公开", cls: "muted" },
+    unprotected: { label: "无控制", cls: "bad" },
+    unknown: { label: "未知", cls: "warn" },
+  };
+
+  const decisionReasonLabels = {
+    no_authentication_or_authorization_control_observed: "未发现任何访问控制",
+    login_endpoint_without_observed_control: "登录入口，未发现控制",
+    public_control_observed: "显式公开声明",
+    explicit_permit_with_protected_global_control: "显式放行，覆盖全局保护",
+    control_requirement_unresolved: "控制存在但要求无法解析",
+    control_class_not_recognized_as_auth_control: "控制类未被识别为鉴权控制",
+    control_class_has_no_observed_auth_token: "控制类未观察到鉴权判定",
+    control_class_unresolved: "控制类源码不在快照内",
+    authentication_control_not_entry_level: "控制不作用于该入口",
+    method_annotation_control_observed: "方法注解声明控制",
+    class_annotation_control_observed: "类注解声明控制",
+    servlet_filter_control_observed: "Servlet 过滤器声明控制",
+    interceptor_control_observed: "MVC 拦截器声明控制",
+    security_chain_rule_observed: "Security 过滤器链规则",
+    xml_intercept_url_observed: "XML 拦截规则",
+  };
+  const decisionReason = (reason) => decisionReasonLabels[reason] || reason || "—";
+  const controlKindLabels = {
+    method_annotation: "方法注解",
+    class_annotation: "类注解",
+    servlet_filter: "Servlet 过滤器",
+    web_xml_constraint: "web.xml 约束",
+    mvc_interceptor: "MVC 拦截器",
+    security_chain: "Security 过滤器链",
+    security_matcher: "Security matcher",
+    intercept_url: "XML 拦截规则",
+    webfilter_annotation: "@WebFilter",
+    jaxrs_roles: "JAX-RS 角色注解",
+  };
+  const controlKindLabel = (kind) => controlKindLabels[kind] || kind;
+  const requirementLabel = (requirement) => {
+    if (!requirement || requirement === "none") return "—";
+    if (requirement === "public") return "显式公开";
+    return requirement;
+  };
+
+  function decisionPill(decision) {
+    const meta = decisionMeta[decision] || { label: decision || "未知", cls: "warn" };
+    return `<span class="status ${meta.cls}"><span class="dot ${meta.cls === "bad" ? "bad" : meta.cls === "ok" ? "ok" : "warn"}"></span>${esc(meta.label)}</span>`;
+  }
+
+  async function viewAuthz() {
+    const authz = state.authz;
+    $("#view").innerHTML = `
+      <section class="card">
+        <div class="toolbar">
+          <div class="seg" id="authzSeg">
+            ${[["all", "全部"], ["unprotected", "无控制"], ["unknown", "未知"], ["public", "公开"], ["protected", "受保护"]].map(([value, label]) => `<button type="button" data-decision="${value}" class="${authz.decision === value ? "active" : ""}">${label}</button>`).join("")}
+          </div>
+          <input class="input wide" id="authzSearch" data-search placeholder="搜索路径、控制器方法或访问要求…" value="${esc(authz.q)}" />
+          <span class="spacer"></span>
+          <span class="toolbar-count" id="authzCount">—</span>
+        </div>
+        <div class="table-wrap">
+          <table class="grid-fixed cols-authz">
+            <thead><tr><th>决策</th><th>路径</th><th>控制器方法</th><th>访问要求</th><th>依据</th></tr></thead>
+            <tbody id="authzRows"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <span id="authzRange">—</span>
+          <div class="pager-actions">
+            <button class="btn" type="button" id="authzPrev"><svg class="icon"><use href="#i-chev-left"/></svg>上一页</button>
+            <button class="btn" type="button" id="authzNext">下一页<svg class="icon"><use href="#i-chev-right"/></svg></button>
+          </div>
+        </div>
+      </section>
+      <div class="grid-2 section-gap">
+        <section class="card">
+          <div class="card-head"><h3><svg class="icon"><use href="#i-lock"/></svg>过滤器链</h3><span class="card-sub">声明顺序即优先级</span></div>
+          <div class="card-body" id="authzChains"></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h3><svg class="icon"><use href="#i-shield"/></svg>已识别控制</h3><span class="card-sub">注解 / XML / 配置链</span></div>
+          <div class="card-body" id="authzControls"></div>
+        </section>
+      </div>
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-info"/></svg>限制与边界</h3><span class="card-sub">无控制不等于可未授权访问</span></div>
+        <div class="card-body" id="authzLimits">${limitationList(authz.limitations)}</div>
+      </section>
+    `;
+    $("#authzSeg").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-decision]");
+      if (!button) return;
+      authz.decision = button.dataset.decision;
+      authz.offset = 0;
+      $$("#authzSeg button").forEach((item) => item.classList.toggle("active", item === button));
+      loadAuthz();
+    });
+    let timer = null;
+    $("#authzSearch").addEventListener("input", (event) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        authz.q = event.target.value.trim();
+        authz.offset = 0;
+        loadAuthz();
+      }, 240);
+    });
+    $("#authzPrev").addEventListener("click", () => {
+      authz.offset = Math.max(0, authz.offset - authz.limit);
+      loadAuthz();
+    });
+    $("#authzNext").addEventListener("click", () => {
+      if (authz.offset + authz.limit < authz.total) {
+        authz.offset += authz.limit;
+        loadAuthz();
+      }
+    });
+    $("#authzRows").addEventListener("click", (event) => {
+      const row = event.target.closest("tr[data-file]");
+      if (row) go("source", { path: row.dataset.file, line: row.dataset.line });
+    });
+    await loadAuthz();
+  }
+
+  function authzRow(endpoint) {
+    const controls = (endpoint.matched_controls || []).join("、");
+    return `<tr class="clickable" tabindex="0" data-file="${esc(endpoint.file)}" data-line="${endpoint.method_line || endpoint.start_line}" title="${esc(endpoint.reason || "")}">
+      <td>${decisionPill(endpoint.decision)}</td>
+      <td class="path">${esc(endpoint.external_path || endpoint.path)}</td>
+      <td class="strong">${esc(endpoint.symbol)}</td>
+      <td>${esc(requirementLabel(endpoint.requirement))}</td>
+      <td class="file" title="${esc(endpoint.reason || "")}">${esc(controls || decisionReason(endpoint.reason))}</td>
+    </tr>`;
+  }
+
+  async function loadAuthz() {
+    const authz = state.authz;
+    const seq = ++authz.seq;
+    const rows = $("#authzRows");
+    if (!rows) return;
+    rows.innerHTML = Array.from({ length: 6 }, () => `<tr><td colspan="5"><div class="sk sk-row"></div></td></tr>`).join("");
+    const params = new URLSearchParams({ limit: authz.limit, offset: authz.offset });
+    if (authz.q) params.set("q", authz.q);
+    if (authz.decision && authz.decision !== "all") params.set("decision", authz.decision);
+    try {
+      const data = await api("/api/authz?" + params.toString());
+      if (seq !== authz.seq) return;
+      authz.total = data.total;
+      authz.limitations = data.limitations || [];
+      $("#authzCount").textContent = `无控制 ${fmtNum(data.counts.unprotected)} · 未知 ${fmtNum(data.counts.unknown)} · 受保护 ${fmtNum(data.counts.protected)} · 公开 ${fmtNum(data.counts.public)}`;
+      if (!data.endpoints.length) {
+        rows.innerHTML = `<tr><td colspan="5">${emptyState("i-lock", "没有匹配的入口", "调整决策筛选或检索条件。缺少已识别控制不代表可未授权访问。")}</td></tr>`;
+      } else {
+        rows.innerHTML = data.endpoints.map(authzRow).join("");
+      }
+      const start = data.total === 0 ? 0 : data.offset + 1;
+      const end = Math.min(data.offset + data.endpoints.length, data.total);
+      $("#authzRange").textContent = `第 ${start}–${end} 条 / 共 ${fmtNum(data.total)} 条`;
+      $("#authzPrev").disabled = data.offset === 0;
+      $("#authzNext").disabled = data.offset + authz.limit >= data.total;
+      renderAuthzChains(data.chains || []);
+      renderAuthzControls(data.controls || []);
+      const limits = $("#authzLimits");
+      if (limits) limits.innerHTML = limitationList(data.limitations);
+    } catch (error) {
+      if (error.status === 401) { showLogin("会话已失效，请重新输入访问令牌。"); return; }
+      if (seq === authz.seq) rows.innerHTML = `<tr><td colspan="5">${emptyState("i-alert", "加载失败", error.message)}</td></tr>`;
     }
   }
+
+  function renderAuthzChains(chains) {
+    const host = $("#authzChains");
+    if (!host) return;
+    if (!chains.length) {
+      host.innerHTML = emptyState("i-lock", "未识别过滤器链", "项目可能使用自定义拦截器、外部网关或运行时配置；这类控制不在静态清单范围内。");
+      return;
+    }
+    host.innerHTML = `<ul class="limits">${chains.map((chain) => `<li class="limit-row"><svg class="icon"><use href="#i-lock"/></svg><span><b>${esc(chain.id)}</b> <span class="limit-text">order=${esc(chain.order)} · ${esc((chain.security_matchers || []).join(" ") || "全部路径")} · 规则 ${(chain.rules || []).length}</span></span></li>`).join("")}</ul>`;
+  }
+
+  function renderAuthzControls(controls) {
+    const host = $("#authzControls");
+    if (!host) return;
+    if (!controls.length) {
+      host.innerHTML = emptyState("i-shield", "未识别访问控制", "注解、XML 与常见配置链均未命中。这是清单结论，不是漏洞结论。");
+      return;
+    }
+    host.innerHTML = `<ul class="limits">${controls.slice(0, 40).map((control) => `<li class="limit-row"><svg class="icon"><use href="#i-shield"/></svg><span><b>${esc(controlKindLabel(control.kind))}</b> <span class="limit-text">${esc((control.paths || []).join(" ") || requirementLabel(control.requirement))} · ${esc(control.file)}:${control.line}</span></span></li>`).join("")}</ul>`;
+  }
+
+  // ── java semantic model ────────────────────────────────────────────────
+
+  async function viewModel() {
+    const model = state.model;
+    $("#view").innerHTML = `
+      <section class="card">
+        <div class="toolbar">
+          <input class="input wide" id="modelSearch" data-search placeholder="搜索类型全限定名或文件…" value="${esc(model.q)}" />
+          <span class="spacer"></span>
+          <span class="toolbar-count" id="modelCount">—</span>
+        </div>
+        <div class="table-wrap">
+          <table class="grid-fixed cols-model">
+            <thead><tr><th>类型</th><th>种类</th><th class="right">方法</th><th class="right">字段</th><th>继承</th><th>文件</th></tr></thead>
+            <tbody id="modelRows"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <span id="modelRange">—</span>
+          <div class="pager-actions">
+            <button class="btn" type="button" id="modelPrev"><svg class="icon"><use href="#i-chev-left"/></svg>上一页</button>
+            <button class="btn" type="button" id="modelNext">下一页<svg class="icon"><use href="#i-chev-right"/></svg></button>
+          </div>
+        </div>
+      </section>
+    `;
+    let timer = null;
+    $("#modelSearch").addEventListener("input", (event) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        model.q = event.target.value.trim();
+        model.offset = 0;
+        loadModel();
+      }, 240);
+    });
+    $("#modelPrev").addEventListener("click", () => {
+      model.offset = Math.max(0, model.offset - model.limit);
+      loadModel();
+    });
+    $("#modelNext").addEventListener("click", () => {
+      if (model.offset + model.limit < model.total) {
+        model.offset += model.limit;
+        loadModel();
+      }
+    });
+    $("#modelRows").addEventListener("click", (event) => {
+      const row = event.target.closest("tr[data-fqn]");
+      if (row) openModelType(row.dataset.fqn);
+    });
+    $("#modelRows").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const row = event.target.closest("tr[data-fqn]");
+      if (row) {
+        event.preventDefault();
+        openModelType(row.dataset.fqn);
+      }
+    });
+    await loadModel();
+  }
+
+  function modelRow(item) {
+    const kind = { class: "类", interface: "接口", enum: "枚举", record: "记录", annotation: "注解" }[item.kind] || item.kind;
+    return `<tr class="clickable" tabindex="0" data-fqn="${esc(item.fqn)}">
+      <td><div class="id-cell"><strong class="mono">${esc(item.name)}</strong><span>${esc(item.fqn)}</span></div></td>
+      <td><span class="status muted">${esc(kind)}</span></td>
+      <td class="num">${fmtNum(item.methods)}</td>
+      <td class="num">${fmtNum(item.fields)}</td>
+      <td class="file">${esc(item.extends || "—")}</td>
+      <td class="file" title="${esc(item.file)}">${esc(item.file)}:${item.line}</td>
+    </tr>`;
+  }
+
+  async function loadModel() {
+    const model = state.model;
+    const seq = ++model.seq;
+    const rows = $("#modelRows");
+    if (!rows) return;
+    rows.innerHTML = Array.from({ length: 6 }, () => `<tr><td colspan="6"><div class="sk sk-row"></div></td></tr>`).join("");
+    const params = new URLSearchParams({ limit: model.limit, offset: model.offset });
+    if (model.q) params.set("q", model.q);
+    try {
+      const data = await api("/api/model?" + params.toString());
+      if (seq !== model.seq) return;
+      if (!data.enabled) {
+        $("#modelCount").textContent = "未启用";
+        $("#modelRange").textContent = "—";
+        rows.innerHTML = `<tr><td colspan="6">${emptyState("i-code", "代码模型未启用", data.reason || "该快照未生成 Java 语义模型。")}</td></tr>`;
+        $("#modelPrev").disabled = true;
+        $("#modelNext").disabled = true;
+        return;
+      }
+      model.total = data.total;
+      $("#modelCount").textContent = `${fmtNum(data.total)} 个类型 · 方法 ${fmtNum(data.coverage.methods_indexed)} · 调用 ${fmtNum(data.coverage.calls_resolved)}/${fmtNum(data.coverage.calls_observed)}`;
+      if (!data.types.length) {
+        rows.innerHTML = `<tr><td colspan="6">${emptyState("i-code", "没有匹配的类型", "调整检索条件；受限子集解析失败的文件会记录在边界中。")}</td></tr>`;
+      } else {
+        rows.innerHTML = data.types.map(modelRow).join("");
+      }
+      const start = data.total === 0 ? 0 : data.offset + 1;
+      const end = Math.min(data.offset + data.types.length, data.total);
+      $("#modelRange").textContent = `第 ${start}–${end} 条 / 共 ${fmtNum(data.total)} 条`;
+      $("#modelPrev").disabled = data.offset === 0;
+      $("#modelNext").disabled = data.offset + model.limit >= data.total;
+    } catch (error) {
+      if (error.status === 401) { showLogin("会话已失效，请重新输入访问令牌。"); return; }
+      if (seq === model.seq) rows.innerHTML = `<tr><td colspan="6">${emptyState("i-alert", "加载失败", error.message)}</td></tr>`;
+    }
+  }
+
+  async function openModelType(fqn) {
+    const layer = $("#drawerLayer");
+    const drawer = $("#drawer");
+    layer.hidden = false;
+    drawer.innerHTML = `<div class="drawer-head"><div class="drawer-head-main"><span class="eyebrow">TYPE</span><h2>加载类型…</h2></div><button class="icon-btn" type="button" data-close-drawer><svg class="icon"><use href="#i-x"/></svg></button></div><div class="drawer-body">${skeletonView()}</div>`;
+    $("[data-close-drawer]", drawer).addEventListener("click", closeDrawer);
+    try {
+      const data = await api("/api/model/type?fqn=" + encodeURIComponent(fqn));
+      if (layer.hidden) return;
+      drawer.innerHTML = modelTypeDrawer(data);
+      $("[data-close-drawer]", drawer).addEventListener("click", closeDrawer);
+    } catch (error) {
+      drawer.innerHTML = `<div class="drawer-head"><div class="drawer-head-main"><span class="eyebrow">TYPE</span><h2>无法加载类型</h2></div><button class="icon-btn" type="button" data-close-drawer><svg class="icon"><use href="#i-x"/></svg></button></div><div class="drawer-body">${emptyState("i-alert", "请求失败", error.message)}</div>`;
+      $("[data-close-drawer]", drawer).addEventListener("click", closeDrawer);
+    }
+  }
+
+  function modelTypeDrawer(data) {
+    const item = data.type;
+    const methods = (item.methods || []).map((method) => `<li class="limit-row"><svg class="icon"><use href="#i-code"/></svg><span><b class="mono">${esc(method.name)}</b> <span class="limit-text">${esc(method.symbol)} · ${esc(item.file)}:${method.line}</span></span></li>`).join("");
+    const fields = (item.fields || []).map((field) => `<li class="limit-row"><svg class="icon"><use href="#i-hash"/></svg><span><b class="mono">${esc(field.name)}</b> <span class="limit-text">${esc(field.type || field.type_raw)}${field.constant ? " = " + esc(field.constant) : ""}</span></span></li>`).join("");
+    const edge = (call) => `<li class="limit-row"><svg class="icon"><use href="#i-route"/></svg><span><b class="mono">${esc(call.api || call.caller)}</b> <span class="limit-text">${esc(call.target || call.status)} · ${esc(call.file)}:${call.line}</span></span></li>`;
+    return `<div class="drawer-head"><div class="drawer-head-main"><span class="eyebrow">${esc((item.kind || "type").toUpperCase())}</span><h2>${esc(item.name)}</h2><div class="drawer-meta"><span class="chip mono">${esc(item.fqn)}</span><span class="chip" data-src="${esc(item.file)}" data-line="${item.line}">${esc(item.file)}:${item.line}</span></div></div><button class="icon-btn" type="button" data-close-drawer><svg class="icon"><use href="#i-x"/></svg></button></div>
+      <div class="drawer-body">
+        <div class="drawer-section"><div class="drawer-section-head"><svg class="icon"><use href="#i-code"/></svg>方法 · ${(item.methods || []).length}</div><ul class="limits">${methods || '<li class="limit-row"><span class="limit-text">无方法声明</span></li>'}</ul></div>
+        <div class="drawer-section"><div class="drawer-section-head"><svg class="icon"><use href="#i-hash"/></svg>字段 · ${(item.fields || []).length}</div><ul class="limits">${fields || '<li class="limit-row"><span class="limit-text">无字段声明</span></li>'}</ul></div>
+        <div class="drawer-section"><div class="drawer-section-head"><svg class="icon"><use href="#i-route"/></svg>出向调用 · ${data.outgoing.length}</div><ul class="limits">${data.outgoing.map(edge).join("") || '<li class="limit-row"><span class="limit-text">未观察到调用</span></li>'}</ul></div>
+        <div class="drawer-section"><div class="drawer-section-head"><svg class="icon"><use href="#i-chev-left"/></svg>入向调用 · ${data.incoming.length}</div><ul class="limits">${data.incoming.map(edge).join("") || '<li class="limit-row"><span class="limit-text">未观察到调用</span></li>'}</ul></div>
+      </div>`;
+  }
+
+  // ── settings ───────────────────────────────────────────────────────────
+
+  async function viewSettings() {
+    const config = await api("/api/config");
+    state.config = config;
+    const paths = config.paths;
+    const features = config.features;
+    $("#view").innerHTML = `
+      <section class="card">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-folder"/></svg>当前项目</h3><span class="card-sub">${config.mode === "workspace" ? "工作区模式" : "固定快照模式"}</span></div>
+        <div class="card-body">
+          <div class="kv">
+            ${kvRow("源码目录", config.project.source || "—")}
+            ${kvRow("快照摘要", config.project.hash, "good")}
+            ${kvRow("文件 / 字节", `${fmtNum(config.project.files)} / ${fmtBytes(config.project.bytes)}`)}
+            ${kvRow("工作区", config.workspace || "未启用（以 --workspace 启动后可在界面切换项目）")}
+          </div>
+          ${features.project_import ? `
+          <div class="form-row mt-14">
+            <button class="btn primary" type="button" id="gotoProjects"><svg class="icon"><use href="#i-folder"/></svg>选择 / 导入项目</button>
+            <span class="form-hint">在「项目」页浏览目录、切换已导入项目。</span>
+          </div>` : `<p class="form-hint warn-text">当前以固定快照启动，无法切换项目。使用 <code>trident web --workspace &lt;dir&gt;</code> 重新启动后即可在界面选择项目。</p>`}
+        </div>
+      </section>
+
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-package"/></svg>分析配置</h3><span class="card-sub">保存后立即重新分析</span></div>
+        <div class="card-body">
+          <div class="form-grid">
+            <label class="field" for="cfgAdvisories"><span>公告目录 / 文件</span><input class="input" id="cfgAdvisories" value="${esc(paths.advisories_path || paths.advisories_dir)}" placeholder="目录或单个 JSON 目录文件" autocomplete="off" spellcheck="false"></label>
+            <label class="field" for="cfgPackageMap"><span>Package map（依赖 → 包前缀）</span><input class="input" id="cfgPackageMap" value="${esc(paths.package_map_path)}" placeholder="JSON 文件路径；留空关闭可达性" autocomplete="off" spellcheck="false"></label>
+            <label class="field" for="cfgRuntime"><span>运行时关联报告</span><input class="input" id="cfgRuntime" value="${esc(paths.runtime_report)}" placeholder="runtime http correlate --out 产物" autocomplete="off" spellcheck="false"></label>
+          </div>
+          <div class="form-row mt-14">
+            <button class="btn primary" type="button" id="saveConfigBtn"><svg class="icon"><use href="#i-check"/></svg>保存并重新分析</button>
+            <button class="btn" type="button" id="rerunBtn"><svg class="icon"><use href="#i-clock"/></svg>仅重新分析</button>
+            <span class="spacer"></span>
+            <span class="toolbar-count">公告 ${fmtNum(paths.advisories_count)} 个${paths.advisories_error ? " · " + esc(paths.advisories_error) : ""}</span>
+          </div>
+          ${features.workspace_editable ? "" : `<p class="form-hint warn-text">固定快照模式只读：路径配置需要以 --workspace 启动后才能修改。</p>`}
+        </div>
+      </section>
+
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-download"/></svg>导出</h3><span class="card-sub">确定性输出</span></div>
+        <div class="card-body">
+          <div class="form-row">
+            <button class="btn" type="button" id="settingsSbom">导出 CycloneDX SBOM</button>
+            <button class="btn" type="button" id="settingsSarif">导出 SARIF</button>
+            <button class="btn" type="button" id="settingsEvidence">导出证据 JSON</button>
+            <button class="btn" type="button" id="settingsReport">导出 HTML 报告</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-info"/></svg>能力状态</h3><span class="card-sub">由本次启动参数决定</span></div>
+        <div class="card-body">
+          <div class="kv">
+            ${kvRow("项目导入", features.project_import ? "可用" : "不可用", features.project_import ? "good" : "warn")}
+            ${kvRow("路径配置", features.workspace_editable ? "可用" : "不可用", features.workspace_editable ? "good" : "warn")}
+            ${kvRow("代码模型", features.java_model ? "已生成" : "未生成", features.java_model ? "good" : "warn")}
+            ${kvRow("Agent 观测", features.agent_store ? "已连接只读库" : "未配置 --agent-dsn", features.agent_store ? "good" : "warn")}
+            ${kvRow("分析状态", config.analysis.ready ? `完成 · ${fmtNum(config.analysis.duration_ms)} ms` : (config.analysis.error || "尚未运行"))}
+          </div>
+          ${config.java_model_reason ? `<p class="form-hint warn-text">${esc(config.java_model_reason)}</p>` : ""}
+        </div>
+      </section>
+    `;
+    $("#settingsSbom").addEventListener("click", exportSBOM);
+    $("#settingsSarif").addEventListener("click", exportSARIF);
+    $("#settingsEvidence").addEventListener("click", exportReport);
+    $("#settingsReport").addEventListener("click", exportHtmlReport);
+    if (features.workspace_editable) {
+      $("#saveConfigBtn").addEventListener("click", saveConsoleConfig);
+      $("#rerunBtn").addEventListener("click", rerunAnalysis);
+    } else {
+      $("#saveConfigBtn").disabled = true;
+      $("#rerunBtn").disabled = true;
+      $$("#cfgAdvisories, #cfgPackageMap, #cfgRuntime").forEach((input) => { input.disabled = true; });
+    }
+    if (features.project_import) {
+      $("#gotoProjects").addEventListener("click", () => go("projects"));
+    }
+  }
+
+  async function saveConsoleConfig() {
+    const button = $("#saveConfigBtn");
+    button.disabled = true;
+    button.textContent = "保存中…";
+    try {
+      await api("/api/config", {
+        method: "POST",
+        body: {
+          advisories_path: $("#cfgAdvisories").value.trim(),
+          package_map_path: $("#cfgPackageMap").value.trim(),
+          runtime_report: $("#cfgRuntime").value.trim(),
+        },
+      });
+      toast("配置已保存，开始重新分析…", "ok");
+      await rerunAnalysis();
+    } catch (error) {
+      toast(error.message, "bad");
+      button.disabled = false;
+      button.innerHTML = `<svg class="icon"><use href="#i-check"/></svg>保存并重新分析`;
+    }
+  }
+
+  async function rerunAnalysis() {
+    const button = $("#rerunBtn");
+    if (button) {
+      button.disabled = true;
+      button.textContent = "分析中…";
+    }
+    try {
+      const result = await api("/api/analysis/rerun", { method: "POST", body: {} });
+      toast(`分析完成 · ${result.analysis.findings} 条发现 · ${result.analysis.duration_ms} ms`, "ok");
+      await ensureOverview(true);
+      await viewSettings();
+    } catch (error) {
+      toast(error.message, "bad");
+      if (button) {
+        button.disabled = false;
+        button.innerHTML = `<svg class="icon"><use href="#i-clock"/></svg>仅重新分析`;
+      }
+    }
+  }
+
+
+  // ── project selection ──────────────────────────────────────────────────
+
+  async function ensureConfig(force) {
+    if (!state.config || force) state.config = await api("/api/config");
+    return state.config;
+  }
+
+  function projectName(entry) {
+    if (!entry || !entry.source) return "未命名项目";
+    const parts = String(entry.source).split(/[\\/]/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : entry.source;
+  }
+
+  function setProjectChrome(hasProject) {
+    const chip = $("#snapHash");
+    if (chip) chip.textContent = hasProject ? shortHash(state.config.project.hash) : "未选择项目";
+    const statusHash = $("#statusHash");
+    if (statusHash) statusHash.textContent = hasProject ? state.config.project.hash : "—";
+    const status = $("#statusAnalysis");
+    if (status) status.textContent = hasProject ? status.textContent : "等待选择项目";
+    ["#exportBtn", "#exportHtmlBtn"].forEach((selector) => {
+      const button = $(selector);
+      if (button) button.disabled = !hasProject;
+    });
+    const pill = $(".pill.runtime");
+    if (pill) pill.hidden = !hasProject;
+    if (!hasProject) {
+      [$("#navFindings"), $("#navEndpoints")].forEach((badge) => {
+        if (badge) badge.hidden = true;
+      });
+    }
+  }
+
+  async function viewProjects() {
+    const [config, list] = await Promise.all([ensureConfig(true), api("/api/projects")]);
+    const current = config.project.hash;
+    const hasProject = Boolean(current);
+    setProjectChrome(hasProject);
+    const items = list.projects || [];
+    $("#view").innerHTML = `
+      ${hasProject ? `
+      <section class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">CURRENT PROJECT</span>
+          <h2>${esc(projectName({ source: config.project.source }))}</h2>
+          <p class="mono hero-path">${esc(config.project.source || "—")}</p>
+          <div class="hero-meta">
+            <span class="chip mono"><svg class="icon icon-xs"><use href="#i-hash"/></svg>${esc(shortHash(current))}</span>
+            <span class="chip">${fmtNum(config.project.files)} 个文件</span>
+            <span class="chip">${fmtBytes(config.project.bytes)}</span>
+            <span class="chip"><span class="dot ok"></span>分析完成 ${fmtNum(config.analysis.duration_ms)} ms</span>
+          </div>
+        </div>
+        <div class="hero-side">
+          <button class="btn primary" type="button" id="gotoOverview">查看分析结果<svg class="icon"><use href="#i-chev-right"/></svg></button>
+        </div>
+      </section>` : `
+      <section class="card welcome-card">
+        <div class="empty">
+          <svg class="icon"><use href="#i-folder"/></svg>
+          <h4>先选择一个要审计的项目</h4>
+          <p>在下方浏览本地目录，或直接粘贴源码路径。导入只读取源码，快照保存在工作区，原目录不会被写入。</p>
+        </div>
+      </section>`}
+
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-folder"/></svg>导入本地项目</h3><span class="card-sub">只读导入 · 不执行代码</span></div>
+        <div class="card-body">
+          ${config.features.project_import ? `
+          <div class="form-row">
+            <label class="field grow" for="importSource"><span>源码目录</span><input class="input" id="importSource" placeholder="例如 D:\\Code\\Java\\market" autocomplete="off" spellcheck="false" value="${esc(state.browse.pick || "")}"></label>
+            <button class="btn" type="button" id="browseToggle"><svg class="icon"><use href="#i-folder"/></svg>浏览目录</button>
+            <button class="btn primary" type="button" id="importBtn"><svg class="icon"><use href="#i-download"/></svg>导入并分析</button>
+          </div>
+          <div id="browser" class="browser" hidden>
+            <div class="browser-bar">
+              <button class="btn sm" type="button" id="browseUp" title="上级目录">↑ 上级</button>
+              <span class="browser-path mono" id="browsePath">—</span>
+            </div>
+            <div class="browser-roots" id="browseRoots"></div>
+            <ul class="dir-list" id="browseList"></ul>
+            <div class="browser-foot">
+              <button class="btn sm primary" type="button" id="pickDir">选择当前目录</button>
+              <span class="form-hint">只会列出目录，不读取文件内容，不跟随符号链接。</span>
+            </div>
+          </div>` : `<p class="form-hint warn-text">当前以固定快照启动，无法导入项目。使用 <code>trident web --workspace .trident</code> 启动后即可在界面选择项目。</p>`}
+        </div>
+      </section>
+
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-layer"/></svg>已导入项目</h3><span class="card-sub">${fmtNum(items.length)} 个</span></div>
+        <div class="card-body">
+          ${items.length ? `<ul class="project-list">${items.map((entry) => projectRow(entry, current)).join("")}</ul>` : `<div class="empty"><svg class="icon"><use href="#i-folder"/></svg><h4>还没有导入任何项目</h4><p>从上面的目录选择器挑一个源码目录即可开始。</p></div>`}
+        </div>
+      </section>
+    `;
+
+    if (!config.features.project_import) return;
+
+    const input = $("#importSource");
+    const browser = $("#browser");
+    $("#importBtn").addEventListener("click", () => importProject(input.value.trim()));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") importProject(input.value.trim());
+    });
+    $("#browseToggle").addEventListener("click", async () => {
+      browser.hidden = !browser.hidden;
+      if (!browser.hidden && !state.browse.path) await browseTo("");
+    });
+    $("#browseUp").addEventListener("click", () => {
+      if (state.browse.parent) browseTo(state.browse.parent);
+    });
+    $("#pickDir").addEventListener("click", () => {
+      if (!state.browse.path) return;
+      input.value = state.browse.path;
+      state.browse.pick = state.browse.path;
+      toast("已选择目录：" + state.browse.path, "ok");
+    });
+    $("#browseList").addEventListener("click", (event) => {
+      const row = event.target.closest("li[data-path]");
+      if (row) browseTo(row.dataset.path);
+    });
+    $("#browseRoots").addEventListener("click", (event) => {
+      const chip = event.target.closest("[data-root]");
+      if (chip) browseTo(chip.dataset.root);
+    });
+    $("#view").addEventListener("click", (event) => {
+      const action = event.target.closest("[data-project-action]");
+      if (!action) return;
+      const hash = action.dataset.hash;
+      if (action.dataset.projectAction === "select") selectProject(hash);
+      if (action.dataset.projectAction === "forget") forgetProject(hash);
+    });
+    const overview = $("#gotoOverview");
+    if (overview) overview.addEventListener("click", () => go("overview"));
+    if (!browser.hidden) await browseTo(state.browse.path || "");
+  }
+
+  function projectRow(entry, current) {
+    const active = entry.hash === current;
+    return `<li class="project-row${active ? " active" : ""}">
+      <span class="project-icon"><svg class="icon"><use href="#i-${active ? "check" : "folder"}"/></svg></span>
+      <span class="project-main">
+        <strong>${esc(projectName(entry))}</strong>
+        <span class="mono project-path" title="${esc(entry.source)}">${esc(entry.source)}</span>
+      </span>
+      <span class="project-meta">
+        <span class="chip mono">${esc(shortHash(entry.hash))}</span>
+        <span class="chip">${fmtNum(entry.files)} 文件</span>
+      </span>
+      <span class="project-actions">
+        ${active
+          ? '<span class="status ok"><span class="dot ok"></span>当前</span>'
+          : `<button class="btn sm" type="button" data-project-action="select" data-hash="${esc(entry.hash)}">切换</button>
+             <button class="btn sm ghost" type="button" data-project-action="forget" data-hash="${esc(entry.hash)}" title="只从列表移除，不删除快照文件">移除</button>`}
+      </span>
+    </li>`;
+  }
+
+  async function browseTo(path) {
+    const browse = state.browse;
+    try {
+      const data = await api("/api/fs" + (path ? "?path=" + encodeURIComponent(path) : ""));
+      browse.path = data.path;
+      browse.parent = data.parent || "";
+      browse.entries = data.entries || [];
+      browse.roots = data.roots || [];
+      $("#browsePath").textContent = data.path;
+      $("#browseUp").disabled = !data.parent;
+      $("#browseRoots").innerHTML = browse.roots.map((root) => `<button class="chip chip-btn" type="button" data-root="${esc(root)}">${esc(root)}</button>`).join("");
+      $("#browseList").innerHTML = browse.entries.length
+        ? browse.entries.map((entry) => `<li class="dir-row${entry.looks_like_project ? " project" : ""}" data-path="${esc(entry.path)}">
+            <svg class="icon"><use href="#i-folder"/></svg>
+            <span class="dir-name">${esc(entry.name)}</span>
+            ${entry.looks_like_project ? '<span class="status info">项目</span>' : ""}
+          </li>`).join("")
+        : `<li class="dir-empty">该目录下没有可进入的子目录</li>`;
+      if (data.truncated) $("#browseList").insertAdjacentHTML("beforeend", `<li class="dir-empty">条目过多，仅显示前 ${500} 项</li>`);
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  }
+
+  async function selectProject(hash) {
+    try {
+      await api("/api/projects/select", { method: "POST", body: { hash } });
+      resetAnalysisState();
+      await ensureConfig(true);
+      await refreshProjectSwitcher();
+      await ensureOverview(true);
+      toast("已切换项目，重新分析完成", "ok");
+      go("overview");
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  }
+
+  async function forgetProject(hash) {
+    try {
+      await api("/api/projects/forget", { method: "POST", body: { hash } });
+      toast("已从列表移除（快照文件保留）", "ok");
+      await viewProjects();
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  }
+
+  async function importProject(source) {
+    if (!source) {
+      toast("请填写或选择一个源码目录", "bad");
+      return;
+    }
+    const button = $("#importBtn");
+    button.disabled = true;
+    button.textContent = "导入中…";
+    try {
+      const result = await api("/api/projects", { method: "POST", body: { source } });
+      state.browse.pick = source;
+      resetAnalysisState();
+      await ensureConfig(true);
+      await refreshProjectSwitcher();
+      await ensureOverview(true);
+      toast(`已导入 ${result.project.files} 个文件 · ${shortHash(result.project.hash)}`, "ok");
+      go("overview");
+    } catch (error) {
+      toast(error.message, "bad");
+      button.disabled = false;
+      button.innerHTML = `<svg class="icon"><use href="#i-download"/></svg>导入并分析`;
+    }
+  }
+
+  function resetAnalysisState() {
+    state.overview = null;
+    state.findings = { ...state.findings, items: [], total: 0, filtered: 0, offset: 0, counts: null };
+    state.endpoints = { ...state.endpoints, items: [], total: 0, offset: 0, authzMap: {}, authzCounts: null };
+    state.authz = { ...state.authz, items: [], total: 0, offset: 0 };
+    state.model = { ...state.model, items: [], total: 0, offset: 0 };
+    state.source = { ...state.source, files: [], cursor: "", path: "", file: null, search: null };
+  }
+
 
   async function boot() {
     installChrome();
@@ -1503,10 +3282,22 @@
     });
     $("#loginBtn").addEventListener("click", submitLogin);
     $("#tokenInput").addEventListener("keydown", (event) => { if (event.key === "Enter") submitLogin(); });
+    if (!state.token) {
+      showLogin("");
+      return;
+    }
     try {
       await api("/api/health");
       $("#login").hidden = true;
       $("#app").hidden = false;
+      const config = await ensureConfig(true);
+      await refreshProjectSwitcher();
+      if (!config.project.hash) {
+        if (location.hash !== "#/projects") location.hash = "#/projects";
+        await renderRoute();
+        return;
+      }
+      await refreshProjectSwitcher();
       await ensureOverview();
       if (!location.hash) {
         location.hash = "#/overview";
@@ -1514,7 +3305,7 @@
         await renderRoute();
       }
     } catch (error) {
-      if (error.status === 401) showLogin("输入启动 trident web 时打印的访问令牌。", true);
+      if (error.status === 401) showLogin("");
       else showLogin("控制台服务不可用：" + error.message);
     }
   }

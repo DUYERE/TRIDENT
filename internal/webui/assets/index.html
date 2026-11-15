@@ -37,6 +37,10 @@
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></symbol>
     <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.4M12 19.1v2.4M21.5 12h-2.4M4.9 12H2.5M18.7 5.3l-1.7 1.7M7 17l-1.7 1.7M18.7 18.7 17 17M7 7 5.3 5.3"/></symbol>
     <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11Z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-chev-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
   </svg>
 
   <div class="app" id="app" hidden>
@@ -50,20 +54,31 @@
       </div>
       <nav class="nav" aria-label="主导航">
         <div class="nav-group">
+          <div class="nav-label">项目</div>
+          <a class="nav-item" href="#/projects" data-route="projects"><svg class="icon"><use href="#i-folder"/></svg><span>项目选择</span></a>
+        </div>
+        <div class="nav-group">
           <div class="nav-label">分析</div>
           <a class="nav-item" href="#/overview" data-route="overview"><svg class="icon"><use href="#i-grid"/></svg><span>概览</span></a>
           <a class="nav-item" href="#/findings" data-route="findings"><svg class="icon"><use href="#i-bug"/></svg><span>安全发现</span><em class="nav-badge" id="navFindings" hidden>0</em></a>
           <a class="nav-item" href="#/endpoints" data-route="endpoints"><svg class="icon"><use href="#i-route"/></svg><span>HTTP 入口</span><em class="nav-badge" id="navEndpoints" hidden>0</em></a>
           <a class="nav-item" href="#/dependencies" data-route="dependencies"><svg class="icon"><use href="#i-package"/></svg><span>依赖与公告</span></a>
           <a class="nav-item" href="#/tree" data-route="tree"><svg class="icon"><use href="#i-layer"/></svg><span>依赖树</span></a>
+          <a class="nav-item" href="#/authz" data-route="authz"><svg class="icon"><use href="#i-lock"/></svg><span>权限清单</span></a>
+          <a class="nav-item" href="#/model" data-route="model"><svg class="icon"><use href="#i-code"/></svg><span>代码模型</span></a>
           <a class="nav-item" href="#/reachability" data-route="reachability"><svg class="icon"><use href="#i-shield"/></svg><span>可达性</span></a>
           <a class="nav-item" href="#/runtime" data-route="runtime"><svg class="icon"><use href="#i-flag"/></svg><span>运行时关联</span></a>
         </div>
         <div class="nav-group">
           <div class="nav-label">工作区</div>
-          <a class="nav-item" href="#/agent" data-route="agent"><svg class="icon"><use href="#i-server"/></svg><span>Agent 活动</span></a>
+          <a class="nav-item" href="#/agent" data-route="agent"><svg class="icon"><use href="#i-server"/></svg><span>Agent 对话</span></a>
           <a class="nav-item" href="#/source" data-route="source"><svg class="icon"><use href="#i-code"/></svg><span>源码浏览</span></a>
-          <a class="nav-item" href="#/about" data-route="about"><svg class="icon"><use href="#i-lock"/></svg><span>边界与关于</span></a>
+          <a class="nav-item nav-parent" href="#/settings" data-route="settings" data-group="settings"><svg class="icon"><use href="#i-sliders"/></svg><span>设置</span><svg class="icon chev"><use href="#i-chev-down"/></svg></a>
+          <div class="nav-sub" id="navSettingsSub">
+            <a class="nav-item sub" href="#/settings/model" data-route="settings-model"><svg class="icon"><use href="#i-server"/></svg><span>模型</span></a>
+            <a class="nav-item sub" href="#/settings" data-route="settings"><svg class="icon"><use href="#i-folder"/></svg><span>路径与分析</span></a>
+          </div>
+          <a class="nav-item" href="#/about" data-route="about"><svg class="icon"><use href="#i-info"/></svg><span>边界与关于</span></a>
         </div>
       </nav>
       <div class="sidebar-foot">
@@ -80,13 +95,23 @@
 
     <div class="main">
       <header class="topbar">
-        <div class="topbar-title">
-          <span class="eyebrow" id="pageEyebrow">TRIDENT / OVERVIEW</span>
-          <h1 id="pageTitle">概览</h1>
+        <div class="topbar-lead">
+          <button class="icon-btn nav-collapse" id="navCollapse" type="button" aria-label="收起侧边栏" title="收起侧边栏">
+            <svg class="icon"><use href="#i-menu"/></svg>
+          </button>
+          <label class="project-switch" title="切换当前项目">
+            <span class="dot ok"></span>
+            <select id="projectSwitcher" aria-label="切换当前项目"></select>
+            <svg class="icon"><use href="#i-chev-down"/></svg>
+          </label>
+          <div class="topbar-title">
+            <span class="eyebrow" id="pageEyebrow">TRIDENT / OVERVIEW</span>
+            <h1 id="pageTitle">概览</h1>
+          </div>
         </div>
         <div class="topbar-actions">
           <span class="pill runtime" title="静态证据不等于运行时可利用"><span class="dot warn"></span>runtime_status = not_run</span>
-          <button class="icon-btn" id="themeToggle" type="button" title="切换亮色/暗色主题"><svg class="icon"><use href="#i-sun"/></svg></button>
+          <button class="icon-btn theme-toggle" id="themeToggle" type="button" title="切换亮色/暗色主题"><svg class="icon"><use href="#i-sun"/></svg></button>
           <button class="btn ghost" id="exportBtn" type="button" title="下载统一 Finding/Hypothesis JSON">
             <svg class="icon"><use href="#i-download"/></svg><span>导出证据</span>
           </button>
@@ -107,29 +132,50 @@
   </div>
 
   <div class="login" id="login" hidden>
-    <div class="login-card">
-      <div class="login-brand">
-        <span class="brand-mark large"><img class="brand-img" src="/assets/brand.png" alt="" draggable="false"></span>
-        <div>
-          <strong>TRIDENT</strong>
-          <span>只读安全分析控制台</span>
+    <button class="login-theme icon-btn theme-toggle" type="button" aria-label="切换亮色/暗色主题" title="切换亮色/暗色主题"><svg class="icon"><use href="#i-sun"/></svg></button>
+    <div class="login-stage">
+      <aside class="login-story">
+        <div class="login-story-brand">
+          <span class="brand-mark large"><img class="brand-img" src="/assets/brand.png" alt="" draggable="false"></span>
+          <div class="login-story-name">
+            <strong>TRIDENT</strong>
+            <span>READ-ONLY SECURITY CONSOLE</span>
+          </div>
         </div>
-      </div>
-      <p class="login-copy">输入启动 <code>trident web</code> 时终端打印的访问令牌。令牌仅保存在当前浏览器会话与本机进程内。</p>
-      <label class="field" for="tokenInput">
-        <span>访问令牌</span>
-        <span class="input-wrap">
-          <input id="tokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴 48 位十六进制令牌" data-search>
-          <button type="button" class="input-action" id="toggleToken" aria-label="显示或隐藏令牌"><svg class="icon"><use href="#i-eye"/></svg></button>
-        </span>
-      </label>
-      <button class="btn primary block" id="loginBtn" type="button">进入控制台</button>
-      <div class="login-error" id="loginError" hidden></div>
-      <div class="login-foot">
-        <span><svg class="icon"><use href="#i-shield"/></svg> loopback only</span>
-        <span><svg class="icon"><use href="#i-eye-off"/></svg> 无模型调用</span>
-        <span><svg class="icon"><use href="#i-lock"/></svg> 只读快照</span>
-      </div>
+        <h1><span class="login-grad">静态证据</span>，<br>而不是猜测。</h1>
+        <p class="login-story-copy">TRIDENT 把 Java 项目的依赖、HTTP 入口、数据流与访问控制编译成可核对的证据。每一条结论都带出处，可以回跳到源码行号。</p>
+        <ul class="login-points">
+          <li><svg class="icon"><use href="#i-lock"/></svg><span><b>只读快照</b>源目录零写入，快照按 SHA-256 定位</span></li>
+          <li><svg class="icon"><use href="#i-eye-off"/></svg><span><b>分析零外呼</b>静态分析不调用模型、不访问目标</span></li>
+          <li><svg class="icon"><use href="#i-shield"/></svg><span><b>证据账本</b>结论只能引用工具实际读过的行</span></li>
+          <li><svg class="icon"><use href="#i-hash"/></svg><span><b>确定性导出</b>同一快照、同一二进制，字节一致</span></li>
+        </ul>
+        <div class="login-story-foot">
+          <span class="chip mono">loopback only</span>
+          <span class="chip mono">CSP strict</span>
+          <span class="chip mono">runtime_status = not_run</span>
+        </div>
+      </aside>
+      <section class="login-card">
+        <div class="login-brand">
+          <span class="brand-mark"><img class="brand-img" src="/assets/brand.png" alt="" draggable="false"></span>
+          <div>
+            <strong>TRIDENT</strong>
+            <span>只读安全分析控制台</span>
+          </div>
+        </div>
+        <p class="login-copy">输入启动 <code>trident web</code> 时终端打印的访问令牌。令牌仅保存在当前浏览器会话与本机进程内。</p>
+        <label class="field" for="tokenInput">
+          <span>访问令牌</span>
+          <span class="input-wrap">
+            <input id="tokenInput" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴终端打印的访问令牌" data-search>
+            <button type="button" class="input-action" id="toggleToken" aria-label="显示或隐藏令牌"><svg class="icon"><use href="#i-eye"/></svg></button>
+          </span>
+        </label>
+        <button class="btn primary block" id="loginBtn" type="button">进入控制台</button>
+        <div class="login-error" id="loginError" hidden></div>
+        <p class="login-hint">令牌只在启动终端打印一次；重启 <code>trident web</code> 可获得新令牌。</p>
+      </section>
     </div>
   </div>
 

@@ -764,7 +764,15 @@ func (l *execution) executeTool(ctx context.Context) error {
 		}
 	}
 	if len(result) > maxToolResultBytes {
-		return l.stop(ctx, domain.AgentStepBudgetExhausted, "tool output exceeds 24576-byte loop limit; result not truncated or committed", model.ErrLimit)
+		// Never truncate read-only evidence. Hand the model a compact error so it
+		// can narrow the request; the tool stays uncommitted and produces no
+		// evidence, and the run keeps its remaining budget.
+		result, _ = json.Marshal(map[string]any{
+			"error":       "result_too_large",
+			"limit_bytes": maxToolResultBytes,
+			"hint":        "request a smaller page (limit/prefix) and retry; nothing was committed",
+		})
+		evidence = nil
 	}
 	l.cp.Messages = append(l.cp.Messages, model.Message{Role: "tool", CallID: call.ID, Content: string(result)})
 	l.cp.Evidence = append(l.cp.Evidence, evidence...)

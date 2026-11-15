@@ -1080,6 +1080,119 @@
 - 验收：`go test ./internal/webui ./cmd/trident -count=1`、`python scripts/test-web.py`（8 项）、`python scripts/test-monitoring.py`（4 项）、`python scripts/test-backup-scale.py` 全部通过；全量 `go build/vet/test` + `verify-offline.ps1`（14 脚本）绿。
 - 限制与 pending：RTO/RPO 实测仅覆盖本机容器与该数据量，生产承诺须按容量模型在生产硬件重测；组织级分权审批记录（表 owner 审批单、密钥系统登记）需组织流程，工具侧无法替代；Alertmanager 探针规则（TridentAlertDeliveryProbe）仅演练用，生产删除；真实项目规模基准与 live-model 成本实测待授权。
 
+### 2026-11-14 续二十四：一键工作区控制台、权限/代码模型视图与 java-model 死循环修复
+
+- **`audit java-model` 无限循环修复**（`internal/javaast/parse.go`）：`skipAngles` 在遇到不配对的 `<`（真实代码里的比较运算符）时返回原位置，`parseTypeAt` 的 `for tokens[index]=="<"` 永不推进。修复为未闭合时只消费开括号；真实项目 `D://Code//Java//market`（84 个 Java 文件）从 **>230s 挂死**降为 **0.61s**。新增 `TestUnbalancedAngleBracketsTerminate` 与 `TestSkipAnglesAlwaysAdvance` 回归测试，并加入 `profile_local_test.go`（仅在设置 `TRIDENT_PROFILE_SNAPSHOT/HASH` 时运行）。
+- **性能记忆化**：`javaast` 索引新增四种缓存（方法擦除参数类型、调用候选集、字段查找、子类型判定），避免每次调用重复解析参数与遍历继承链；语义不变，现有测试全绿。
+- **一键工作区模式**（`cmd/trident/web.go`、`internal/webui/config.go`）：`trident web --project <dir>` 单条命令完成导入→摘要→启动；`--workspace`（默认 `.trident`）持久化 `console.json` 与 `snapshots/<sha256>/`，再次启动只需 `--workspace`；自动拾取 `<workspace>/advisories/` 与 `<workspace>/package-map.json`。`--advisories` 现同时接受文件或目录（`sca.Options.AdvisoryDir`，目录内 `*.json` 按名排序加载，重复 advisory_id 失败关闭）。
+- **运行期配置与项目切换 API**：`GET/POST /api/config`、`POST /api/project`、`POST /api/analysis/rerun`。所有变更先校验后落盘，失败返回 400 且不改动已存配置；成功后清空分析缓存与可达性缓存。pinned 模式返回 `409 pinned_console`，保持原完全只读语义。
+- **新增只读视图 API**：`GET /api/authz`（决策分布、逐入口决策、控制与过滤器链）、`GET /api/model` 与 `GET /api/model/type`（类型索引、方法/字段、出向/入向调用边）；`GET /api/endpoints` 增加 `authz` 映射与 `authz_counts`，可按决策筛选；`GET /api/overview` 增加 `authz` 与 `model` 摘要。
+- **前端**：新增「权限清单」「代码模型」「设置」三个路由；HTTP 入口表增加权限列与筛选；概览增加无控制入口与代码模型统计卡；限制项改为中文标题 + 截断详情；可点击行支持键盘 Enter/Space；登录占位符改为“终端打印的访问令牌”；无令牌时不再发起必然 401 的 `/api/health`；表格使用 CSS 列宽（CSP 禁止内联样式）。
+- **契约**：`docs/web-console-contract.md` 增加 workspace 模式、可变配置边界、新 API 与视图；README 控制台章节重写为一键模式。
+- **验收**：`go build ./...`、`go vet ./...`、`go test ./...` 全绿；新增 `internal/webui/config_test.go`（权限/模型视图、pinned 拒绝变更、配置往返、重启恢复）；真实项目端到端：`trident web --project D://Code//Java//market` → 首次分析 2.3s（含 authz 与 90 类型/1815 方法/1224 条已解析调用），界面导入切回 fixture 与 market 均成功。
+- **限制与 pending**：工作区模式新增了可变状态（项目切换与路径配置），仍不执行项目代码、不调用模型；`snapshots/` 无自动回收策略；`--agent-dsn` 仍只能在启动时指定；Java 模型上限 2000 文件，超出时界面明确显示未启用原因。
+
+### 2026-11-14 续二十五：Web 项目选择器（空启动 + 目录浏览 + 项目切换）
+
+- **空工作区启动**：`trident web --workspace <dir>` 可先不加载快照；`webui.New` 放宽为"要么 workspace、要么 snapshot+hash"，`Console` 全链路 nil-safe（`Close`/`SnapshotHash`/`buildConfigSnapshot`/`analyze`）。分析类路由由中间件统一拦截并返回 `409 no_project`（`/api/session`、`/api/health`、`/api/config`、`/api/projects*`、`/api/fs`、`/api/metrics` 豁免），前端在无项目时停留在 `#/projects`。
+- **项目注册表**：`<workspace>/projects.json`（来源、快照目录、摘要、文件数、字节、导入时间，上限 50 条，按最近导入排序）。启动时自动登记当前项目；`GET/POST /api/projects`、`POST /api/projects/select`（复用磁盘快照，不重新导入）、`POST /api/projects/forget`（仅移除列表项，当前项目拒绝移除，不删快照文件）。
+- **目录选择器** `GET /api/fs`：只列子目录，跳过隐藏目录与符号链接，上限 500 项，Windows 返回盘符；对"看起来像项目"的目录做浅层标记（pom.xml/build.gradle/src/.git，不遍历）。该接口仅在 workspace 模式开放，仍受令牌与 console 头双重门禁。
+- **前端**：「项目」页（当前项目卡片、目录浏览/上级/盘符、路径输入导入、已导入列表与切换/移除）；无项目时顶栏导出禁用、底栏显示"未选择项目"；登录/刷新路径不再触发必然 409 的 overview 请求；设置页的项目导入入口改为跳转项目页，避免两套导入流程。
+- **契约**：`docs/web-console-contract.md` 增加空启动语义、四个项目接口、`/api/fs` 边界、错误码（`no_project`/`project_active`/`project_unknown`）与新视图；README 一键模式补充"空启动后选项目"。
+- **验收**：新增 `internal/webui/projects_test.go`（无项目启动与 409、导入/切换/移除、目录选择器拒绝文件与不存在路径）；`go test ./internal/webui ./cmd/trident`、`go vet ./...`、`go build ./...` 全绿；浏览器实测：空工作区启动 → 浏览 D:// → 导入 market（256 文件）→ 导入 fixture（14 文件）→ 切换回 market，全部成功，切换后自动重新分析。
+- **限制与 pending**：目录选择器按设计暴露本机目录结构（loopback + token 前提下），不适用于把控制台反代给不可信用户的场景；`projects.json` 与 `console.json` 是两处状态，手工编辑后需重启；快照目录仍无回收策略。
+
+### 2026-11-15：`trident web` 参数错误诊断（可用性修复）
+
+- 现象：`trident web workspace .trident --token 123` 只打印一行 usage，无法判断错在哪。
+- 两个真实原因：① `workspace` 漏写 `--`，Go flag 在第一个非 flag token 处停止解析，后续 `--token 123` 全被当作位置参数；② `--token 123` 本身不合法（要求 16–256 字节）。
+- 修复：`flags.NArg()>0` 时逐一列出多余参数，命中已知 flag 名时提示"应该是 --workspace，缺少 --"；`--token` 在导入前提前校验并报出实际字节数，附可复制的示例命令；usage 首项改为 `--workspace` 以匹配"空启动选项目"的新主流程。
+- 验收：新增 `TestRunWebExplainsBadArguments`（缺 `--` 的诊断、短 token 的实际长度）；`go test ./cmd/trident ./internal/webui` 通过；`trident web --workspace .trident --token <16+ 字节>` 实测启动成功。
+
+### 2026-11-15：真实模型闭环（Run 1–3）与本地数据库可用性修复
+
+- **环境**：Docker Desktop 由用户启动后可用；原 `trident-p0-postgres-1` 无法启动——宿主端口 55432 落在 Windows 保留区间（`netsh int ipv4 show excludedportrange` 显示 55391–55490），改为同名数据卷 + 宿主 5432 重建容器 `trident-pg`（镜像 digest 不变、`postgres -c max_connections=200`），数据卷 `trident-p0_postgres-data` 为空库，重新 `migrate`（`TRIDENT_MIGRATION_ACTOR` 必需）并 `bootstrap web-admin`。
+- **Run 1**（deepseek-flash，默认预算 8/24/131072）：`budget_exhausted`，8 次模型调用、16 次工具调用、69,005 tokens。工具序列正常（inspect→list→read×4→trace_dataflow→query_endpoints），只是耗尽调用次数前未收口。**CLI 报错不当**：`agent.Execute` 返回 `store.ErrBudget` 时只打印 "insufficient reserved budget"，已改为输出 `model x/y · tool x/y · tokens x/y` 并说明 `budget_exhausted` 不是结论。
+- **Run 2**（deepseek-flash，14/30/262144）：`failed: invalid final envelope or unobserved evidence`，5 次模型调用、7 次工具调用、38,832 tokens——`validateFinal` 拒绝了信封（字段缺失或引用未实际读取的行）。
+- **Run 3**（deepseek-v4-pro，14/30/262144，goal 中显式给出 JSON 信封与"只引用实际读到的行"）：`completed`，4 次模型调用、9 次工具调用、28,495 tokens、25s。最终信封 1 条假设，引用 `CustomerController.java:23-25` 与 `CustomerRepository.java:22-28`，通过证据账本校验；limitations 6 条，runtime_status=not_run。
+- **控制台**：以 `--agent-dsn` 启动后可读取 3 条 Run；新增 Chrome autofill 覆盖（亮色主题下自动填充输入框不再变深底白字）。
+- 验收：`go vet ./cmd/trident`、`go test ./cmd/trident` 通过；`/api/agent/runs` 返回 3 条且 UI 列表正常。
+- 限制：Run 3 只证明单次真实模型的自主只读分析与可校验引用，不代表漏洞可利用或覆盖完整；`deepseek-flash` 在该 goal 下两次未收口，说明轻量模型对证据约束的遵循弱于 v4-pro，属于模型行为而非引擎缺陷。
+
+### 2026-11-15：Web 端 Agent 对话（可选控制平面）与渲染修复
+
+- **参考**：本机 192.168.41.12:7777「全链哨兵」控制台。借鉴两点——① 工具活动折叠成一行「过程 · N 次工具调用」摘要，正文只保留结论；② 会话按项目隔离（它为每个项目起独立容器，我们用快照摘要做数据隔离）。
+- **后端**（`internal/webui/agent_chat.go`）：`GET /api/agent/chat/state`、`GET /api/agent/threads`、`POST /api/agent/chat`、`POST /api/agent/chat/cancel`（当前固定 501）。创建 Run 复用 `store.CreateAgentRun` + `agent.Execute`，与 CLI 同一条路径；模型密钥只在每个 Run 前从环境变量读取。守卫：默认关闭（`--enable-agent-chat`）、需要 `--agent-dsn` + `--agent-token`（主体令牌）+ 模型绑定、每次请求必须 `approve_egress=true`、同进程单 Run、预算上限 32/64/400k。
+- **前端**：`#/agent` 从只读表格改为对话页：左栏按当前快照过滤的会话、右栏消息流、底部目标输入 + 外发批准 + 预算。消息流规则：模型正文按段落/列表渲染（先转义再套极简 markdown）；工具调用合并为单个「过程」块（跨多轮合并、执行中自动展开）；终态渲染独立状态卡并给出 checkpoint 上限提示；模型吐出的 JSON 片段折叠为「模型结构化输出」；结论卡片列出假设与可点击的行号引用（跳转源码）。
+- **实测**：Run 4（合成样本，12/24/131072）在第 8 次模型调用时因 **checkpoint 48 KiB 上限**停止 → 状态卡正确显示原因与建议；Run 5（收敛目标，8/10）`completed`，3 模型/4 工具/14,893 tokens，结论含 `CustomerController.java:23`、`CustomerRepository.java:24` 两处引用。
+- **修复**：预算耗尽原先误映射为 "insufficient reserved budget"（CLI 同源问题已在 11-14 修过），页面侧补齐终止卡；未执行工具不再显示"等待结果"；会话列表状态不刷新。
+- **限制**：48 KiB 检查点上限是硬约束，长对话必然中断——需要拆小目标；没有中途取消（显式 501，不假装支持）；开启对话后控制台不再是纯只读，契约已同步说明。
+
+### 2026-11-15：向参考控制台对齐交互（侧边栏折叠、模型配置、项目切换）
+
+- **参考**：192.168.41.12:7777。取四点：① 图标栏可折叠（64px，保留图标与悬浮标签）；② 设置作为分组，下挂子页（模型 / 路径）；③ 模型库表格（模型+端点、状态、能力、角色、操作）与卡片内标签页；④ 顶栏项目下拉切换。
+- **侧边栏折叠**：`#navCollapse` 切换 `body[data-nav]`，折叠态隐藏文字/分组标题/徽标/快照条，分组间加分隔线，状态落 `localStorage`。
+- **模型配置**（`internal/webui/agent_model.go`）：`GET /api/agent/models` 用启动时配置的端点探测 `/models`（10s 超时、512 KiB 上限、密钥只用于该请求），`POST /api/agent/model` 仅接受端点实际提供的模型并写入工作区 `agent_model`；有 Run 执行中拒绝切换。页面为 `#/settings/model`，含模型库与预算两个标签页；预算页明示 32/64/400k 上限与 48 KiB 检查点。
+- **项目切换**：顶栏下拉从 `/api/projects` 填充，切换走 `POST /api/projects/select` 并清空分析缓存；设置父项在子路由下保持高亮。
+- **修复**：顶栏标题在加入切换器后被挤成两行（改为 nowrap + ellipsis）；折叠态快照条残留空胶囊；折叠态缺悬浮标签。
+- **验收**：`go build`、`go test ./internal/webui ./cmd/trident` 通过；浏览器实测折叠/展开、模型列表（deepseek-flash、deepseek-v4-pro）、预算页、项目下拉均正常。
+- **限制**：模型能力（上下文长度、是否支持思考/图片）端点不返回，页面只标注「端点声明」，不编造；一次只绑定一个端点，多端点需重启。
+
+### 2026-11-15：模型库（多端点）与超大工具结果的降级
+
+- **密钥管理决策**：密钥永不落盘。`<workspace>/models.json` 只存「用哪个环境变量」，多端点靠多个变量区分；端点强制 https（loopback 可 http）。理由：控制台是本地工具，但没有密钥托管设施，明文写盘等于把凭据复制到另一个位置；环境变量是唯一不新增泄露面的做法。
+- **模型库**（`internal/webui/model_profiles.go`）：配置档案 CRUD、默认档案、单档探测（`GET {endpoint}/models`，10s/512 KiB）。启动时用 flags 播种一次并落盘；之后模型库优先于 flags。对话请求可带 `profile_id` 指定档案，预算默认取自该档案；执行中的 Run 已固定端点/模型/密钥变量，切换不影响。
+- **前端**：模型库表（配置、端点、密钥状态、探测结果、角色、操作）＋新建/编辑表单＋预算标签页；对话输入框新增档案下拉，切换时预算自动跟随。
+- **引擎修复（重要）**：单次工具结果超过 24 KiB 原先直接终止 Run（`budget_exhausted`，结果不截断也不提交）。`limit=200` 的 `list_files` 就能触发，属于「合法调用打死 Run」。改为返回 `{"error":"result_too_large","limit_bytes":24576,"hint":"request a smaller page…"}`，不提交结果、不产证据、不截断，Run 继续并可重试。
+- **实测**：Run 6（flash，`list_files limit=200`）在旧逻辑下 `budget_exhausted`；修复后 Run 7 同一调用模式收到 `result_too_large` 并自行改用小页，最终 `completed`（5 模型 / 5 工具 / 23,787 tokens），DB 中 `config.model=deepseek-flash` 证明档案路由生效。
+- **披露**：Run 7 实际跑在当前项目 market 上（此前为验证项目切换把项目切回 market，未切回合成样本），因此文件清单、`CustomController.java:1-117` 与 483 字节检索结果发送到了 DeepSeek。属操作失误，已在此记录；后续验收应固定合成样本。
+- 限制：探测会对任意 https 端点发起请求（令牌持有者可控），仅用于本地工具场景；单次只跑一个 Run；48 KiB 检查点上限仍在。
+
+### 2026-11-15：修复亮色下拉样式、启用运行时关联并重做其页面
+
+- **亮色主题下拉变灰块**：`[data-theme="light"] .input, .select { background: #fff }` 的 `background` 简写重置了 `background-position/size/repeat`，而亮色规则只补了 `background-image`，两个渐变被拉满整个控件（灰底 + 大白三角）。改为 `background-color` 并在亮色规则里补全 position/size/no-repeat。
+- **模型名不翻译**：模型库里 `deepseek-flash` 的显示名被写成「DeepSeek 快速」，已改为 `flash`。规则：模型标识（id）不得意译，显示名默认等于模型名。
+- **运行时关联启用**：用 `trident runtime http` 对**本机控制台自身**（127.0.0.1:8787，`--allow-loopback`）执行 2 条断言（`/healthz`、`/`），再 `runtime correlate` 与当前项目发现合并，产出 `.trident/runtime-report.json`（发现 6 · 运行时结果 2 · 已关联 0 · 未关联 6）。该目标是自身服务，未接触任何外部系统。报告路径通过 `POST /api/config` 写入工作区，重启后仍在。
+- **运行时页面重做**：原先只贴 JSON 原文，且用了内联 `style`（被 CSP 拦截，导致整页被 JSON 撑满）。改为：KPI 条 + 发现关联表（关联/类型/入口/方法/静态状态/原因）+ 未被引用的运行时结果表 + 限制 + 折叠的 JSON 原文；关联原因中文化。
+- **观察**：期间出现一次默认档案被改写为 `deepseek-flash`，未复现；后续多次 upsert 均保持 `default`。当前 `models.json` 的 `default` 显式为 `default`（v4-pro）。
+- 验收：`go build`、`go test ./internal/webui ./cmd/trident`；浏览器实测下拉、模型库、运行时关联三处。
+
+### 2026-11-15：移除对话页预算控件（配置档案接管运行上限）
+
+- **动机**：对话输入框的「预算」折叠框（模型调用/工具调用/Token 三个数字）只是开发期省成本的手动旋钮，实际使用不应要求用户每轮估算；运行上限改由所选模型配置档案决定。
+- **前端**：删除 composer 中的 `<details class="budget">` 与三个输入框，删除配置切换时的预算同步逻辑，`POST /api/agent/chat` 不再携带 `max_model_calls/max_tool_calls/max_tokens`；清理 `.budget` 的 5 条 CSS 规则与亮色主题引用。模型设置页的标签页由「预算」更名为「运行上限」，只读展示各档案默认值，并说明“对话不再逐轮设置预算”。
+- **兜底**：`profileLimit()` 在档案默认值为 0 或负数时回退到内置基线（12/24/131072），避免手改 `models.json` 得到零额度 Run；`clampInt` 仍按 32/64/400000 硬上限与 4096 下限裁剪。新增 `TestChatLimitsResolveFromProfile` 覆盖这两种情况。
+- **契约**：`POST /api/agent/chat` 说明预算取自配置档案、页面不传；`#/agent` 视图描述同步去掉“预算”。
+- **验收**：`go vet`/`go test ./internal/webui ./cmd/trident` 通过；浏览器实测输入栏只剩「模型 / 外发批准 / 发送」，无残留空隙；`POST /api/agent/chat` 空目标仍返回 400，不创建 Run。
+- **观察**：历史会话仍在（Run 1–5），其 terminal 状态「预算耗尽」保留原义，属状态描述而非功能入口。
+
+### 2026-11-15：折叠侧边栏图标对齐与关于页文案精简
+
+- **折叠态图标歪斜的根因**：`body[data-nav="collapsed"] .nav-parent::after { content: "" }` 会在 flex 容器里生成一个空项目，配合 `gap: 10px` 把「设置」项唯一可见的图标向左挤 5px，其余项正常，于是整列看起来歪。删除该规则，折叠态 `gap: 0`、图标 `flex: none`；同时隐藏折叠态导航滚动条（`scrollbar-width: none` / `::-webkit-scrollbar`），避免滚动条出现时再次平移图标列。
+- **验证**：折叠态 14 个可见导航项的图标中心全部为 33.7px（此前「设置」为 28.7px）；展开态标签、徽标、子菜单无回归。
+- **关于页「构建版本」**：`productVersion` 把 21 个能力标记拼在版本号后用 ` + ` 连接，原先原样显示，单行值把 `构建版本` 标签挤成一字一行。改为 `describeBuild()` 拆分：行内只显示短版本（去掉与卡片标题重复的产品名前缀），能力标记折叠进 `<details>`（chips 展示），括号内说明保留在展开区底部。
+- **顺带修复**：`固定快照` 卡片的 `Manifest / Policy` 显示 `vundefined`——前端读 `snap.manifest`，接口字段是 `manifest_version`。
+- **排版**：`.kv-key` 改为 `white-space: nowrap`、`.kv-val` 用 `overflow-wrap: anywhere` 取代 `word-break: break-all`；工具链版本号在 `+` 后插入零宽空格，长版本串按能力段换行，不再从单词中间断开。
+- **验收**：`go vet`/`go test ./internal/webui ./cmd/trident` 通过；浏览器复核折叠/展开、关于页三张卡片与工具链长版本串。
+
+### 2026-11-15：借鉴参考控制台（工作台化概览、严重度分流、会话管理、目标预设）
+
+- **概览工作台化**：10 个统计卡变为可点击（带 `data-action`，跳转目标视图并预置筛选：无控制入口→权限清单「无控制」、证据待定→发现「证据待定」等）；「发现构成」卡新增严重度分布（高/中/低/未知，排除已反驳，点击进入对应筛选）；新增「最近会话」卡（最近 4 条，显示状态、目标、调用量与时间，点击直达对话；Agent 库不可用时整卡隐藏）。
+- **发现严重度筛选**：`GET /api/findings` 新增 `severity` 参数与分面 `severities`（随 status/category/q 联动、不随 severity 自身），前端下拉显示各档计数；`GET /api/overview` 新增 `severities`（排除已反驳）。语义：severityKey 将未识别值归入 unknown，避免发现从分布中消失。
+- **对话页会话管理**：左栏新增筛选框（按别名/目标过滤）；会话头部新增「重命名 / 复制目标 / 以此目标新建」；重命名只写本机 localStorage（`trident.thread.aliases`，按 snapshot+run 键），不改动数据库里的 Run 记录；结论卡新增「复制结论」（摘要+假设+限制的纯文本）。「以此目标新建」把原目标填入输入框开新会话，不是续跑。
+- **目标预设**：composer 上方 4 个常用目标（未授权访问/SQL 注入/路径遍历/依赖风险），点击填入输入框。
+- **布局修复**：chat 头部加入操作按钮后 `.chat-head-main` 缺 `min-width:0`，长标题把按钮挤出视口（宽 851px vs 容器 623px），已修。
+- **借鉴与取舍**：取了参考控制台的「卡片即入口、严重度分流、会话管理、预设」；未取「报告中心归档」（TRIDENT 导出是确定性的，重复归档只增加状态）、「命令级审批/终端/子代理/容器隔离」（执行平面，与只读定位冲突）、「资产库」（TRIDENT 的对应物是入口/依赖清单）。
+- **验收**：`go vet`、`go test ./internal/webui ./cmd/trident` 通过；浏览器实测：严重度行→发现页带筛选（未知 5 条）、卡片→权限清单带筛选、最近会话→对话页选中 Run 5、重命名持久化、筛选「SQL」命中 4 条、预设填入、结论复制按钮渲染、chat 头部按钮在视口内。
+
+### 2026-11-15：登录页重设计（分栏叙事 + 主题切换）
+
+- **布局**：从单卡片居中改为「品牌叙事 + 登录卡」分栏（≤920px 自动只留卡片）。左侧：品牌行、渐变标题「静态证据，而不是猜测。」、四条产品要点（只读快照/分析零外呼/证据账本/确定性导出，逐条淡入）、边界 chips；右侧：登录卡（顶部青蓝渐变饰线、品牌、令牌输入、进入按钮、提示行）。
+- **动效**：卡片与叙事面板入场（translateY + fade，cubic-bezier）、要点列表逐条错峰、右上光斑缓慢漂移；`prefers-reduced-motion` 全部关闭。CSP 无内联样式，全部走 styles.css。
+- **主题切换上登录页**：右上角加 `theme-toggle` 按钮，`applyTheme` 改为更新 `.theme-toggle` 集合（登录页与顶栏共用）；亮色主题提供完整配色（浅底、白卡、渐变文字换色）。
+- **顺带修复**：① 令牌输入框一直缺 `class="input"`，吃的是浏览器默认样式——暗色下看不出来，亮色下变成深底浅字，补上后走统一输入样式；② 无令牌启动时 `showLogin(msg, true)` 的提示框与卡片上方说明文字重复，改为不显示（保留会话失效等真实提示）。
+- **验收**：`go vet`、`go test ./internal/webui ./cmd/trident` 通过；浏览器实测暗色/亮色/760px 窄屏三种形态、登录流程（进入控制台→概览）、主题切换跟随。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。
