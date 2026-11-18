@@ -194,6 +194,7 @@ type Call struct {
 	Callee         string `json:"callee"`
 	Name           string `json:"name"`
 	Receiver       string `json:"receiver,omitempty"`
+	ReceiverType   string `json:"receiver_type,omitempty"`
 	File           string `json:"file"`
 	SHA256         string `json:"sha256"`
 	Line           int    `json:"line"`

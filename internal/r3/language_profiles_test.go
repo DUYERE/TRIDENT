@@ -35,3 +35,24 @@ func TestPythonCompileLanguageProfile(t *testing.T) {
 		t.Fatalf("python-compile failed: %+v", results)
 	}
 }
+
+func TestMissingPHPToolchainReportsToolchainUnavailable(t *testing.T) {
+	t.Setenv("PATH", "")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ok.php"), []byte("<?php echo 1;\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	results := runLanguageValidation(context.Background(), dir, "php-lint", Sandbox{Kind: SandboxProcess})
+	if len(results) != 1 || results[0].Status != "toolchain_unavailable" {
+		t.Fatalf("missing php must be toolchain_unavailable: %+v", results)
+	}
+}
+
+func TestProbeToolchainsReportsHostAvailability(t *testing.T) {
+	t.Setenv("PATH", "")
+	for _, item := range ProbeToolchains() {
+		if item.Available || item.Status != "toolchain_unavailable" || item.Reason == "" {
+			t.Fatalf("probe without PATH must report unavailable: %+v", item)
+		}
+	}
+}

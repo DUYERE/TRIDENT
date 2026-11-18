@@ -38,6 +38,21 @@ func TestPolicyDefaultSensitiveExclusions(t *testing.T) {
 	}
 }
 
+// A3: only urlconfig-named SQLite snapshots are exempt from the sensitive-file
+// exclusion; other databases stay excluded.
+func TestPolicyURLConfigSQLiteIsImportable(t *testing.T) {
+	for _, name := range []string{"database/urlconfig.db", "data/URLConfig.sqlite", "db/urlconfig.sqlite3"} {
+		if exclusionReason(name, false) != "" {
+			t.Errorf("urlconfig database excluded: %s", name)
+		}
+	}
+	for _, name := range []string{"database/users.db", "data/app.sqlite", "dump.sql"} {
+		if exclusionReason(name, false) == "" {
+			t.Errorf("unrelated database not excluded: %s", name)
+		}
+	}
+}
+
 // 02: Model a full entry budget without creating 20,000 filesystem entries.
 // Only the exact snapshot-root marker is metadata exempt from that budget.
 func TestPolicySnapshotMarkerEntryBudgetBoundary(t *testing.T) {

@@ -33,7 +33,7 @@ type languageRoutePattern struct {
 }
 
 var languagePatterns = []languagePattern{
-	{language: "php", framework: "thinkphp/laravel", control: "middleware_or_login_check", requirement: RequirementAuthenticated, re: regexp.MustCompile(`(?i)(middleware|beforeAction|checkLogin|isLogin|Auth::|authorize|permission|login_required|extends\s+(?:Auth|Controller))`)},
+	{language: "php", framework: "thinkphp/laravel", control: "middleware_or_login_check", requirement: RequirementAuthenticated, re: regexp.MustCompile(`(?i)(middleware|beforeAction|checkLogin|isLogin|Auth::|authorize|permission|login_required)`)},
 	{language: "php", framework: "thinkphp/laravel", control: "public_action", requirement: RequirementPublic, re: regexp.MustCompile(`(?i)(allowAnonymous|noAuth|skipAuth|public\s+function\s+login)`), public: true},
 	{language: "csharp", framework: "aspnet-core", control: "authorize_attribute", requirement: RequirementAuthenticated, re: regexp.MustCompile(`(?i)(\[Authorize|RequireAuthorization|UseAuthentication|AddAuthorization)`)},
 	{language: "csharp", framework: "aspnet-core", control: "allow_anonymous", requirement: RequirementPublic, re: regexp.MustCompile(`(?i)\[AllowAnonymous`), public: true},
@@ -192,6 +192,7 @@ func scanLanguageAdapters(ctx context.Context, snapshot *project.Snapshot) ([]La
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	adapters := make([]LanguageAdapter, 0, 64)
 	langStats := map[string]*Coverage{}
+	phpClasses := make([]phpClassInfo, 0, 64)
 	for _, entry := range entries {
 		data, err := snapshot.ReadFile(ctx, entry.Path)
 		if err != nil || len(data) == 0 || len(data) > MaxLanguageBytes {
@@ -249,7 +250,24 @@ func scanLanguageAdapters(ctx context.Context, snapshot *project.Snapshot) ([]La
 					adapters = append(adapters, adapter)
 				}
 			}
+			if adapter, ok := phpRouteAdapter(entry.Path, content); ok {
+				if len(adapters) >= MaxLanguageAdapters {
+					coverage.LanguageFilesRejected++
+				} else {
+					adapters = append(adapters, adapter)
+				}
+			}
+			if info, ok := parsePHPClassInfo(entry.Path, content); ok {
+				phpClasses = append(phpClasses, info)
+			}
 		}
+	}
+	for _, adapter := range phpControllerAdapters(phpClasses) {
+		if len(adapters) >= MaxLanguageAdapters {
+			coverage.LanguageFilesRejected++
+			break
+		}
+		adapters = append(adapters, adapter)
 	}
 	for _, stats := range langStats {
 		coverage.LanguageControls += stats.LanguageFilesScanned
@@ -349,4 +367,129 @@ func languageHasRoute(language, content string) bool {
 		}
 	}
 	return false
+}
+
+type phpClassInfo struct {
+	File       string
+	Name       string
+	Base       string
+	Line       int
+	Framework  string
+	Guard      string
+	GuardLine  int
+	GuardIndex int
+}
+
+var phpClassDeclaration = regexp.MustCompile(`(?im)^\s*(?:abstract\s+|final\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+extends\s+([A-Za-z_\\][A-Za-z0-9_\\]*))?`)
+
+var phpControllerGuardPatterns = []struct {
+	control string
+	re      *regexp.Regexp
+}{
+	{control: "middleware_property", re: regexp.MustCompile(`(?is)\$\s*(?:middleware|middlewares)\s*=\s*(?:array\s*\(|\[)[^;]{0,500}(?:auth|login|permission|checklogin|role)`)},
+	{control: "before_action_list", re: regexp.MustCompile(`(?is)\$\s*beforeActionList\s*=\s*(?:array\s*\(|\[)[^;]{0,500}(?:auth|login|permission|checklogin|role)`)},
+	{control: "middleware_call", re: regexp.MustCompile(`(?is)->\s*middleware\s*\(\s*['"][^'"]*(?:auth|login|permission|role)`)},
+	{control: "auth_call", re: regexp.MustCompile(`(?i)(?:Auth::check|checkLogin|isLoggedIn|isLogin|requireLogin)`)},
+}
+
+var phpRouteMiddlewarePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?is)->\s*middleware\s*\(\s*['"][^'"]*(?:auth|login|permission|role)`),
+	regexp.MustCompile(`(?is)Route::\s*(?:group|rule|get|post|any)\s*\([^;]{0,500}(?:middleware|beforeAction)[^;]{0,500}(?:auth|login|permission|role)`),
+}
+
+// parsePHPClassInfo keeps bounded metadata for controller inheritance. It does
+// not parse PHP; it records only the class name, base class and the first guard
+// observed in the file.
+func parsePHPClassInfo(file, content string) (phpClassInfo, bool) {
+	matches := phpClassDeclaration.FindAllStringSubmatchIndex(content, -1)
+	if len(matches) == 0 {
+		return phpClassInfo{}, false
+	}
+	match := matches[0]
+	if len(match) < 4 || match[2] < 0 {
+		return phpClassInfo{}, false
+	}
+	name := content[match[2]:match[3]]
+	base := ""
+	if len(match) >= 6 && match[4] >= 0 {
+		base = strings.TrimPrefix(strings.TrimSpace(content[match[4]:match[5]]), `\`)
+		if index := strings.LastIndexAny(base, `\`); index >= 0 {
+			base = base[index+1:]
+		}
+	}
+	info := phpClassInfo{
+		File: file, Name: name, Base: base,
+		Line: 1 + strings.Count(content[:match[0]], "\n"), Framework: frameworkFor("php", content),
+	}
+	for _, pattern := range phpControllerGuardPatterns {
+		location := pattern.re.FindStringIndex(content)
+		if location == nil {
+			continue
+		}
+		info.Guard = pattern.control
+		info.GuardIndex = location[0]
+		info.GuardLine = 1 + strings.Count(content[:location[0]], "\n")
+		break
+	}
+	return info, true
+}
+
+func phpRouteAdapter(file, content string) (LanguageAdapter, bool) {
+	for _, pattern := range phpRouteMiddlewarePatterns {
+		location := pattern.FindStringIndex(content)
+		if location == nil {
+			continue
+		}
+		line := 1 + strings.Count(content[:location[0]], "\n")
+		return LanguageAdapter{
+			Language: "php", Framework: frameworkFor("php", content), File: file,
+			Line: line, Scope: "route", ControlLine: line, Control: "route_middleware",
+			Requirement: RequirementAuthenticated, Decision: "protected", Reason: "php_route_middleware",
+		}, true
+	}
+	return LanguageAdapter{}, false
+}
+
+func phpControllerAdapters(classes []phpClassInfo) []LanguageAdapter {
+	byName := map[string]phpClassInfo{}
+	for _, class := range classes {
+		if class.Name == "" {
+			continue
+		}
+		if _, ok := byName[class.Name]; !ok {
+			byName[class.Name] = class
+		}
+	}
+	adapters := make([]LanguageAdapter, 0, len(classes))
+	for _, class := range classes {
+		adapter := LanguageAdapter{
+			Language: "php", Framework: class.Framework, File: class.File,
+			Line: class.Line, Scope: "controller", Symbol: class.Name,
+			Requirement: RequirementAuthenticated, Decision: "protected",
+		}
+		if class.Guard != "" {
+			adapter.Control = class.Guard
+			adapter.ControlLine = class.GuardLine
+			adapter.Reason = "php_controller_declared_auth"
+			adapters = append(adapters, adapter)
+			continue
+		}
+		base, depth := byName[class.Base], 0
+		for base.Name != "" && depth < 8 {
+			if base.Guard != "" {
+				adapter.Control = "controller_base_middleware"
+				adapter.ControlFile = base.File
+				adapter.ControlLine = base.GuardLine
+				adapter.Reason = "php_controller_inherited_auth"
+				adapter.MatchedControls = []string{"base=" + base.Name + "." + base.Guard}
+				adapters = append(adapters, adapter)
+				break
+			}
+			if base.Base == "" || base.Base == base.Name {
+				break
+			}
+			base, depth = byName[base.Base], depth+1
+		}
+	}
+	return adapters
 }

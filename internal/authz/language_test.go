@@ -73,6 +73,42 @@ func TestPHPScriptAuthzDecisions(t *testing.T) {
 	}
 }
 
+// A5: controller inheritance and framework middleware are auth evidence; a
+// plain controller extending the framework base is not protected by itself.
+func TestPHPControllerInheritanceGuard(t *testing.T) {
+	report, err := Analyze(context.Background(), fixtureSnapshotNamed(t, "php-framework-authz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controllers := map[string]LanguageAdapter{}
+	for _, adapter := range report.LanguageAdapters {
+		if adapter.Language == "php" && adapter.Scope == "controller" {
+			controllers[adapter.File] = adapter
+		}
+	}
+	base, ok := controllers["app/common/BaseController.php"]
+	if !ok || base.Decision != "protected" || base.Control != "middleware_property" || base.ControlLine == 0 {
+		t.Fatalf("base controller: %+v", controllers)
+	}
+	child, ok := controllers["app/admin/controller/Index.php"]
+	if !ok || child.Decision != "protected" || child.Control != "controller_base_middleware" || child.ControlFile != "app/common/BaseController.php" {
+		t.Fatalf("inherited controller: %+v", controllers)
+	}
+	if _, ok := controllers["app/admin/controller/Open.php"]; ok {
+		t.Fatalf("plain framework controller must not be protected without evidence: %+v", controllers["app/admin/controller/Open.php"])
+	}
+	routes := map[string]LanguageAdapter{}
+	for _, adapter := range report.LanguageAdapters {
+		if adapter.Language == "php" && adapter.Scope == "route" {
+			routes[adapter.File] = adapter
+		}
+	}
+	route, ok := routes["app/route.php"]
+	if !ok || route.Decision != "protected" || route.Control != "route_middleware" || route.ControlLine == 0 {
+		t.Fatalf("route middleware: %+v", routes)
+	}
+}
+
 func TestLanguageAuthAdaptersFixture(t *testing.T) {
 	report, err := Analyze(context.Background(), fixtureSnapshotNamed(t, "multi-authz"))
 	if err != nil {

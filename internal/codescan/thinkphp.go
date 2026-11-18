@@ -3,6 +3,7 @@ package codescan
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path"
 	"regexp"
 	"sort"
@@ -16,6 +17,7 @@ const (
 	MaxDatabaseRoutes   = 500
 	MaxConventionRoutes = 200
 	MaxURLConfigRowSize = 4096
+	MaxSQLiteBytes      = 32 << 20
 )
 
 type urlConfigRow struct {
@@ -101,12 +103,10 @@ func loadURLConfigRows(ctx context.Context, snapshot *project.Snapshot) []urlCon
 	for _, entry := range snapshot.Manifest().Entries {
 		lower := strings.ToLower(entry.Path)
 		base := strings.ToLower(path.Base(lower))
-		if !strings.HasSuffix(lower, ".sql") && !strings.HasSuffix(lower, ".json") {
+		if !isURLConfigEntryPath(lower, base) {
 			continue
 		}
-		if strings.Contains(base, "urlconfig") || strings.Contains(lower, "/database/") || strings.Contains(lower, "/db/") {
-			candidates = append(candidates, entry)
-		}
+		candidates = append(candidates, entry)
 	}
 	if len(candidates) == 0 {
 		for _, entry := range snapshot.Manifest().Entries {
@@ -122,21 +122,57 @@ func loadURLConfigRows(ctx context.Context, snapshot *project.Snapshot) []urlCon
 	rows := make([]urlConfigRow, 0, 64)
 	for _, entry := range candidates {
 		content, err := snapshot.ReadFile(ctx, entry.Path)
-		if err != nil || len(content) == 0 || len(content) > MaxFileBytes {
+		if err != nil || len(content) == 0 {
 			continue
 		}
-		text := string(content)
-		switch strings.ToLower(path.Ext(entry.Path)) {
-		case ".sql":
-			rows = append(rows, parseURLConfigSQL(text)...)
-		case ".json":
-			rows = append(rows, parseURLConfigJSON(content)...)
+		ext := strings.ToLower(path.Ext(entry.Path))
+		if ext == ".db" || ext == ".sqlite" || ext == ".sqlite3" {
+			if len(content) > MaxSQLiteBytes {
+				continue
+			}
+			rows = append(rows, parseSQLiteSnapshot(ctx, content)...)
+		} else {
+			if len(content) > MaxFileBytes {
+				continue
+			}
+			switch ext {
+			case ".sql":
+				rows = append(rows, parseURLConfigSQL(string(content))...)
+			case ".json":
+				rows = append(rows, parseURLConfigJSON(content)...)
+			}
 		}
 		if len(rows) >= MaxDatabaseRoutes {
 			break
 		}
 	}
 	return dedupeURLConfigRows(rows)
+}
+
+func isURLConfigEntryPath(lower, base string) bool {
+	switch path.Ext(lower) {
+	case ".sql", ".json", ".db", ".sqlite", ".sqlite3":
+	default:
+		return false
+	}
+	return strings.Contains(base, "urlconfig") || strings.Contains(lower, "/database/") || strings.Contains(lower, "/db/")
+}
+
+func parseSQLiteSnapshot(ctx context.Context, content []byte) []urlConfigRow {
+	file, err := os.CreateTemp("", "trident-urlconfig-*.sqlite")
+	if err != nil {
+		return nil
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	if _, err = file.Write(content); err != nil {
+		file.Close()
+		return nil
+	}
+	if err = file.Close(); err != nil {
+		return nil
+	}
+	return parseSQLiteURLConfig(ctx, name)
 }
 
 func parseURLConfigSQL(text string) []urlConfigRow {

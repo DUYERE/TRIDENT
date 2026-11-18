@@ -121,6 +121,7 @@ type LanguageAdapter struct {
 	Scope           string   `json:"scope,omitempty"`
 	EntryKind       string   `json:"entry_kind,omitempty"`
 	ControlLine     int      `json:"control_line,omitempty"`
+	ControlFile     string   `json:"control_file,omitempty"`
 	Symbol          string   `json:"symbol,omitempty"`
 	Control         string   `json:"control"`
 	Requirement     string   `json:"requirement"`

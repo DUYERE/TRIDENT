@@ -32,7 +32,7 @@ func runLanguageValidation(ctx context.Context, root, profile string, sandbox Sa
 		}
 		probe := probeTool("php")
 		if !probe.Found {
-			return []CommandResult{{Command: "php -l <php-files>", Status: "start_error", ErrorMessage: "php executable not found"}}
+			return []CommandResult{{Command: "php -l <php-files>", Status: ToolchainUnavailable, ErrorMessage: "php executable not found in PATH"}}
 		}
 		result := make([]CommandResult, 0, len(files))
 		for _, file := range files {
@@ -43,13 +43,13 @@ func runLanguageValidation(ctx context.Context, root, profile string, sandbox Sa
 	case "python-compile":
 		probe := probePython()
 		if !probe.Found {
-			return []CommandResult{{Command: "python -m compileall", Status: "start_error", ErrorMessage: "python executable not found"}}
+			return []CommandResult{{Command: "python -m compileall", Status: ToolchainUnavailable, ErrorMessage: "python executable not found in PATH"}}
 		}
 		return []CommandResult{runCommand(ctx, exec.CommandContext(ctx, probe.Path, "-m", "compileall", "-q", "."), "python -m compileall -q .", root)}
 	case "pytest":
 		probe := probePython()
 		if !probe.Found {
-			return []CommandResult{{Command: "python -m pytest -q", Status: "start_error", ErrorMessage: "python executable not found"}}
+			return []CommandResult{{Command: "python -m pytest -q", Status: ToolchainUnavailable, ErrorMessage: "python executable not found in PATH"}}
 		}
 		return []CommandResult{runCommand(ctx, exec.CommandContext(ctx, probe.Path, "-m", "pytest", "-q"), "python -m pytest -q", root)}
 	case "node-check":
@@ -59,7 +59,7 @@ func runLanguageValidation(ctx context.Context, root, profile string, sandbox Sa
 		}
 		probe := probeTool("node")
 		if !probe.Found {
-			return []CommandResult{{Command: "node --check <js-files>", Status: "start_error", ErrorMessage: "node executable not found"}}
+			return []CommandResult{{Command: "node --check <js-files>", Status: ToolchainUnavailable, ErrorMessage: "node executable not found in PATH"}}
 		}
 		result := make([]CommandResult, 0, len(files))
 		for _, file := range files {
@@ -70,7 +70,7 @@ func runLanguageValidation(ctx context.Context, root, profile string, sandbox Sa
 	case "npm-test":
 		probe := probeTool("npm")
 		if !probe.Found {
-			return []CommandResult{{Command: "npm test -- --runInBand", Status: "start_error", ErrorMessage: "npm executable not found"}}
+			return []CommandResult{{Command: "npm test -- --runInBand", Status: ToolchainUnavailable, ErrorMessage: "npm executable not found in PATH"}}
 		}
 		if info, err := os.Stat(filepath.Join(root, "package.json")); err != nil || !info.Mode().IsRegular() {
 			return []CommandResult{{Command: "npm test", Status: "start_error", ErrorMessage: "package.json not found"}}
@@ -79,7 +79,7 @@ func runLanguageValidation(ctx context.Context, root, profile string, sandbox Sa
 	case "go-test":
 		probe := probeTool("go")
 		if !probe.Found {
-			return []CommandResult{{Command: "go test ./...", Status: "start_error", ErrorMessage: "go executable not found"}}
+			return []CommandResult{{Command: "go test ./...", Status: ToolchainUnavailable, ErrorMessage: "go executable not found in PATH"}}
 		}
 		if info, err := os.Stat(filepath.Join(root, "go.mod")); err != nil || !info.Mode().IsRegular() {
 			return []CommandResult{{Command: "go test ./...", Status: "start_error", ErrorMessage: "go.mod not found"}}
@@ -88,7 +88,7 @@ func runLanguageValidation(ctx context.Context, root, profile string, sandbox Sa
 	case "dotnet-build", "dotnet-test":
 		probe := probeTool("dotnet")
 		if !probe.Found {
-			return []CommandResult{{Command: "dotnet " + profile, Status: "start_error", ErrorMessage: "dotnet executable not found"}}
+			return []CommandResult{{Command: "dotnet " + profile, Status: ToolchainUnavailable, ErrorMessage: "dotnet executable not found in PATH"}}
 		}
 		project, err := firstFileWithExt(root, ".csproj", MaxLanguageValidationFiles)
 		if err != nil || project == "" {

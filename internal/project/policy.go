@@ -92,7 +92,16 @@ func exclusionReason(p string, directory bool) string {
 	if name == ".env" || strings.HasPrefix(name, ".env.") || strings.HasPrefix(name, "id_rsa") || strings.HasPrefix(name, "id_ed25519") || name == ".netrc" || name == ".npmrc" || name == ".pypirc" || name == "credentials" || name == "credentials.json" || name == "secrets.json" || name == "secrets.yaml" || name == "secrets.yml" || name == "service-account.json" || name == "application_default_credentials.json" {
 		return "sensitive_file"
 	}
-	switch strings.ToLower(path.Ext(name)) {
+	ext := strings.ToLower(path.Ext(name))
+	// A3: a urlconfig-named SQLite snapshot is route configuration, not a
+	// credential store. Only that narrow name is importable; all other
+	// databases remain excluded as sensitive files.
+	if ext == ".db" || ext == ".sqlite" || ext == ".sqlite3" {
+		if strings.Contains(name, "urlconfig") {
+			return ""
+		}
+	}
+	switch ext {
 	case ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".secret", ".sqlite", ".sqlite3", ".db", ".sql", ".dump":
 		return "sensitive_file"
 	case ".exe", ".dll", ".so", ".dylib", ".jar", ".war", ".class", ".pyc", ".zip", ".gz", ".tar", ".7z", ".png", ".jpg", ".jpeg", ".gif", ".pdf":

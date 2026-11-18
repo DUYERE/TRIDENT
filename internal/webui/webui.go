@@ -670,6 +670,7 @@ func (c *Console) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agent/orchestration/stop", c.handleOrchestrationStop)
 	mux.HandleFunc("GET /api/authz", c.handleAuthz)
 	mux.HandleFunc("GET /api/code-audit", c.handleCodeAudit)
+	mux.HandleFunc("GET /api/toolchains", c.handleToolchains)
 	mux.HandleFunc("GET /api/symbols", c.handleSymbols)
 	mux.HandleFunc("GET /api/model", c.handleModel)
 	mux.HandleFunc("GET /api/model/type", c.handleModelType)

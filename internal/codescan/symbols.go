@@ -68,6 +68,7 @@ func scanSymbolIndex(statements []statement, relations map[int]scopeRelation, sp
 
 	calls := make([]Call, 0, 128)
 	unresolved := make([]Unresolved, 0, 64)
+	receiverTypes := inferReceiverTypes(statements)
 	for _, stmt := range statements {
 		if stmt.declaration || startsWithAnnotation(stmt.tokens) {
 			continue
@@ -91,16 +92,17 @@ func scanSymbolIndex(statements []statement, relations map[int]scopeRelation, sp
 				callLine = stmt.line
 			}
 			calls = append(calls, Call{
-				Language:  spec.Name,
-				Caller:    caller,
-				Callee:    target,
-				Name:      call.short,
-				Receiver:  receiver,
-				File:      file,
-				SHA256:    fileSHA,
-				Line:      callLine,
-				Arguments: len(call.args),
-				Status:    status,
+				Language:     spec.Name,
+				Caller:       caller,
+				Callee:       target,
+				Name:         call.short,
+				Receiver:     receiver,
+				ReceiverType: receiverTypeFor(receiver, receiverTypes, caller),
+				File:         file,
+				SHA256:       fileSHA,
+				Line:         callLine,
+				Arguments:    len(call.args),
+				Status:       status,
 			})
 			if status == "external_or_unresolved" {
 				unresolved = append(unresolved, Unresolved{
@@ -214,8 +216,11 @@ func resolveCrossFileCalls(report *Report) {
 			continue
 		}
 		candidates := byLanguage[call.Language][normalizeSelectorName(call.Language, call.Name)]
-		if len(candidates) == 0 && call.Callee != "" {
+		if len(candidates) == 0 && call.Callee != "" && call.ReceiverType == "" {
 			candidates = byLanguage[call.Language][normalizeSelectorName(call.Language, call.Callee)]
+		}
+		if len(candidates) > 1 && call.ReceiverType != "" {
+			candidates = symbolsInContainer(candidates, call.ReceiverType)
 		}
 		switch {
 		case len(candidates) == 1:
@@ -246,6 +251,116 @@ func resolveCrossFileCalls(report *Report) {
 		}
 		report.Unresolved = filtered
 	}
+}
+
+// receiverTypeFor is deliberately file-scoped: it recognizes `$this`, a bare
+// class name and `$var = new Type`; other receivers stay untyped and ambiguous.
+func receiverTypeFor(receiver string, types map[string]string, caller string) string {
+	receiver = strings.TrimSpace(receiver)
+	switch strings.ToLower(receiver) {
+	case "$this", "self", "static":
+		return containerFromQualified(caller, ".")
+	}
+	if strings.HasPrefix(receiver, "$") {
+		return types[receiver]
+	}
+	if receiver == "" || strings.ContainsAny(receiver, "()[]") {
+		return ""
+	}
+	return lastTypeName(receiver)
+}
+
+func inferReceiverTypes(statements []statement) map[string]string {
+	types := map[string]string{}
+	for _, stmt := range statements {
+		if stmt.assign == nil || !simpleAssignmentTarget(stmt.assign.target) {
+			continue
+		}
+		typeName := newTypeFromTokens(stmt.assign.rhs)
+		if typeName == "" {
+			continue
+		}
+		name := strings.TrimPrefix(strings.TrimSpace(stmt.assign.target), "$")
+		if name == "" {
+			continue
+		}
+		types["$"+name] = typeName
+		types[name] = typeName
+	}
+	return types
+}
+
+func newTypeFromTokens(tokens []token) string {
+	candidate := ""
+	expect := false
+	for _, tok := range tokens {
+		if strings.EqualFold(tok.text, "new") {
+			expect = true
+			candidate = ""
+			continue
+		}
+		if !expect {
+			continue
+		}
+		if tok.text == `\` || tok.text == "." {
+			continue
+		}
+		if isTypeNameText(tok.text) {
+			candidate = tok.text
+			continue
+		}
+		if candidate != "" {
+			break
+		}
+	}
+	return candidate
+}
+
+func isTypeNameText(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, char := range text {
+		if !(char == '_' || char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func symbolsInContainer(symbols []Symbol, typeName string) []Symbol {
+	want := strings.ToLower(lastTypeName(typeName))
+	if want == "" {
+		return symbols
+	}
+	out := make([]Symbol, 0, len(symbols))
+	for _, symbol := range symbols {
+		container := symbol.Container
+		if container == "" {
+			container = containerFromQualified(symbol.QualifiedName, ".")
+		}
+		if strings.ToLower(lastTypeName(container)) == want {
+			out = append(out, symbol)
+		}
+	}
+	return out
+}
+
+func containerFromQualified(value, separator string) string {
+	index := strings.LastIndex(value, separator)
+	if index <= 0 {
+		return ""
+	}
+	return value[:index]
+}
+
+func lastTypeName(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, `\`, ".")
+	if index := strings.LastIndex(value, "."); index >= 0 {
+		value = value[index+1:]
+	}
+	return value
 }
 
 func declarationSymbol(stmt statement, language string, typeBody bool) (string, string, []string, bool) {

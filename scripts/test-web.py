@@ -188,6 +188,13 @@ def main():
             require(status == 200 and endpoints["total"] == 3, "endpoint inventory mismatch")
             require(endpoints["items"][0]["path"].startswith("/synthetic/customers/"), "endpoint path mismatch")
 
+            status, _, body = request(base, "/api/toolchains", headers=authorized)
+            toolchains = json.loads(body)
+            require(status == 200 and toolchains["scope"] == "host_toolchain", "toolchain scope mismatch")
+            require(len(toolchains["toolchains"]) == 8, "toolchain profile count mismatch")
+            require(any(item["profile"] == "php-lint" and item["status"] in {"available", "toolchain_unavailable"}
+                       for item in toolchains["toolchains"]), "php toolchain status missing")
+
             status, _, body = request(base, "/api/dependencies", headers=authorized)
             dependencies = json.loads(body)["report"]
             require(status == 200 and dependencies["project"]["build_system"] == "Maven",

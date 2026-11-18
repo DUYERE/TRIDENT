@@ -190,6 +190,8 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 			status = ValidationTimeout
 		case "start_error":
 			status = ValidationError
+		case "toolchain_unavailable":
+			status = ValidationError
 		case "failed":
 			if status == ValidationPassed {
 				status = ValidationFailed

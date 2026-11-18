@@ -112,6 +112,7 @@ func Verify(ctx context.Context, opts VerifyOptions) (Report, error) {
 	if opts.Profile == "maven-test" {
 		limitations = append(limitations, "maven_test_profile_runs_tests_only: Maven Surefire tests are executed, but no application entry point or HTTP request is run")
 	}
+	limitations = append(limitations, profileLimitations(opts.Profile)...)
 	if opts.Profile == "gradle-test" {
 		limitations = append(limitations,
 			"gradle_test_profile_runs_tests_only: Gradle tests are executed, but no application entry point or HTTP request is run",
@@ -209,6 +210,31 @@ func discardFailedWorkspace(report *Report, opts VerifyOptions) {
 	}
 	report.Workspace = WorkspaceInfo{}
 	report.Limitations = append(report.Limitations, "failed_workspace_removed: the isolated copy was deleted after the failure; pass keep-workspace to inspect it")
+}
+
+// profileLimitations makes the language-profile boundary explicit in every
+// verification report; a syntax check or unit-test run must never be read as
+// proof that the vulnerability is fixed.
+func profileLimitations(profile string) []string {
+	switch profile {
+	case "php-lint":
+		return []string{"php_lint_syntax_only: php -l checks syntax only; it does not run PHP 8, exercise the request path or prove the vulnerability is fixed"}
+	case "python-compile":
+		return []string{"python_compile_syntax_only: compileall checks syntax only; imports and runtime behavior are not executed"}
+	case "pytest":
+		return []string{"pytest_requires_project_dependencies: only the interpreter is verified; pytest and project dependencies may be absent"}
+	case "node-check":
+		return []string{"node_check_syntax_only: node --check checks syntax only; runtime behavior is not executed"}
+	case "npm-test":
+		return []string{"npm_test_requires_project_runner: package.json and a working test runner are required; test execution does not prove exploitability"}
+	case "go-test":
+		return []string{"go_test_requires_module: go test requires go.mod and project dependencies; tests may access the network"}
+	case "dotnet-build":
+		return []string{"dotnet_build_compiles_only: build success does not prove runtime behavior or the fix"}
+	case "dotnet-test":
+		return []string{"dotnet_test_requires_project_runner: only dotnet is probed; the project test runner and SDK may differ"}
+	}
+	return nil
 }
 
 func scorePatch(validation ValidationResult, patch PatchResult) QualityScore {

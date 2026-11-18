@@ -76,6 +76,50 @@ $obj->field = "not-a-variable";
 	}
 }
 
+func TestReceiverContainerDisambiguatesMethodCalls(t *testing.T) {
+	userSymbols, userCalls, _ := symbolIndexFor(t, "php", `<?php
+class User {
+  public function save() {}
+  public function run() {
+    $u = new User();
+    $u->save();
+    $this->save();
+  }
+}
+`)
+	orderSymbols, orderCalls, _ := symbolIndexFor(t, "php", `<?php
+class Order {
+  public function save() {}
+  public function run() {
+    $o->save();
+  }
+}
+`)
+	report := &Report{Symbols: append(append([]Symbol{}, userSymbols...), orderSymbols...)}
+	report.Calls = append(report.Calls, userCalls...)
+	report.Calls = append(report.Calls, orderCalls...)
+	for index := range report.Calls {
+		report.Calls[index].Status = "external_or_unresolved"
+	}
+	report.Unresolved = []Unresolved{{Language: "php", Expr: "save", File: "fixture.php", Line: 1}}
+	resolveCrossFileCalls(report)
+	byReceiver := map[string]Call{}
+	for _, call := range report.Calls {
+		if call.Name == "save" {
+			byReceiver[call.Receiver] = call
+		}
+	}
+	if call := byReceiver["$u"]; call.Status != "same_project" || call.ResolvedSymbol != "User.save" {
+		t.Fatalf("new-inferred receiver: %+v", call)
+	}
+	if call := byReceiver["$this"]; call.Status != "same_project" || call.ResolvedSymbol != "User.save" {
+		t.Fatalf("this receiver: %+v", call)
+	}
+	if call := byReceiver["$o"]; call.Status != "ambiguous_symbol" {
+		t.Fatalf("untyped receiver must stay ambiguous: %+v", call)
+	}
+}
+
 func TestCrossFileCallResolution(t *testing.T) {
 	report := &Report{
 		Symbols: []Symbol{
