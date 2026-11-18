@@ -78,6 +78,7 @@ type projectModel struct {
 	imported    map[string]*classModel
 	order       []*classModel
 	methodCount int
+	astHints    map[string]astCallHint
 }
 
 func parseProject(ctx context.Context, snapshot *project.Snapshot) ([]*fileModel, int, []string, error) {

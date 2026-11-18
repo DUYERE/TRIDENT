@@ -151,7 +151,7 @@
   - `flow[]`（call/concat/assign/constructor/builder_append/builder_to_string/builder_mutated/command_append/string_format/string_format_dynamic/collection_add/collection_read/collection_mutated/collection_clear/collection_remove/array_write/array_read/return/field_write/field_read/reflected_return/return_content_type/sink/command_sink/ssrf_sink/path_sink/template_sink/xss_sink/deserialization_sink/xxe_sink/ldap_sink/value_binding/dynamic/ambiguous_dispatch/ambiguous_overload/unresolved_parent/unresolved_call/unresolved_sink，文件与行号）。
   - `evidence[]`（文件、SHA、方法起止行、`fixture:*` 锚点）。
   - `limitations[]`（状态相关限制）。
-- `coverage`：Java 文件扫描/拒绝、方法数、endpoint 清单/分析数、confirmed/refuted/inconclusive、跨方法解析/未解析、动态边界；`java_ast=restricted_subset|partial|not_available`（受限 AST 可解析性，仅用于声明/调用分辨率，不参与 sink/source 匹配）、`java_ast_types`/`java_ast_methods`、`taint_analysis=bounded_lexical_multi_category`、`runtime_status=not_run`。
+- `coverage`：Java 文件扫描/拒绝、方法数、endpoint 清单/分析数、confirmed/refuted/inconclusive、跨方法解析/未解析、动态边界；`java_ast=restricted_subset|partial|not_available`（受限 AST 可解析性；AST 解析出的唯一调用目标会在词法解析器 unresolved/ambiguous 时按 `文件+行号+调用名` 回退参与跨方法解析，不参与 source/sink 匹配）、`java_ast_types`/`java_ast_methods`、`taint_analysis=bounded_lexical_multi_category`、`runtime_status=not_run`。
 - 输出按 endpoint 路径和 finding ID 排序；参数/快照/完整性错误返回非零且不输出成功 JSON。
 
 ## 5. 验收

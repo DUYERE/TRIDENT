@@ -277,7 +277,7 @@ func (s *findingState) analyzeResolvedCall(index *projectModel, method *methodMo
 	}
 	typeName := receiverType(method, receiver, localTypes)
 	argTypes := argumentTypes(index, method, localTypes, args, depth)
-	target, _, reason := index.resolveCallWithTypes(typeName, method.File.Package, name, argTypes)
+	target, _, reason := index.resolveCallWithAST(method.File.Path, line, typeName, method.File.Package, name, argTypes)
 	if target == nil {
 		switch {
 		case reason == "overload":
@@ -1852,7 +1852,7 @@ func (s *findingState) evaluateExpressionIn(index *projectModel, method *methodM
 	}
 	typeName := receiverType(method, receiver, localTypes)
 	argTypes := argumentTypes(index, method, localTypes, args, depth)
-	target, _, reason := index.resolveCallWithTypes(typeName, method.File.Package, name, argTypes)
+	target, _, reason := index.resolveCallWithAST(method.File.Path, tokens[open-1].Line, typeName, method.File.Package, name, argTypes)
 	if target == nil {
 		switch {
 		case reason == "overload":

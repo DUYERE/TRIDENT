@@ -238,8 +238,8 @@ func AnalyzeWithOptions(ctx context.Context, snapshot *project.Snapshot, opts Op
 			"sql_sink_scope: SQL findings model Statement.execute*/prepareStatement, JdbcTemplate/NamedParameterJdbcTemplate query/update/execute family, JPA EntityManager/Hibernate Session createQuery/createNativeQuery, and PreparedStatement value binding",
 			"multi_category_sinks: OS command execution (Runtime.getRuntime().exec, ProcessBuilder command/start), SSRF (URL.openConnection/openStream, RestTemplate, HttpRequest.uri and WebClient.uri), path traversal (file stream/reader constructors, Files.*), template injection (SpelExpressionParser.parseExpression, template engine process), XSS (PrintWriter/JspWriter/ServletOutputStream writes), unsafe deserialization (ObjectInputStream/XMLDecoder readObject, including new ObjectInputStream(...)/new XMLDecoder(...) chains), XXE (DocumentBuilder/SAXParser/SAXReader.parse, SAXReader/XMLReader.read, XMLInputFactory.createXMLStreamReader/createXMLEventReader, Unmarshaller.unmarshal, Transformer.transform, SAXBuilder/Digester.parse, DocumentHelper.parseText), LDAP injection (DirContext.search/lookup, LdapTemplate.search/lookup/authenticate) and unrestricted upload (MultipartFile.transferTo, Part.write) are modeled",
 			"non_sql_sink_observed_only: non-SQL category findings are emitted only when that category sink or sink-specific boundary is observed for the parameter; absence is not safety",
-			"lexical_flow_not_ast: taint matching uses bounded lexical flow; the restricted AST semantic model is emitted by `audit java-model` and is not yet used for sink/source matching",
-			"java_ast_semantic_model_staged: declarations, erased signatures and call resolution are modeled, but control-flow and cross-method taint remain out of scope",
+			"lexical_flow_not_ast: taint matching uses bounded lexical flow; the restricted AST contributes only uniquely resolved call targets when the lexer resolver is unresolved or ambiguous, not source/sink or control-flow semantics",
+			"java_ast_call_targets: AST call edges are keyed by file+line+call name and never widen the lexer method set; ambiguity, control-flow, branch sensitivity and full cross-method taint remain out of scope",
 			"collection_taint_bounds: a tainted value written through List/Set/Map/Queue add/put marks that local or field container flow-insensitively; literal-index set/add and array element writes are tracked per element (name[0]) and literal-index get/remove operate on that element, while clear drops the container and its element taints; non-literal indices fall back to the container aggregate; resolved calls can mutate a caller collection or array parameter, while target-object containers and instance/thread state are not modeled",
 			"builder_and_format_bounds: StringBuilder/StringBuffer append and builder.toString() require a known builder-typed receiver; String.format requires a literal pattern with a conversion specifier, otherwise the result is an inconclusive boundary",
 			"return_value_bounds: tainted returns and builder parameter mutation are summarized only for resolved same-project calls; ambiguous dispatch, fields of other objects and external libraries stay unresolved",
@@ -294,15 +294,17 @@ func AnalyzeWithOptions(ctx context.Context, snapshot *project.Snapshot, opts Op
 	if len(files) == 0 && rejected == 0 {
 		report.Limitations = append(report.Limitations, "no_java_source_found")
 	}
-	ast, astErr := javaast.ScanSnapshot(ctx, snapshot)
+	ast, astErr := javaast.Analyze(ctx, snapshot)
 	if astErr != nil {
 		report.Limitations = append(report.Limitations, "java_ast_unavailable")
-	} else if len(ast.Units) > 0 {
+	} else if len(ast.Files) > 0 {
 		report.Coverage.JavaAST = "restricted_subset"
-		if len(ast.Rejected) > 0 {
+		if ast.Partial || ast.Coverage.FilesRejected > 0 {
 			report.Coverage.JavaAST = "partial"
+			report.Partial = true
 		}
-		report.Coverage.JavaASTTypes, report.Coverage.JavaASTMethods = javaast.DeclarationCounts(ast)
+		report.Coverage.JavaASTTypes = ast.Coverage.TypesIndexed
+		report.Coverage.JavaASTMethods = ast.Coverage.MethodsIndexed
 	}
 	nested := 0
 	for _, file := range files {
@@ -313,6 +315,7 @@ func AnalyzeWithOptions(ctx context.Context, snapshot *project.Snapshot, opts Op
 		report.Limitations = append(report.Limitations, "nested_classes_skipped")
 	}
 	index := newProjectModel(files)
+	index.applyJavaAST(ast)
 	report.Coverage.MethodsParsed = index.methodCount
 
 	stopped := false
