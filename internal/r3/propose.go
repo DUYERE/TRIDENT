@@ -24,6 +24,7 @@ const (
 	// MaxProposalContextBytes bounds what a patch-generation model may receive.
 	MaxProposalContextBytes = 48 << 10
 	MaxProposalFiles        = 4
+	MaxProposalWindowLines  = 200
 	proposalWindowLines     = 40
 	proposalReadLimit       = 200
 )
@@ -36,9 +37,16 @@ type CompletionClient interface {
 	Complete(context.Context, model.Request) (model.Response, error)
 }
 
+type ProposeWindow struct {
+	Path      string
+	StartLine int
+	EndLine   int
+}
+
 type ProposeOptions struct {
 	FindingID       string
 	Paths           []string
+	Windows         []ProposeWindow
 	Goal            string
 	Model           string
 	MaxOutputTokens int64
@@ -86,8 +94,8 @@ func Propose(ctx context.Context, snapshot *project.Snapshot, client CompletionC
 	if strings.TrimSpace(opts.Goal) == "" || len(opts.Goal) > 2048 {
 		return proposal, fmt.Errorf("%w: goal is required and must be at most 2048 bytes", ErrProposal)
 	}
-	if opts.FindingID == "" && len(opts.Paths) == 0 {
-		return proposal, fmt.Errorf("%w: finding id or at least one path is required", ErrProposal)
+	if opts.FindingID == "" && len(opts.Paths) == 0 && len(opts.Windows) == 0 {
+		return proposal, fmt.Errorf("%w: finding id, path or source window is required", ErrProposal)
 	}
 	if opts.MaxOutputTokens <= 0 || opts.MaxOutputTokens > 16384 {
 		return proposal, fmt.Errorf("%w: output token bound is invalid", ErrProposal)
@@ -116,13 +124,17 @@ func Propose(ctx context.Context, snapshot *project.Snapshot, client CompletionC
 			{Role: "user", Content: prompt},
 		},
 		MaxOutputTokens: opts.MaxOutputTokens,
+		// A proposal is a single JSON envelope, not an open-ended investigation.
+		// Providers that default to hidden thinking otherwise exhaust the output
+		// budget in reasoning_content and return an empty final answer.
+		ReasoningEffort: "none",
 	}
 	response, err := client.Complete(ctx, request)
 	if err != nil {
 		return proposal, err
 	}
 	if response.Stop != model.StopComplete {
-		return proposal, fmt.Errorf("%w: model did not return a complete proposal (stop=%s)", ErrProposal, response.Stop)
+		return proposal, fmt.Errorf("%w: model did not return a complete proposal (stop=%s, bytes=%d)", ErrProposal, response.Stop, len(response.Message.Content))
 	}
 	envelope, err := decodeProposalEnvelope(response.Message.Content)
 	if err != nil {
@@ -188,7 +200,17 @@ func proposalRanges(ctx context.Context, snapshot *project.Snapshot, opts Propos
 		}
 		return ranges, nil
 	}
-	ranges := make([]contextRange, 0, len(opts.Paths))
+	ranges := make([]contextRange, 0, len(opts.Paths)+len(opts.Windows))
+	for _, window := range opts.Windows {
+		if window.Path == "" || window.StartLine < 1 || window.EndLine < window.StartLine {
+			continue
+		}
+		end := window.EndLine
+		if end-window.StartLine+1 > proposalReadLimit {
+			end = window.StartLine + proposalReadLimit - 1
+		}
+		ranges = append(ranges, contextRange{path: window.Path, start: window.StartLine, end: end})
+	}
 	for _, path := range opts.Paths {
 		if path == "" {
 			continue

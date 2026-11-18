@@ -17,7 +17,7 @@ import (
 
 const (
 	SchemaVersion = 1
-	ToolVersion   = "0.2.0-p0.3+r1-source-sink-flow-v13"
+	ToolVersion   = "0.2.0-p0.5+r1-source-sink-flow-v14"
 
 	MaxJavaFiles  = 2000
 	MaxJavaBytes  = 2 << 20
@@ -34,32 +34,45 @@ var (
 	ErrUnsupported = errors.New("unsupported Java source")
 )
 
+// Options controls evidence volume. The default is the v14 low-noise view:
+// findings are emitted only when the analyzer observed a sink, a protection,
+// a boundary or an actual taint path. EmitUnobserved reproduces the v13/v1
+// behaviour for regression fixtures.
+type Options struct {
+	EmitUnobserved     bool
+	IncludeSinkAnchors bool
+}
+
 type Report struct {
-	SchemaVersion int       `json:"schema_version"`
-	ToolVersion   string    `json:"tool_version"`
-	SnapshotHash  string    `json:"snapshot_hash"`
-	AnalysisKind  string    `json:"analysis_kind"`
-	Partial       bool      `json:"partial"`
-	Findings      []Finding `json:"findings"`
-	Coverage      Coverage  `json:"coverage"`
-	Limitations   []string  `json:"limitations"`
+	SchemaVersion int          `json:"schema_version"`
+	ToolVersion   string       `json:"tool_version"`
+	SnapshotHash  string       `json:"snapshot_hash"`
+	AnalysisKind  string       `json:"analysis_kind"`
+	Partial       bool         `json:"partial"`
+	Findings      []Finding    `json:"findings"`
+	ORM           OrmReport    `json:"orm"`
+	SinkAnchors   []SinkAnchor `json:"sink_anchors,omitempty"`
+	Coverage      Coverage     `json:"coverage"`
+	Limitations   []string     `json:"limitations"`
 }
 
 type Finding struct {
-	ID            string         `json:"id"`
-	Category      string         `json:"category"`
-	CWE           string         `json:"cwe"`
-	Severity      string         `json:"severity"`
-	Status        string         `json:"status"`
-	RuntimeStatus string         `json:"runtime_status"`
-	Endpoint      EndpointRef    `json:"endpoint"`
-	Sources       []SourceRef    `json:"sources"`
-	Sink          *SinkRef       `json:"sink,omitempty"`
-	Protection    *ProtectionRef `json:"protection,omitempty"`
-	Boundary      *BoundaryRef   `json:"boundary,omitempty"`
-	Flow          []FlowStep     `json:"flow"`
-	Evidence      []Evidence     `json:"evidence"`
-	Limitations   []string       `json:"limitations"`
+	ID               string         `json:"id"`
+	Category         string         `json:"category"`
+	CWE              string         `json:"cwe"`
+	Severity         string         `json:"severity"`
+	Status           string         `json:"status"`
+	RuntimeStatus    string         `json:"runtime_status"`
+	EvidenceStrength string         `json:"evidence_strength"`
+	Endpoint         EndpointRef    `json:"endpoint"`
+	Sources          []SourceRef    `json:"sources"`
+	Sink             *SinkRef       `json:"sink,omitempty"`
+	Protection       *ProtectionRef `json:"protection,omitempty"`
+	Boundary         *BoundaryRef   `json:"boundary,omitempty"`
+	Orm              *OrmRef        `json:"orm,omitempty"`
+	Flow             []FlowStep     `json:"flow"`
+	Evidence         []Evidence     `json:"evidence"`
+	Limitations      []string       `json:"limitations"`
 }
 
 type EndpointRef struct {
@@ -130,6 +143,14 @@ type Coverage struct {
 	FindingsConfirmed    int    `json:"findings_confirmed"`
 	FindingsRefuted      int    `json:"findings_refuted"`
 	FindingsInconclusive int    `json:"findings_inconclusive"`
+	UnobservedPaths      int    `json:"unobserved_paths"`
+	BoundaryOnly         int    `json:"boundary_only"`
+	MyBatisMappers       int    `json:"mybatis_mappers"`
+	MyBatisStatements    int    `json:"mybatis_statements"`
+	MyBatisRefuted       int    `json:"mybatis_refuted"`
+	MyBatisConfirmed     int    `json:"mybatis_confirmed"`
+	MyBatisBoundaries    int    `json:"mybatis_boundaries"`
+	SinkAnchors          int    `json:"sink_anchors"`
 	CallsResolved        int    `json:"calls_resolved"`
 	CallsUnresolved      int    `json:"calls_unresolved"`
 	DynamicBoundaries    int    `json:"dynamic_boundaries"`
@@ -189,20 +210,29 @@ var requestBindings = map[string]bool{
 // bounded method/field model, and traces request parameters into JDBC SQL
 // sinks. Endpoint inventory gaps and parse rejections are reported as partial.
 func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
+	return AnalyzeWithOptions(ctx, snapshot, Options{})
+}
+
+func AnalyzeWithOptions(ctx context.Context, snapshot *project.Snapshot, opts Options) (Report, error) {
 	if snapshot == nil || snapshot.Hash() == "" {
 		return Report{}, fmt.Errorf("%w: pinned snapshot required", ErrLimit)
+	}
+	analysisKind := "source_sink_multi_category_v2"
+	if opts.EmitUnobserved {
+		analysisKind = "source_sink_multi_category_v1"
 	}
 	report := Report{
 		SchemaVersion: SchemaVersion,
 		ToolVersion:   ToolVersion,
 		SnapshotHash:  snapshot.Hash(),
-		AnalysisKind:  "source_sink_multi_category_v1",
+		AnalysisKind:  analysisKind,
 		Findings:      []Finding{},
+		ORM:           emptyOrmReport(),
 		Coverage: Coverage{
 			JavaAST:       "not_available",
 			TaintAnalysis: "bounded_lexical_multi_category",
 			RuntimeStatus: "not_run",
-			AnalysisScope: "single_parameter_multi_category_v13",
+			AnalysisScope: "single_parameter_multi_category_v14",
 		},
 		Limitations: []string{
 			"sql_sink_scope: SQL findings model Statement.execute*/prepareStatement, JdbcTemplate/NamedParameterJdbcTemplate query/update/execute family, JPA EntityManager/Hibernate Session createQuery/createNativeQuery, and PreparedStatement value binding",
@@ -224,6 +254,16 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 			"runtime_status_not_run: static evidence does not prove exploitation",
 		},
 	}
+	if opts.EmitUnobserved {
+		report.Limitations = append(report.Limitations,
+			"unobserved_paths_emitted_compat: v1 compatibility mode emits a finding even when no sink, protection, boundary or taint path was observed",
+			"analysis_kind_v1_compat: this report uses the legacy source_sink_multi_category_v1 semantics")
+	} else {
+		report.Limitations = append(report.Limitations,
+			"unobserved_paths_not_emitted: parameter/category pairs with no observed sink, protection, boundary or taint path are counted in coverage.unobserved_paths instead of producing findings; absence is not safety",
+			"evidence_strength_tiers: findings carry evidence_strength=sink|protection|boundary; unobserved appears only in --emit-unobserved mode",
+			"generic_boundaries_suppressed: unresolved_call boundaries without a category-specific observation are counted in coverage.boundary_only; reflection, ambiguous dispatch, overload and unresolved-parent boundaries remain findings")
+	}
 	endpoints, err := audit.Inspect(ctx, snapshot)
 	if err != nil {
 		return Report{}, err
@@ -236,6 +276,16 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 	files, rejected, problems, err := parseProject(ctx, snapshot)
 	if err != nil {
 		return Report{}, err
+	}
+	ormReport, ormIndex, ormErr := scanOrm(ctx, snapshot, files)
+	if ormErr != nil {
+		report.Limitations = append(report.Limitations, "mybatis_scan_failed")
+		ormIndex = nil
+	} else {
+		report.ORM = ormReport
+		report.Limitations = append(report.Limitations, ormReport.Limitations...)
+		report.Coverage.MyBatisMappers = len(ormReport.Mappers)
+		report.Coverage.MyBatisStatements = len(ormReport.Statements)
 	}
 	report.Coverage.JavaFilesScanned = len(files)
 	report.Coverage.JavaFilesRejected = rejected
@@ -267,12 +317,24 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 
 	stopped := false
 	for _, endpoint := range endpoints.Endpoints {
-		analyzed := analyzeEndpoint(index, endpoint)
+		analyzed, stats := analyzeEndpoint(index, endpoint, opts, ormIndex)
+		report.Coverage.UnobservedPaths += stats.unobserved
+		report.Coverage.BoundaryOnly += stats.boundaryOnly
+		report.Coverage.MyBatisRefuted += stats.mybatisRefuted
+		report.Coverage.MyBatisBoundaries += stats.mybatisBoundary
 		if len(analyzed) == 0 {
 			continue
 		}
 		report.Coverage.EndpointsAnalyzed++
 		for _, finding := range analyzed {
+			if finding.Orm != nil {
+				switch finding.Status {
+				case "refuted":
+					report.Coverage.MyBatisRefuted++
+				case "static_confirmed":
+					report.Coverage.MyBatisConfirmed++
+				}
+			}
 			if len(report.Findings) >= MaxFindings {
 				report.Limitations = append(report.Limitations, "finding_limit")
 				report.Partial = true
@@ -303,6 +365,25 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 		}
 		return a.ID < b.ID
 	})
+	if opts.IncludeSinkAnchors {
+		covered := map[string]bool{}
+		for _, finding := range report.Findings {
+			if finding.Sink != nil {
+				covered[fmt.Sprintf("%s:%d", finding.Sink.File, finding.Sink.Line)] = true
+			}
+			for _, step := range finding.Flow {
+				covered[fmt.Sprintf("%s:%d", step.File, step.Line)] = true
+			}
+		}
+		anchors, anchorErr := InspectSinks(ctx, snapshot, covered)
+		if anchorErr != nil {
+			report.Limitations = append(report.Limitations, "sink_anchor_scan_failed")
+		} else {
+			report.SinkAnchors = anchors.Anchors
+			report.Coverage.SinkAnchors = len(anchors.Anchors)
+			report.Partial = report.Partial || anchors.Partial
+		}
+	}
 	sort.Strings(report.Limitations)
 	report.Limitations = dedupe(report.Limitations)
 	return report, nil
@@ -324,6 +405,8 @@ type findingState struct {
 	sink               *SinkRef
 	protection         *ProtectionRef
 	boundary           *BoundaryRef
+	orm                *OrmRef
+	ormIndex           *OrmIndex
 	flow               []FlowStep
 	evidence           map[string]Evidence
 	limitations        map[string]bool
@@ -344,17 +427,25 @@ type analyzedFinding struct {
 	dynamicBoundaries int
 }
 
-func analyzeEndpoint(index *projectModel, endpoint audit.Endpoint) []analyzedFinding {
+type endpointStats struct {
+	unobserved      int
+	boundaryOnly    int
+	mybatisRefuted  int
+	mybatisBoundary int
+}
+
+func analyzeEndpoint(index *projectModel, endpoint audit.Endpoint, opts Options, ormIndex *OrmIndex) ([]analyzedFinding, endpointStats) {
+	stats := endpointStats{}
 	if index.files[endpoint.File] == nil {
-		return nil
+		return nil, stats
 	}
 	class := index.classes[endpoint.Package+"."+endpoint.Class]
 	if class == nil {
-		return nil
+		return nil, stats
 	}
 	method := class.method(endpoint.Method, len(endpoint.Parameters))
 	if method == nil || method.BodyStart < 0 {
-		return nil
+		return nil, stats
 	}
 	results := []analyzedFinding{}
 	for _, parameter := range endpoint.Parameters {
@@ -380,16 +471,70 @@ func analyzeEndpoint(index *projectModel, endpoint audit.Endpoint) []analyzedFin
 				limitations:        map[string]bool{},
 				visited:            map[string]bool{},
 				fields:             map[string]taint{},
+				ormIndex:           ormIndex,
 			}
 			state.addEvidence(method)
 			state.analyzeMethod(index, method, map[string]taint{parameter.Name: {source: source}}, 0)
-			if category.Key != sqlCategory.Key && !state.categoryObserved {
+			if opts.EmitUnobserved {
+				// v1 compatibility: SQL always emitted, other categories only
+				// when their sink/boundary was observed.
+				if category.Key != sqlCategory.Key && !state.categoryObserved {
+					continue
+				}
+			} else if category.Key != sqlCategory.Key && !state.categoryObserved {
+				// Non-SQL categories still require their own sink/boundary
+				// observation; generic unresolved calls are not category evidence.
+				stats.unobserved++
+				continue
+			} else if !state.hasObservation() {
+				// v14: no sink, protection or boundary means no finding.
+				stats.unobserved++
+				continue
+			} else if !state.confirmed && state.protection == nil && !state.categoryObserved &&
+				state.boundary != nil && state.boundary.Kind == "unresolved_call" {
+				// A generic "taint entered an unresolvable call" boundary has
+				// no category-specific evidence. It stays in coverage instead
+				// of flooding the finding list; reflection, ambiguous dispatch,
+				// overload and parent boundaries remain first-class findings.
+				stats.boundaryOnly++
+				continue
+			} else if state.orm != nil && state.category.Key == sqlCategory.Key && !state.confirmed {
+				// A MyBatis #{} binding is safety evidence, not a vulnerability
+				// finding; framework-internal ${} and ambiguous methods are
+				// coverage facts, not per-parameter conclusions.
+				if state.protection != nil {
+					stats.mybatisRefuted++
+				} else {
+					stats.mybatisBoundary++
+				}
 				continue
 			}
 			results = append(results, state.buildFinding(endpoint, parameter, source))
 		}
 	}
-	return results
+	return results, stats
+}
+
+// hasObservation reports whether the analysis produced any evidence at all.
+// It is the gate that removes "nothing was observed" findings from the default
+// report without hiding real unresolved boundaries.
+func (s *findingState) hasObservation() bool {
+	return s.confirmed || s.dynamic || s.unresolved || s.binding || s.encoded ||
+		s.categoryObserved || s.sink != nil || s.protection != nil ||
+		s.boundary != nil || s.orm != nil
+}
+
+func (s *findingState) evidenceStrength() string {
+	switch {
+	case s.confirmed || s.sink != nil:
+		return "sink"
+	case s.binding || s.encoded || s.protection != nil:
+		return "protection"
+	case s.dynamic || s.unresolved || s.boundary != nil || s.categoryObserved || s.pathObserved:
+		return "boundary"
+	default:
+		return "unobserved"
+	}
 }
 
 // buildFinding turns one completed category analysis into the stable finding
@@ -427,12 +572,14 @@ func (s *findingState) buildFinding(endpoint audit.Endpoint, parameter audit.Par
 	sort.Strings(limitations)
 	limitations = dedupe(limitations)
 	finding := Finding{
-		ID:            s.category.CWE + ":" + endpoint.Path + ":" + parameter.Name,
-		Category:      s.category.Label,
-		CWE:           s.category.CWE,
-		Severity:      severity,
-		Status:        status,
-		RuntimeStatus: "not_run",
+		ID:               s.category.CWE + ":" + endpoint.Path + ":" + parameter.Name,
+		Category:         s.category.Label,
+		CWE:              s.category.CWE,
+		Severity:         severity,
+		Status:           status,
+		RuntimeStatus:    "not_run",
+		EvidenceStrength: s.evidenceStrength(),
+		Orm:              s.orm,
 		Endpoint: EndpointRef{
 			Path:        endpoint.Path,
 			HTTPMethods: append([]string{}, endpoint.HTTPMethods...),

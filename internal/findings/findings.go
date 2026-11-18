@@ -206,6 +206,7 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 			"authz_unprotected_is_inconclusive: absence of a recognized control does not prove an endpoint is reachable without authentication",
 			"absence_is_not_safety: inconclusive means required evidence was not collected, not that the code is safe",
 			"correlation_not_exploitation: linking a dependency, an endpoint and a flow is context, not runtime proof",
+			"dataflow_v14_evidence_only: unobserved parameter/category pairs, generic unresolved-call boundaries and MyBatis #{} bindings are counted in coverage instead of becoming findings; use `audit dataflow --emit-unobserved` for the v1 semantics and `audit sinks` for endpoint-independent sink positions",
 		},
 	}
 	report.Partial = scaReport.Partial || endpoints.Partial || flows.Partial || authzReport.Partial

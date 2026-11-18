@@ -38,19 +38,20 @@ const (
 )
 
 type Report struct {
-	SchemaVersion int                `json:"schema_version"`
-	ToolVersion   string             `json:"tool_version"`
-	SnapshotHash  string             `json:"snapshot_hash"`
-	AnalysisKind  string             `json:"analysis_kind"`
-	Partial       bool               `json:"partial"`
-	Controls      []Control          `json:"controls"`
-	Chains        []FilterChain      `json:"chains"`
-	Endpoints     []EndpointDecision `json:"endpoints"`
-	Findings      []Finding          `json:"findings"`
-	Coverage      Coverage           `json:"coverage"`
-	Limitations   []string           `json:"limitations"`
-	RuntimeStatus string             `json:"runtime_status"`
-	Error         string             `json:"error,omitempty"`
+	SchemaVersion    int                `json:"schema_version"`
+	ToolVersion      string             `json:"tool_version"`
+	SnapshotHash     string             `json:"snapshot_hash"`
+	AnalysisKind     string             `json:"analysis_kind"`
+	Partial          bool               `json:"partial"`
+	Controls         []Control          `json:"controls"`
+	Chains           []FilterChain      `json:"chains"`
+	Endpoints        []EndpointDecision `json:"endpoints"`
+	LanguageAdapters []LanguageAdapter  `json:"language_adapters"`
+	Findings         []Finding          `json:"findings"`
+	Coverage         Coverage           `json:"coverage"`
+	Limitations      []string           `json:"limitations"`
+	RuntimeStatus    string             `json:"runtime_status"`
+	Error            string             `json:"error,omitempty"`
 }
 
 type Control struct {
@@ -109,6 +110,24 @@ type EndpointDecision struct {
 	RuntimeStatus   string   `json:"runtime_status"`
 }
 
+// LanguageAdapter is a bounded framework-control observation for a non-Java
+// language. File-scope adapters are file-level evidence; request-script
+// adapters additionally bind a decision to the first request-access line.
+type LanguageAdapter struct {
+	Language        string   `json:"language"`
+	Framework       string   `json:"framework,omitempty"`
+	File            string   `json:"file"`
+	Line            int      `json:"line"`
+	Scope           string   `json:"scope,omitempty"`
+	ControlLine     int      `json:"control_line,omitempty"`
+	Symbol          string   `json:"symbol,omitempty"`
+	Control         string   `json:"control"`
+	Requirement     string   `json:"requirement"`
+	Decision        string   `json:"decision"`
+	Reason          string   `json:"reason"`
+	MatchedControls []string `json:"matched_controls,omitempty"`
+}
+
 type Finding struct {
 	ID            string   `json:"id"`
 	Kind          string   `json:"kind"`
@@ -127,20 +146,24 @@ type Finding struct {
 }
 
 type Coverage struct {
-	JavaFilesScanned   int    `json:"java_files_scanned"`
-	XMLFilesScanned    int    `json:"xml_files_scanned"`
-	Endpoints          int    `json:"endpoints"`
-	Protected          int    `json:"protected"`
-	Public             int    `json:"public"`
-	Unprotected        int    `json:"unprotected"`
-	Unknown            int    `json:"unknown"`
-	Controls           int    `json:"controls"`
-	UnresolvedControls int    `json:"unresolved_controls"`
-	Chains             int    `json:"chains"`
-	MethodSecurity     string `json:"method_security"`
-	ContextPath        string `json:"context_path,omitempty"`
-	ContextPathSource  string `json:"context_path_source,omitempty"`
-	RuntimeStatus      string `json:"runtime_status"`
+	JavaFilesScanned      int    `json:"java_files_scanned"`
+	XMLFilesScanned       int    `json:"xml_files_scanned"`
+	LanguageFilesScanned  int    `json:"language_files_scanned"`
+	LanguageFilesRejected int    `json:"language_files_rejected"`
+	LanguageControls      int    `json:"language_controls"`
+	LanguageDecisions     int    `json:"language_decisions"`
+	Endpoints             int    `json:"endpoints"`
+	Protected             int    `json:"protected"`
+	Public                int    `json:"public"`
+	Unprotected           int    `json:"unprotected"`
+	Unknown               int    `json:"unknown"`
+	Controls              int    `json:"controls"`
+	UnresolvedControls    int    `json:"unresolved_controls"`
+	Chains                int    `json:"chains"`
+	MethodSecurity        string `json:"method_security"`
+	ContextPath           string `json:"context_path,omitempty"`
+	ContextPathSource     string `json:"context_path_source,omitempty"`
+	RuntimeStatus         string `json:"runtime_status"`
 }
 
 type javaSource struct {
@@ -274,6 +297,27 @@ func Analyze(ctx context.Context, snapshot *project.Snapshot) (Report, error) {
 		}
 	}
 	report.Coverage.Endpoints = len(report.Endpoints)
+	var languageCoverage Coverage
+	report.LanguageAdapters, languageCoverage = scanLanguageAdapters(ctx, snapshot)
+	report.Coverage.LanguageFilesScanned = languageCoverage.LanguageFilesScanned
+	report.Coverage.LanguageFilesRejected = languageCoverage.LanguageFilesRejected
+	report.Coverage.LanguageControls = languageCoverage.LanguageControls
+	report.Coverage.LanguageDecisions = languageCoverage.LanguageDecisions
+	scriptDecisions := 0
+	for _, adapter := range report.LanguageAdapters {
+		if adapter.Scope == "request_script" {
+			scriptDecisions++
+		}
+	}
+	if len(report.LanguageAdapters) > 0 {
+		report.Limitations = append(report.Limitations, "language_auth_file_local: non-Java controls are recognized by file-local lexical patterns; middleware order, route-to-controller binding and framework inheritance are not resolved")
+	}
+	if scriptDecisions > 0 {
+		report.Limitations = append(report.Limitations,
+			"php_script_authz_file_local: PHP request-script decisions use lexical controls before the first request-access line; include/require targets, branches and middleware execution are not resolved",
+			"php_script_unprotected_inconclusive: no recognized guard before request access does not prove the script is reachable without authentication",
+		)
+	}
 	if report.Coverage.UnresolvedControls > 0 {
 		report.Partial = true
 		report.Limitations = append(report.Limitations, "unresolved_controls_present: some controls could not be resolved to a class or path")

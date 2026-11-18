@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="demo.UserMapper">
+  <!-- MyBatis Generator 风格的公共片段：${} 是框架内部条件，不是请求参数 -->
+  <sql id="WhereClause">
+    <if test="criterion.valid">
+      and ${criterion.condition} #{criterion.value}
+    </if>
+  </sql>
+  <select id="findByName" parameterType="String" resultType="demo.User">
+    SELECT * FROM users WHERE name = #{name}
+  </select>
+  <select id="orderBy" parameterType="String" resultType="demo.User">
+    SELECT * FROM users ORDER BY ${column}
+  </select>
+  <update id="rename" parameterType="map">
+    UPDATE users SET name = #{name} WHERE id = #{id}
+  </update>
+</mapper>

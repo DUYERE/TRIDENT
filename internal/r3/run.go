@@ -132,8 +132,11 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 		return result, fmt.Errorf("isolated execution requires explicit approval")
 	}
 	if opts.Profile != "maven" && opts.Profile != "maven-compile" && opts.Profile != "maven-test" &&
-		opts.Profile != "gradle-test" && opts.Profile != "javac" && opts.Profile != "junit" {
-		return result, fmt.Errorf("profile must be maven, maven-compile, maven-test, gradle-test, javac or junit")
+		opts.Profile != "gradle-test" && opts.Profile != "javac" && opts.Profile != "junit" &&
+		opts.Profile != "php-lint" && opts.Profile != "python-compile" && opts.Profile != "pytest" &&
+		opts.Profile != "node-check" && opts.Profile != "npm-test" && opts.Profile != "go-test" &&
+		opts.Profile != "dotnet-build" && opts.Profile != "dotnet-test" {
+		return result, fmt.Errorf("profile must be maven, maven-compile, maven-test, gradle-test, javac, junit, php-lint, python-compile, pytest, node-check, npm-test, go-test, dotnet-build or dotnet-test")
 	}
 	var testClasses []string
 	if opts.Profile == "junit" {
@@ -429,6 +432,11 @@ func Validate(ctx context.Context, workspace string, opts ValidationOptions) (Va
 				result.Coverage = coverage
 			}
 		}
+	case "php-lint", "python-compile", "pytest", "node-check", "npm-test", "go-test", "dotnet-build", "dotnet-test":
+		steps := runLanguageValidation(runCtx, root, opts.Profile, sandbox)
+		for _, step := range steps {
+			appendStep(step)
+		}
 	}
 	result.Status = status
 	result.DurationMS = time.Since(started).Milliseconds()
@@ -569,7 +577,14 @@ func safeEnv() []string {
 // buildOnlyProfile reports profiles that do not execute an application entry
 // point and therefore do not require --main-class.
 func buildOnlyProfile(profile string) bool {
-	return profile == "maven-compile" || profile == "maven-test" || profile == "gradle-test"
+	return IsBuildOnlyProfile(profile)
+}
+
+func IsBuildOnlyProfile(profile string) bool {
+	return profile == "maven-compile" || profile == "maven-test" || profile == "gradle-test" ||
+		profile == "php-lint" || profile == "python-compile" || profile == "pytest" ||
+		profile == "node-check" || profile == "npm-test" || profile == "go-test" ||
+		profile == "dotnet-build" || profile == "dotnet-test"
 }
 
 func hasGradleBuild(root string) bool {

@@ -53,6 +53,9 @@ func TestProposeValidatesGeneratedPatch(t *testing.T) {
 	if len(client.request.Messages) != 2 || client.request.Messages[0].Role != "system" {
 		t.Fatalf("request: %+v", client.request)
 	}
+	if client.request.ReasoningEffort != "none" {
+		t.Fatalf("proposal must disable hidden thinking: %+v", client.request)
+	}
 	if !snapshotIntact(context.Background(), imported.Path, imported.Hash) {
 		t.Fatal("snapshot changed")
 	}
@@ -99,6 +102,27 @@ func TestProposeRejectsInvalidOrNonApplyingOutput(t *testing.T) {
 				t.Fatalf("error = %v; want ErrProposal", err)
 			}
 		})
+	}
+}
+
+func TestProposeUsesBoundedSourceWindow(t *testing.T) {
+	snapshot, _, _ := testSnapshot(t, map[string]string{
+		"src/main/java/demo/A.java": originalJava,
+	})
+	client := &fakeCompletion{content: proposalContent(t, safePatch, "replace the constant")}
+	proposal, err := Propose(context.Background(), snapshot, client, ProposeOptions{
+		Windows: []ProposeWindow{{Path: "src/main/java/demo/A.java", StartLine: 1, EndLine: 2}},
+		Goal:    "change 1 to 2", Model: "fake", MaxOutputTokens: 256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Patch != safePatch {
+		t.Fatalf("proposal patch = %q", proposal.Patch)
+	}
+	prompt := client.request.Messages[1].Content
+	if !strings.Contains(prompt, "Source windows") || !strings.Contains(prompt, "1| package demo;") {
+		t.Fatalf("prompt missing bounded source window: %s", prompt)
 	}
 }
 

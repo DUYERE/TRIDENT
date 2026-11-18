@@ -23,6 +23,27 @@ type RepairOptions struct {
 	Verify        VerifyOptions
 	MaxRounds     int
 	Client        CompletionClient
+	// ApproveExecution is the caller's explicit consent to execute the patched
+	// project in the isolated copy. It is a required field, not an internal
+	// default: the library must not grant execution on the caller's behalf.
+	ApproveExecution bool
+}
+
+// validate is the preflight shared by Repair and its tests: it never touches
+// the workspace, the model or the sandbox.
+func (o RepairOptions) validate() error {
+	// The execution gate is checked first: it is the cheapest and the most
+	// important precondition, and a caller that forgot it gets the real reason.
+	if !o.ApproveExecution {
+		return fmt.Errorf("repair executes the patched project and requires explicit approve-execution")
+	}
+	if o.Snapshot == nil || o.Snapshot.Hash() == "" {
+		return fmt.Errorf("repair requires a pinned snapshot")
+	}
+	if o.MaxRounds < 1 || o.MaxRounds > MaxRepairRounds {
+		return fmt.Errorf("repair rounds must be between 1 and %d", MaxRepairRounds)
+	}
+	return nil
 }
 
 type RepairRound struct {
@@ -62,15 +83,12 @@ func Repair(ctx context.Context, opts RepairOptions) (RepairReport, error) {
 			"runtime_status_not_run: no deployed target or runtime exploit test is executed",
 		},
 	}
-	if opts.Snapshot == nil || opts.Snapshot.Hash() == "" {
-		return report, fmt.Errorf("repair requires a pinned snapshot")
+	if err := opts.validate(); err != nil {
+		return report, err
 	}
 	report.SnapshotHash = opts.Snapshot.Hash()
 	if opts.Client == nil {
 		return report, fmt.Errorf("repair requires a model client")
-	}
-	if opts.MaxRounds < 1 || opts.MaxRounds > MaxRepairRounds {
-		return report, fmt.Errorf("repair rounds must be between 1 and %d", MaxRepairRounds)
 	}
 	if opts.SnapshotDir == "" || opts.WorkspaceRoot == "" {
 		return report, fmt.Errorf("repair requires snapshot directory and workspace root")
@@ -127,7 +145,7 @@ func Repair(ctx context.Context, opts RepairOptions) (RepairReport, error) {
 		verify.SnapshotHash = opts.Snapshot.Hash()
 		verify.PatchPath = patchPath
 		verify.Workspace = filepath.Join(root, fmt.Sprintf("round-%d", round))
-		verify.ApproveExecution = true
+		verify.ApproveExecution = opts.ApproveExecution
 		validation, verifyErr := Verify(ctx, verify)
 		_ = os.RemoveAll(patchDir)
 		item.Validation = &validation

@@ -243,6 +243,30 @@ func advisoryInfo(advisories []*advisoryCatalog) []AdvisoryInfo {
 	return info
 }
 
+func advisoryMatchesDependency(advisory *advisoryCatalog, dependency Dependency) bool {
+	if advisory.Ecosystem != "" && dependency.Ecosystem != "" &&
+		!strings.EqualFold(advisory.Ecosystem, dependency.Ecosystem) {
+		return false
+	}
+	if dependency.GroupID == advisory.Package.GroupID && dependency.ArtifactID == advisory.Package.ArtifactID {
+		return true
+	}
+	if dependency.Ecosystem == "" {
+		return false
+	}
+	groupArtifact := advisory.Package.GroupID + "/" + advisory.Package.ArtifactID
+	colonArtifact := advisory.Package.GroupID + ":" + advisory.Package.ArtifactID
+	return dependency.Name == groupArtifact || dependency.Name == colonArtifact ||
+		dependency.Name == advisory.Package.ArtifactID
+}
+
+func dependencyLabel(dependency Dependency) string {
+	if dependency.Ecosystem != "" && dependency.Name != "" {
+		return dependency.Name
+	}
+	return dependency.GroupID + ":" + dependency.ArtifactID
+}
+
 func matchAdvisories(dependencies []Dependency, advisories []*advisoryCatalog) []AdvisoryMatch {
 	matches := []AdvisoryMatch{}
 	seen := make(map[string]bool)
@@ -254,10 +278,10 @@ func matchAdvisories(dependencies []Dependency, advisories []*advisoryCatalog) [
 			}
 		}
 		for _, dependency := range dependencies {
-			if dependency.GroupID != advisory.Package.GroupID || dependency.ArtifactID != advisory.Package.ArtifactID {
+			if !advisoryMatchesDependency(advisory, dependency) {
 				continue
 			}
-			key := advisory.AdvisoryID + "\x00" + dependency.Module + "\x00" + dependency.GroupID + ":" + dependency.ArtifactID + "\x00" + dependency.Version + "\x00" + dependency.DeclarationPOM
+			key := advisory.AdvisoryID + "\x00" + dependency.Module + "\x00" + dependencyLabel(dependency) + "\x00" + dependency.Version + "\x00" + dependency.DeclarationPOM
 			if seen[key] {
 				continue
 			}
@@ -266,7 +290,7 @@ func matchAdvisories(dependencies []Dependency, advisories []*advisoryCatalog) [
 				AdvisoryID:        advisory.AdvisoryID,
 				Aliases:           append([]string{}, advisory.Aliases...),
 				Module:            dependency.Module,
-				Dependency:        dependency.GroupID + ":" + dependency.ArtifactID,
+				Dependency:        dependencyLabel(dependency),
 				DeclaredVersion:   dependency.Version,
 				RuntimeStatus:     "not_run",
 				InputReachability: "unknown",

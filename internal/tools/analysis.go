@@ -6,10 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
 	"trident/internal/audit"
+	"trident/internal/codescan"
+	"trident/internal/entry"
+	"trident/internal/evidence"
 	"trident/internal/findings"
 	"trident/internal/project"
 	"trident/internal/sca"
@@ -18,7 +22,7 @@ import (
 const (
 	analysisSchemaVersion = 1
 	analysisDefaultLimit  = 10
-	analysisMaxLimit      = 10
+	analysisMaxLimit      = 25
 	analysisMaxOffset     = 100_000
 	analysisMaxCitations  = 24
 )
@@ -27,12 +31,18 @@ const (
 // catalog is caller-supplied configuration, never snapshot content.
 type AnalysisOptions struct {
 	AdvisoryPath string
+	AdvisoryDir  string
+	// CodeReport binds the console's cached multi-language rule report so the
+	// Agent quotes the same evidence the findings page shows instead of
+	// re-deriving it. Nil keeps the legacy Java-only view.
+	CodeReport *codescan.Report
 }
 
 type analysisCache struct {
 	findings findings.Report
 	sca      sca.Report
 	audit    audit.Report
+	code     *codescan.Report
 	err      error
 }
 
@@ -47,6 +57,7 @@ type analysisResponse struct {
 	AdvisoryConfigured bool           `json:"advisory_configured"`
 	Counts             map[string]int `json:"counts,omitempty"`
 	Coverage           any            `json:"coverage,omitempty"`
+	Manifests          []sca.Manifest `json:"manifests,omitempty"`
 	Limitations        []string       `json:"limitations"`
 	Items              any            `json:"items"`
 	Citations          []Evidence     `json:"citations,omitempty"`
@@ -61,19 +72,76 @@ type findingView struct {
 	Status        string                 `json:"status"`
 	RuntimeStatus string                 `json:"runtime_status"`
 	Title         string                 `json:"title"`
+	Language      string                 `json:"language,omitempty"`
 	Endpoint      *findings.EndpointRef  `json:"endpoint,omitempty"`
 	Component     *findings.ComponentRef `json:"component,omitempty"`
+	Location      string                 `json:"location,omitempty"`
 	Citations     []Evidence             `json:"citations,omitempty"`
+}
+
+// findingLocation gives endpoint-less merged code findings a stable
+// file:line handle so the Agent can cite them like any other finding.
+func findingLocation(finding findings.Finding) string {
+	if finding.Endpoint != nil || finding.Component != nil {
+		return ""
+	}
+	for _, item := range finding.Evidence {
+		if item.Kind == "sink" && item.File != "" {
+			line := item.StartLine
+			if line < 1 {
+				line = item.EndLine
+			}
+			return fmt.Sprintf("%s:%d", item.File, line)
+		}
+	}
+	return ""
+}
+
+// findingLanguage reports the source language of a finding for the Agent's
+// language filter. Merged code-audit findings carry "language=" in their
+// SourceAnalyses; the Java unified model (annotation inventory, dataflow, SCA)
+// is always Java.
+func findingLanguage(finding findings.Finding) string {
+	if strings.HasPrefix(finding.ID, "code:") {
+		for _, entry := range finding.SourceAnalyses {
+			if value, ok := strings.CutPrefix(entry, "language="); ok && value != "" {
+				return value
+			}
+		}
+		return "unknown"
+	}
+	return "java"
+}
+
+// findingCategoryKeys returns every category key a finding may be filtered by:
+// the unified-model kind mapping and, for code-audit findings, the rule's own
+// category. category=sql therefore matches both sql_injection and php.sql.query.
+func findingCategoryKeys(finding findings.Finding) []string {
+	keys := []string{}
+	if mapped := categoryKeyForFinding(finding.Kind); mapped != "" {
+		keys = append(keys, mapped)
+	}
+	if finding.Category != "" && finding.Category != finding.Kind {
+		keys = append(keys, finding.Category)
+	}
+	return keys
+}
+
+func containsName(values []string, want string) bool {
+	return slices.Contains(values, want)
 }
 
 type dependencyView struct {
 	Module         string `json:"module"`
+	Ecosystem      string `json:"ecosystem,omitempty"`
+	Name           string `json:"name,omitempty"`
 	GroupID        string `json:"group_id"`
 	ArtifactID     string `json:"artifact_id"`
 	Version        string `json:"version,omitempty"`
 	Scope          string `json:"scope"`
 	VersionStatus  string `json:"version_status"`
 	DeclarationPOM string `json:"declaration_pom"`
+	Manifest       string `json:"manifest,omitempty"`
 }
 
 type advisoryMatchView struct {
@@ -88,11 +156,23 @@ type advisoryMatchView struct {
 
 type endpointView struct {
 	audit.Endpoint
-	Citations []Evidence `json:"citations,omitempty"`
+	Language   string     `json:"language,omitempty"`
+	Framework  string     `json:"framework,omitempty"`
+	Kind       string     `json:"kind,omitempty"`
+	Source     string     `json:"source,omitempty"`
+	PathStatus string     `json:"path_status,omitempty"`
+	Target     string     `json:"target,omitempty"`
+	Reason     string     `json:"reason,omitempty"`
+	Confidence string     `json:"confidence,omitempty"`
+	Citations  []Evidence `json:"citations,omitempty"`
 }
 
 // analysisState runs the read-only analyses once per registry. A failure is
 // cached as a terminal error instead of being retried for every tool call.
+func (r *Registry) advisoryConfigured() bool {
+	return r.analysisOptions.AdvisoryPath != "" || r.analysisOptions.AdvisoryDir != ""
+}
+
 func (r *Registry) analysisState(ctx context.Context) (*analysisCache, error) {
 	if r == nil || r.snapshot == nil {
 		return nil, os.ErrClosed
@@ -103,7 +183,7 @@ func (r *Registry) analysisState(ctx context.Context) (*analysisCache, error) {
 		return r.analysis, r.analysis.err
 	}
 	state := &analysisCache{}
-	scaReport, scaErr := sca.Inspect(ctx, r.snapshot, sca.Options{AdvisoryPath: r.analysisOptions.AdvisoryPath})
+	scaReport, scaErr := sca.Inspect(ctx, r.snapshot, sca.Options{AdvisoryPath: r.analysisOptions.AdvisoryPath, AdvisoryDir: r.analysisOptions.AdvisoryDir})
 	endpointReport, auditErr := audit.Inspect(ctx, r.snapshot)
 	findingReport, findingErr := findings.Analyze(ctx, r.snapshot, findings.Options{AdvisoryPath: r.analysisOptions.AdvisoryPath})
 	switch {
@@ -114,9 +194,30 @@ func (r *Registry) analysisState(ctx context.Context) (*analysisCache, error) {
 	case auditErr != nil:
 		state.err = fmt.Errorf("endpoint inventory failed: %w", auditErr)
 	default:
+		// Merge the console's cached multi-language report so list_findings and
+		// the findings page agree; without it an Agent could not see PHP or
+		// other non-Java findings at all.
+		if r.analysisOptions.CodeReport != nil {
+			merged := codescan.AsFindingsReport(*r.analysisOptions.CodeReport)
+			findingReport.Findings = append(findingReport.Findings, merged.Findings...)
+			for _, finding := range merged.Findings {
+				switch finding.Status {
+				case "static_confirmed":
+					findingReport.Coverage.FindingsStaticConfirmed++
+				case "refuted":
+					findingReport.Coverage.FindingsRefuted++
+				default:
+					findingReport.Coverage.FindingsInconclusive++
+				}
+				findingReport.Coverage.FindingsTotal++
+			}
+		}
 		state.findings = findingReport
 		state.sca = scaReport
 		state.audit = endpointReport
+		if r.analysisOptions.CodeReport != nil {
+			state.code = r.analysisOptions.CodeReport
+		}
 	}
 	r.analysis = state
 	return state, state.err
@@ -170,20 +271,22 @@ func (r *Registry) inspectDependencies(ctx context.Context, values map[string]an
 	items := make([]dependencyView, 0, end-start)
 	for _, dependency := range dependencies[start:end] {
 		items = append(items, dependencyView{
-			Module: dependency.Module, GroupID: dependency.GroupID, ArtifactID: dependency.ArtifactID,
+			Module: dependency.Module, Ecosystem: dependency.Ecosystem, Name: dependency.Name,
+			GroupID: dependency.GroupID, ArtifactID: dependency.ArtifactID,
 			Version: dependency.Version, Scope: dependency.Scope, VersionStatus: dependency.VersionStatus,
-			DeclarationPOM: dependency.DeclarationPOM,
+			DeclarationPOM: dependency.DeclarationPOM, Manifest: dependency.Manifest,
 		})
 	}
 	return analysisResponse{
 		SchemaVersion: analysisSchemaVersion, Tool: "inspect_dependencies", SnapshotHash: r.snapshot.Hash(),
 		Total: len(dependencies), Offset: offset, Limit: limit, Partial: state.sca.Partial,
-		AdvisoryConfigured: r.analysisOptions.AdvisoryPath != "",
+		AdvisoryConfigured: r.advisoryConfigured(),
 		Counts: map[string]int{
 			"modules": state.sca.Project.ModuleCount, "poms": state.sca.Project.POMCount,
+			"manifests": state.sca.Coverage.ManifestFilesScanned, "manifest_dependencies": state.sca.Coverage.ManifestDependencies,
 			"dependencies_declared": len(state.sca.Dependencies), "dependencies_unresolved": state.sca.Coverage.DependenciesUnresolved,
 		},
-		Coverage: state.sca.Coverage, Limitations: state.sca.Limitations, Items: items,
+		Coverage: state.sca.Coverage, Manifests: append([]sca.Manifest(nil), state.sca.Manifests...), Limitations: state.sca.Limitations, Items: items,
 	}, nil
 }
 
@@ -207,13 +310,13 @@ func (r *Registry) matchAdvisories(ctx context.Context, values map[string]any) (
 		})
 	}
 	limitations := append([]string{}, state.sca.Limitations...)
-	if r.analysisOptions.AdvisoryPath == "" {
+	if !r.advisoryConfigured() {
 		limitations = append(limitations, "advisory_catalog_not_configured")
 	}
 	return analysisResponse{
 		SchemaVersion: analysisSchemaVersion, Tool: "match_advisories", SnapshotHash: r.snapshot.Hash(),
 		Total: len(matches), Offset: offset, Limit: limit, Partial: state.sca.Partial,
-		AdvisoryConfigured: r.analysisOptions.AdvisoryPath != "",
+		AdvisoryConfigured: r.advisoryConfigured(),
 		Counts: map[string]int{
 			"advisory_matches": len(matches), "advisories_loaded": state.sca.Coverage.AdvisoriesLoaded,
 			"dependencies_declared": len(state.sca.Dependencies),
@@ -235,23 +338,62 @@ func (r *Registry) queryEndpoints(ctx context.Context, values map[string]any) (a
 	if err != nil {
 		return analysisResponse{}, err
 	}
-	filtered := make([]audit.Endpoint, 0, len(state.audit.Endpoints))
-	for _, endpoint := range state.audit.Endpoints {
-		if query != "" && !strings.Contains(strings.ToLower(endpoint.Path+" "+endpoint.Symbol+" "+endpoint.File+" "+strings.Join(endpoint.HTTPMethods, ",")), query) {
-			continue
+	partial := state.audit.Partial
+	limitations := append([]string{}, state.audit.Limitations...)
+	coverage := any(state.audit.Coverage)
+	counts := map[string]int{
+		"controllers": state.audit.Coverage.ControllersFound, "endpoints": len(state.audit.Endpoints),
+		"unresolved_paths": state.audit.Coverage.UnresolvedPaths, "duplicate_routes": state.audit.Coverage.DuplicateRoutes,
+	}
+	var filtered []endpointView
+	if state.code != nil {
+		evidenceReport, buildErr := entry.NewRegistry().Build(ctx, entry.Input{
+			Snapshot: r.snapshot, JavaAudit: &state.audit, CodeAudit: state.code,
+		})
+		if buildErr != nil {
+			return analysisResponse{}, buildErr
 		}
-		filtered = append(filtered, endpoint)
+		partial = evidenceReport.Partial
+		limitations = append([]string{}, evidenceReport.Limitations...)
+		coverage = evidenceReport.Coverage
+		counts = map[string]int{"entries": len(evidenceReport.Entries)}
+		for _, entry := range evidenceReport.Entries {
+			if entry.Kind != evidence.KindRouteDeclaration && entry.Kind != evidence.KindAnnotationRoute {
+				continue
+			}
+			if query != "" && !strings.Contains(strings.ToLower(entry.Path+" "+entry.Symbol+" "+entry.File+" "+strings.Join(entry.HTTPMethods, ",")), query) {
+				continue
+			}
+			filtered = append(filtered, endpointView{
+				Endpoint: audit.Endpoint{
+					Path: entry.Path, HTTPMethods: append([]string(nil), entry.HTTPMethods...), File: entry.File,
+					Class: entry.Class, Method: entry.Method, Symbol: entry.Symbol, SHA256: entry.SHA256,
+					StartLine: entry.StartLine, EndLine: entry.EndLine, MethodLine: entry.MethodLine,
+					PathStatus: entry.PathStatus, PathReason: entry.Reason,
+				},
+				Language: entry.Language, Framework: entry.Framework, Kind: entry.Kind, Source: entry.Source,
+				PathStatus: entry.PathStatus, Target: entry.Target, Reason: entry.Reason, Confidence: entry.Confidence,
+			})
+		}
+	} else {
+		for _, endpoint := range state.audit.Endpoints {
+			if query != "" && !strings.Contains(strings.ToLower(endpoint.Path+" "+endpoint.Symbol+" "+endpoint.File+" "+strings.Join(endpoint.HTTPMethods, ",")), query) {
+				continue
+			}
+			filtered = append(filtered, endpointView{Endpoint: endpoint})
+		}
 	}
 	start, end := pageBounds(len(filtered), offset, limit)
 	items := make([]endpointView, 0, end-start)
 	citations := make([]Evidence, 0, end-start)
-	for _, endpoint := range filtered[start:end] {
+	for index := start; index < end; index++ {
+		endpoint := filtered[index]
 		line := endpoint.MethodLine
 		if line <= 0 {
 			line = endpoint.StartLine
 		}
 		candidate := r.citation(endpoint.File, endpoint.SHA256, line, line)
-		item := endpointView{Endpoint: endpoint}
+		item := endpoint
 		if candidate.Path != "" {
 			if observed, observeErr := r.observeCitations(ctx, []Evidence{candidate}); observeErr != nil {
 				return analysisResponse{}, observeErr
@@ -264,13 +406,10 @@ func (r *Registry) queryEndpoints(ctx context.Context, values map[string]any) (a
 	}
 	return analysisResponse{
 		SchemaVersion: analysisSchemaVersion, Tool: "query_endpoints", SnapshotHash: r.snapshot.Hash(),
-		Total: len(filtered), Offset: offset, Limit: limit, Partial: state.audit.Partial,
-		AdvisoryConfigured: r.analysisOptions.AdvisoryPath != "",
-		Counts: map[string]int{
-			"controllers": state.audit.Coverage.ControllersFound, "endpoints": len(state.audit.Endpoints),
-			"unresolved_paths": state.audit.Coverage.UnresolvedPaths, "duplicate_routes": state.audit.Coverage.DuplicateRoutes,
-		},
-		Coverage: state.audit.Coverage, Limitations: state.audit.Limitations, Items: items,
+		Total: len(filtered), Offset: offset, Limit: limit, Partial: partial,
+		AdvisoryConfigured: r.advisoryConfigured(),
+		Counts:             counts,
+		Coverage:           coverage, Limitations: limitations, Items: items,
 		Citations: dedupeEvidence(citations),
 	}, nil
 }
@@ -294,6 +433,7 @@ func (r *Registry) findingPage(ctx context.Context, values map[string]any, tool 
 	}
 	category := strings.ToLower(stringValue(values, "category"))
 	status := strings.ToLower(stringValue(values, "status"))
+	language := strings.ToLower(stringValue(values, "language"))
 	if category != "" && category != "all" && !validCategory(category) {
 		return analysisResponse{}, fmt.Errorf("%w: unsupported category", ErrArguments)
 	}
@@ -304,12 +444,21 @@ func (r *Registry) findingPage(ctx context.Context, values map[string]any, tool 
 	if err != nil {
 		return analysisResponse{}, err
 	}
+	languages := map[string]int{}
+	for _, finding := range state.findings.Findings {
+		if lang := findingLanguage(finding); lang != "" {
+			languages[lang]++
+		}
+	}
 	filtered := make([]findings.Finding, 0, len(state.findings.Findings))
 	for _, finding := range state.findings.Findings {
-		if dataflowOnly && finding.Kind == "vulnerable_dependency" {
+		if dataflowOnly && (finding.Kind == "vulnerable_dependency" || strings.HasPrefix(finding.ID, "code:")) {
 			continue
 		}
-		if category != "" && category != "all" && categoryKeyForFinding(finding.Kind) != category {
+		if category != "" && category != "all" && !containsName(findingCategoryKeys(finding), category) {
+			continue
+		}
+		if language != "" && language != "all" && findingLanguage(finding) != language {
 			continue
 		}
 		if status != "" && status != "all" && finding.Status != status {
@@ -333,6 +482,7 @@ func (r *Registry) findingPage(ctx context.Context, values map[string]any, tool 
 			ID: finding.ID, Kind: finding.Kind, Category: finding.Category, CWE: finding.CWE,
 			Severity: finding.Severity, Status: finding.Status, RuntimeStatus: finding.RuntimeStatus,
 			Title: finding.Title, Endpoint: finding.Endpoint, Component: finding.Component, Citations: observed,
+			Location: findingLocation(finding), Language: findingLanguage(finding),
 		})
 		citations = append(citations, observed...)
 	}
@@ -341,15 +491,18 @@ func (r *Registry) findingPage(ctx context.Context, values map[string]any, tool 
 	if len(items) == 0 {
 		limitations = append(limitations, "no_matching_findings: absence is not a safety proof")
 	}
+	counts := map[string]int{
+		"findings_total": len(state.findings.Findings), "static_confirmed": state.findings.Coverage.FindingsStaticConfirmed,
+		"inconclusive": state.findings.Coverage.FindingsInconclusive, "refuted": state.findings.Coverage.FindingsRefuted,
+	}
+	for name, count := range languages {
+		counts["language_"+name] = count
+	}
 	return analysisResponse{
 		SchemaVersion: analysisSchemaVersion, Tool: tool, SnapshotHash: r.snapshot.Hash(),
 		Total: len(filtered), Offset: offset, Limit: limit, Partial: partial,
-		AdvisoryConfigured: r.analysisOptions.AdvisoryPath != "",
-		Counts: map[string]int{
-			"findings_total": len(state.findings.Findings), "static_confirmed": state.findings.Coverage.FindingsStaticConfirmed,
-			"inconclusive": state.findings.Coverage.FindingsInconclusive, "refuted": state.findings.Coverage.FindingsRefuted,
-		},
-		Coverage: state.findings.Coverage, Limitations: dedupeStrings(limitations), Items: items,
+		AdvisoryConfigured: r.advisoryConfigured(),
+		Counts:             counts, Coverage: state.findings.Coverage, Limitations: dedupeStrings(limitations), Items: items,
 		Citations: dedupeEvidence(citations),
 	}, nil
 }
@@ -461,7 +614,7 @@ func (r *Registry) observeCitations(ctx context.Context, candidates []Evidence) 
 
 func validCategory(category string) bool {
 	switch category {
-	case "sql", "command", "ssrf", "path", "template", "xss", "deserialization", "xxe", "ldap", "upload", "dependency":
+	case "sql", "command", "ssrf", "path", "template", "xss", "deserialization", "xxe", "ldap", "upload", "dependency", "redirect", "xpath":
 		return true
 	}
 	return false
@@ -488,7 +641,7 @@ func categoryKeyForFinding(kind string) string {
 }
 
 func findingMatches(finding findings.Finding, query string) bool {
-	fields := []string{finding.ID, finding.Kind, finding.Category, finding.CWE, finding.Title}
+	fields := []string{finding.ID, finding.Kind, finding.Category, finding.CWE, finding.Title, findingLocation(finding), findingLanguage(finding)}
 	if finding.Endpoint != nil {
 		fields = append(fields, finding.Endpoint.Path, finding.Endpoint.Symbol, finding.Endpoint.File)
 	}
@@ -501,6 +654,47 @@ func findingMatches(finding findings.Finding, query string) bool {
 		}
 	}
 	return false
+}
+
+// listRules exposes the built-in rule set so the Agent can understand what the
+// code-audit engine can observe before citing rule IDs. Metadata only: pattern
+// bodies, caller-supplied rules and any analysis semantics are not included.
+func (r *Registry) listRules(ctx context.Context, values map[string]any) (analysisResponse, error) {
+	query, err := analysisQuery(values)
+	if err != nil {
+		return analysisResponse{}, err
+	}
+	category := strings.ToLower(stringValue(values, "category"))
+	language := strings.ToLower(stringValue(values, "language"))
+	all := codescan.RuleSummaries()
+	filtered := make([]codescan.RuleSummary, 0, len(all))
+	for _, rule := range all {
+		if category != "" && category != "all" && rule.Category != category {
+			continue
+		}
+		if language != "" && language != "all" && !containsName(rule.Languages, language) {
+			continue
+		}
+		if query != "" {
+			haystack := strings.ToLower(strings.Join([]string{rule.ID, rule.Category, rule.CWE, rule.Title, strings.Join(rule.Languages, " ")}, " "))
+			if !strings.Contains(haystack, query) {
+				continue
+			}
+		}
+		filtered = append(filtered, rule)
+	}
+	limitations := []string{
+		"rules_are_data_not_semantics: selectors are declarative name patterns, not type resolution or a call graph",
+		"builtin_rules_only: caller-supplied rule files are not listed; the report ruleset_version carries their data digest",
+	}
+	return analysisResponse{
+		SchemaVersion: analysisSchemaVersion, Tool: "list_rules", SnapshotHash: r.snapshot.Hash(),
+		Total: len(filtered), Offset: 0, Limit: len(filtered), Partial: false,
+		Counts: map[string]int{
+			"rules_builtin_total": len(all), "languages_supported": 7,
+		},
+		Limitations: limitations, Items: filtered,
+	}, nil
 }
 
 func dedupeStrings(values []string) []string {

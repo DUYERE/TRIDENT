@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "ruleset_version": "caller-php-debug-v1",
+  "rules": [
+    {
+      "id": "caller.php.debug_log",
+      "languages": ["php"],
+      "category": "xss",
+      "cwe": "CWE-79",
+      "severity": "low",
+      "confidence": "medium",
+      "title": "调用者自定义规则：调试输出",
+      "message": "请求数据流入调试日志接口，需人工确认输出位置。",
+      "sources": [
+        {"kind": "access", "names": ["$_GET"]}
+      ],
+      "sinks": [
+        {"kind": "call", "names": ["debug_log"]}
+      ],
+      "sanitizers": []
+    }
+  ]
+}

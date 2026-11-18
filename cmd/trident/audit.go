@@ -20,7 +20,13 @@ import (
 // or vulnerability claim.
 func runAudit(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: trident audit <endpoints|dataflow|findings|authz|sarif|reachability|java-model> --snapshot <dir> --snapshot-hash <sha256>")
+		return fmt.Errorf("usage: trident audit <endpoints|code|dataflow|sinks|findings|authz|sarif|reachability|java-model> --snapshot <dir> --snapshot-hash <sha256>")
+	}
+	if args[0] == "sinks" {
+		return runSinks(ctx, args[1:], out)
+	}
+	if args[0] == "code" {
+		return runCodeAudit(ctx, args[1:], out)
 	}
 	if args[0] == "dataflow" {
 		return runDataflow(ctx, args[1:], out)

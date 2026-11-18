@@ -85,6 +85,15 @@ func (s *findingState) analyzeMethod(index *projectModel, method *methodModel, t
 		line := tokens[nameIndex].Line
 		api := callAPI(receiver, name)
 
+		// A MyBatis mapper call is resolved against the SQL statement evidence
+		// in Mapper XML / annotation SQL before it becomes an unresolved-call
+		// boundary. Only SQL category uses ORM evidence.
+		if s.category.Key == sqlCategory.Key && s.ormIndex != nil && argTainted {
+			if s.observeMyBatis(s.ormIndex, receiverType(method, receiver, localTypes), name, method, line, argEval) {
+				continue
+			}
+		}
+
 		if isControlKeyword(name) {
 			continue
 		}
@@ -472,8 +481,12 @@ func (s *findingState) analyzeAssignment(index *projectModel, method *methodMode
 		tainted[lhs] = result.taint
 		s.recordFlow("constructor", lhs, method.File.Path, tokens[lhsIndex].Line)
 	default:
-		// Calls that return a tainted string are deliberately not modeled.
-		s.addLimitation("return_value_taint_not_modeled")
+		// Any other expression shape (ternary, parenthesised pair, cast,
+		// multi-identifier select) still carries the taint of the operands the
+		// scan already found. Dropping it here used to turn a common defensive
+		// idiom into a silent "no observation".
+		tainted[lhs] = result.taint
+		s.recordFlow("expression", lhs, method.File.Path, tokens[lhsIndex].Line)
 	}
 }
 

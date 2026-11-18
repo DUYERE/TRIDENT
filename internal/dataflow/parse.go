@@ -10,6 +10,7 @@ import (
 	"text/scanner"
 	"unicode/utf8"
 
+	"trident/internal/javasrc"
 	"trident/internal/project"
 )
 
@@ -29,6 +30,10 @@ type fileModel struct {
 	Comments []javaToken
 	Classes  []*classModel
 	Nested   int
+	// Notes discloses syntax the lexer had to neutralise. The only current
+	// value is text_block_content_not_analyzed: the block is replaced by an
+	// empty literal so the rest of the file stays analysable.
+	Notes []string
 }
 
 type classModel struct {
@@ -104,6 +109,9 @@ func parseProject(ctx context.Context, snapshot *project.Snapshot) ([]*fileModel
 			continue
 		}
 		files = append(files, parsed)
+		for _, note := range parsed.Notes {
+			problems = append(problems, note+":"+file)
+		}
 	}
 	sort.Strings(problems)
 	return files, rejected, dedupe(problems), nil
@@ -135,14 +143,21 @@ func parseJavaFile(file, sha256 string, data []byte) (*fileModel, error) {
 	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
 		return nil, fmt.Errorf("%w: non-UTF-8 or NUL byte", ErrUnsupported)
 	}
-	if bytes.Contains(data, []byte(`"""`)) {
-		return nil, fmt.Errorf("%w: Java text blocks are unsupported", ErrUnsupported)
+	code, textBlocks, ok := javasrc.Strip(data)
+	if !ok {
+		return nil, fmt.Errorf("%w: unterminated Java text block", ErrUnsupported)
 	}
-	code, comments, err := tokenize(data)
+	// tokenize on the rewritten source keeps every token line identical to the
+	// original file because each block is replaced by a literal with the same
+	// newline count.
+	tokenSource, comments, err := tokenize(code)
 	if err != nil {
 		return nil, err
 	}
-	model := &fileModel{Path: file, SHA256: sha256, Tokens: code, Comments: comments, Imports: map[string]string{}}
+	model := &fileModel{Path: file, SHA256: sha256, Tokens: tokenSource, Comments: comments, Imports: map[string]string{}}
+	if textBlocks > 0 {
+		model.Notes = append(model.Notes, javasrc.TextBlockNote)
+	}
 	model.parsePackage()
 	model.parseImports()
 	model.parseClasses()

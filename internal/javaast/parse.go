@@ -8,6 +8,8 @@ import (
 	"strings"
 	"text/scanner"
 	"unicode/utf8"
+
+	"trident/internal/javasrc"
 )
 
 // The parser accepts a deliberately restricted Java subset: declarations,
@@ -142,10 +144,11 @@ func ParseFile(path, sha256 string, data []byte) (*Unit, error) {
 	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
 		return nil, fmt.Errorf("%w: non-UTF-8 or NUL byte", ErrUnsupported)
 	}
-	if bytes.Contains(data, []byte(`"""`)) {
-		return nil, fmt.Errorf("%w: Java text blocks are unsupported", ErrUnsupported)
+	code, textBlocks, ok := javasrc.Strip(data)
+	if !ok {
+		return nil, fmt.Errorf("%w: unterminated Java text block", ErrUnsupported)
 	}
-	tokens, err := tokenize(data)
+	tokens, err := tokenize(code)
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +158,9 @@ func ParseFile(path, sha256 string, data []byte) (*Unit, error) {
 	p := &parser{tokens: tokens, unit: &Unit{Path: path, SHA256: sha256, Tokens: tokens, constants: map[string]string{}}}
 	if err := p.parseUnit(); err != nil {
 		return nil, err
+	}
+	if textBlocks > 0 {
+		p.unit.Boundaries = append(p.unit.Boundaries, javasrc.TextBlockNote)
 	}
 	return p.unit, nil
 }

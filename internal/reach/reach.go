@@ -76,8 +76,11 @@ type Entrypoint struct {
 }
 
 type Reachability struct {
+	Path           string      `json:"path"`
 	Module         string      `json:"module"`
 	Dependency     string      `json:"dependency"`
+	Language       string      `json:"language,omitempty"`
+	Ecosystem      string      `json:"ecosystem,omitempty"`
 	Version        string      `json:"version,omitempty"`
 	VersionStatus  string      `json:"version_status"`
 	Reachability   string      `json:"reachability"`
@@ -111,17 +114,23 @@ type Step struct {
 }
 
 type Coverage struct {
-	JavaFilesScanned  int    `json:"java_files_scanned"`
-	JavaFilesRejected int    `json:"java_files_rejected"`
-	ImportsParsed     int    `json:"imports_parsed"`
-	Entrypoints       int    `json:"entrypoints"`
-	ClassesIndexed    int    `json:"classes_indexed"`
-	GraphEdges        int    `json:"graph_edges"`
-	Dependencies      int    `json:"dependencies"`
-	Reachable         int    `json:"reachable"`
-	Unreachable       int    `json:"unreachable"`
-	Unknown           int    `json:"unknown"`
-	RuntimeStatus     string `json:"runtime_status"`
+	JavaFilesScanned      int    `json:"java_files_scanned"`
+	JavaFilesRejected     int    `json:"java_files_rejected"`
+	ImportsParsed         int    `json:"imports_parsed"`
+	Entrypoints           int    `json:"entrypoints"`
+	ClassesIndexed        int    `json:"classes_indexed"`
+	GraphEdges            int    `json:"graph_edges"`
+	Dependencies          int    `json:"dependencies"`
+	Reachable             int    `json:"reachable"`
+	Unreachable           int    `json:"unreachable"`
+	Unknown               int    `json:"unknown"`
+	LanguageFilesScanned  int    `json:"language_files_scanned"`
+	LanguageFilesRejected int    `json:"language_files_rejected"`
+	LanguageImports       int    `json:"language_imports"`
+	LanguageReachable     int    `json:"language_reachable"`
+	LanguageUnreachable   int    `json:"language_unreachable"`
+	LanguageUnknown       int    `json:"language_unknown"`
+	RuntimeStatus         string `json:"runtime_status"`
 }
 
 type packageMap struct {
@@ -257,6 +266,9 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 	}
 
 	for _, dependency := range scaReport.Dependencies {
+		if dependency.Ecosystem != "" {
+			continue
+		}
 		item := Reachability{
 			Module: dependency.Module, Dependency: dependency.GroupID + ":" + dependency.ArtifactID,
 			Version: dependency.Version, VersionStatus: dependency.VersionStatus, RuntimeStatus: "not_run",
@@ -308,6 +320,19 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 		}
 		report.Dependencies = append(report.Dependencies, item)
 	}
+	languageItems, languageCoverage, languageLimitations, languagePartial := analyzeLanguageReach(ctx, snapshot, scaReport.Dependencies)
+	report.Dependencies = append(report.Dependencies, languageItems...)
+	report.Coverage.LanguageFilesScanned = languageCoverage.LanguageFilesScanned
+	report.Coverage.LanguageFilesRejected = languageCoverage.LanguageFilesRejected
+	report.Coverage.LanguageImports = languageCoverage.LanguageImports
+	report.Coverage.LanguageReachable = languageCoverage.LanguageReachable
+	report.Coverage.LanguageUnreachable = languageCoverage.LanguageUnreachable
+	report.Coverage.LanguageUnknown = languageCoverage.LanguageUnknown
+	report.Coverage.Reachable += languageCoverage.LanguageReachable
+	report.Coverage.Unreachable += languageCoverage.LanguageUnreachable
+	report.Coverage.Unknown += languageCoverage.LanguageUnknown
+	report.Partial = report.Partial || languagePartial
+	report.Limitations = append(report.Limitations, languageLimitations...)
 	report.Coverage.Dependencies = len(report.Dependencies)
 	sort.Slice(report.Dependencies, func(i, j int) bool {
 		a, b := report.Dependencies[i], report.Dependencies[j]

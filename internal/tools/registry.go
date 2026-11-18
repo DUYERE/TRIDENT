@@ -55,33 +55,39 @@ var specifications = []toolSpec{
 	},
 	{
 		name:        "inspect_dependencies",
-		description: "Inspect declaration-level Maven dependencies and modules on the pinned snapshot. This is not an effective dependency tree, classpath, SBOM or reachability result. Paginate with offset; citations are lines actually read from this snapshot.",
+		description: "Inspect declaration-level dependencies and manifests on the pinned snapshot: Maven/Gradle plus npm, Composer, NuGet, pip and Go. This is not an effective dependency tree, classpath, SBOM or reachability result. Paginate with offset; citations are lines actually read from this snapshot.",
 		schema:      `{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
 		fields:      map[string]argumentSpec{"limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
 	},
 	{
 		name:        "match_advisories",
-		description: "Match declared Maven versions against the Run's explicit local advisory catalog using exact version cases only. No range, alias, transitive, reachability or runtime inference. Returns configured=false when no catalog is bound.",
+		description: "Match declared dependency versions against the Run's explicit local advisory catalog using exact version cases only across Maven and non-Maven ecosystems. No range, alias, transitive, reachability or runtime inference. Returns configured=false when no catalog is bound.",
 		schema:      `{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
 		fields:      map[string]argumentSpec{"limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
 	},
 	{
 		name:        "query_endpoints",
-		description: "List annotation-level Spring MVC endpoints with parameter bindings and path status. Routes are not deployed routes. Each returned endpoint includes citations read from this snapshot; use read_source for surrounding context.",
+		description: "Query normalized HTTP entry evidence from the pinned snapshot: Java Spring mappings and multi-language route declarations (including ThinkPHP database-expanded and dynamic-unresolved routes). Returns evidence paths, not runtime reachability.",
 		schema:      `{"type":"object","properties":{"q":{"type":"string","maxLength":256,"description":"Case-insensitive filter over path, symbol, file and HTTP methods."},"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
 		fields:      map[string]argumentSpec{"q": {kind: stringArgument}, "limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
 	},
 	{
 		name:        "trace_dataflow",
 		description: "Return bounded static source-to-sink findings (SQL and eight other injection categories) with status static_confirmed, inconclusive or refuted. Runtime status is always not_run. Citations are actual snapshot lines; absence of a finding is not a safety proof.",
-		schema:      `{"type":"object","properties":{"category":{"type":"string","maxLength":32,"description":"sql, command, ssrf, path, template, xss, deserialization, xxe, ldap or all."},"status":{"type":"string","maxLength":32,"description":"static_confirmed, inconclusive, refuted or all."},"q":{"type":"string","maxLength":256,"description":"Case-insensitive filter over finding, endpoint, file and parameter fields."},"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
-		fields:      map[string]argumentSpec{"category": {kind: stringArgument}, "status": {kind: stringArgument}, "q": {kind: stringArgument}, "limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
+		schema:      `{"type":"object","properties":{"category":{"type":"string","maxLength":32,"description":"sql, command, ssrf, path, template, xss, deserialization, xxe, ldap, upload, redirect, xpath or all."},"status":{"type":"string","maxLength":32,"description":"static_confirmed, inconclusive, refuted or all."},"language":{"type":"string","maxLength":16,"description":"Filter by source language, e.g. java, php, python, csharp, javascript, typescript, go, or all."},"q":{"type":"string","maxLength":256,"description":"Case-insensitive filter over finding, endpoint, file and parameter fields."},"limit":{"type":"integer","minimum":1,"maximum":25,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
+		fields:      map[string]argumentSpec{"category": {kind: stringArgument}, "status": {kind: stringArgument}, "language": {kind: stringArgument}, "q": {kind: stringArgument}, "limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
 	},
 	{
 		name:        "list_findings",
-		description: "List unified Finding/Hypothesis evidence, including dependency-advisory candidates and dataflow findings. Static status is separate from runtime_status=not_run. Citations are actual snapshot lines; use read_source before citing additional context.",
-		schema:      `{"type":"object","properties":{"category":{"type":"string","maxLength":32,"description":"sql, command, ssrf, path, template, xss, deserialization, xxe, ldap, dependency or all."},"status":{"type":"string","maxLength":32,"description":"static_confirmed, inconclusive, refuted or all."},"q":{"type":"string","maxLength":256,"description":"Case-insensitive filter over finding, endpoint, component and file fields."},"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
-		fields:      map[string]argumentSpec{"category": {kind: stringArgument}, "status": {kind: stringArgument}, "q": {kind: stringArgument}, "limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
+		description: "List unified Finding/Hypothesis evidence, including dependency-advisory candidates, dataflow findings and multi-language code-audit findings (PHP, C#, Python, JS/TS, Go; id prefixed code: with a location field). Static status is separate from runtime_status=not_run. Citations are actual snapshot lines; use read_source before citing additional context.",
+		schema:      `{"type":"object","properties":{"category":{"type":"string","maxLength":32,"description":"sql, command, ssrf, path, template, xss, deserialization, xxe, ldap, upload, dependency, redirect, xpath or all; code-audit findings match by their rule category."},"status":{"type":"string","maxLength":32,"description":"static_confirmed, inconclusive, refuted or all."},"language":{"type":"string","maxLength":16,"description":"Filter by source language, e.g. java, php, python, csharp, javascript, typescript, go, or all."},"q":{"type":"string","maxLength":256,"description":"Case-insensitive filter over finding id, kind, category, cwe, title, location (file:line), endpoint and component fields."},"limit":{"type":"integer","minimum":1,"maximum":25,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
+		fields:      map[string]argumentSpec{"category": {kind: stringArgument}, "status": {kind: stringArgument}, "language": {kind: stringArgument}, "q": {kind: stringArgument}, "limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
+	},
+	{
+		name:        "list_rules",
+		description: "List the built-in multi-language code-audit rule set (id, languages, category, CWE, severity, pattern counts) so rule IDs can be cited accurately. Rules are declarative name patterns, not semantic analysis; caller-supplied rule files are not listed. Metadata only.",
+		schema:      `{"type":"object","properties":{"category":{"type":"string","maxLength":32,"description":"Filter by rule category, e.g. sql, command, redirect, xpath, or all."},"language":{"type":"string","maxLength":16,"description":"Filter by rule language, e.g. php, python, java, csharp, javascript, typescript, go, or all."},"q":{"type":"string","maxLength":256,"description":"Case-insensitive filter over id, category, cwe, title and languages."}},"required":[],"additionalProperties":false}`,
+		fields:      map[string]argumentSpec{"category": {kind: stringArgument}, "language": {kind: stringArgument}, "q": {kind: stringArgument}},
 	},
 }
 
@@ -188,6 +194,8 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 		result, err = r.traceDataflow(ctx, values)
 	case "list_findings":
 		result, err = r.listFindings(ctx, values)
+	case "list_rules":
+		result, err = r.listRules(ctx, values)
 	}
 	if err != nil {
 		// [03] Only project option/cursor errors are caller mistakes. In particular,

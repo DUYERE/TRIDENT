@@ -7,6 +7,8 @@ import (
 	"strings"
 	"text/scanner"
 	"unicode/utf8"
+
+	"trident/internal/javasrc"
 )
 
 type javaToken struct {
@@ -128,19 +130,25 @@ func parseJavaFile(file, sha256 string, data []byte) (parsedJava, error) {
 	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
 		return parsedJava{}, fmt.Errorf("%w: non-UTF-8 or NUL byte", ErrUnsupported)
 	}
-	// Java text blocks would need their own lexer state; refuse rather than
-	// risk treating block content as code.
-	if bytes.Contains(data, []byte(`"""`)) {
-		return parsedJava{}, fmt.Errorf("%w: Java text blocks are unsupported", ErrUnsupported)
+	// Java text blocks are content, not code: neutralise them into an empty
+	// literal with the same line count instead of dropping the whole file (and
+	// every endpoint declared in it). The skip is disclosed in Problems.
+	code, textBlocks, ok := javasrc.Strip(data)
+	if !ok {
+		return parsedJava{}, fmt.Errorf("%w: unterminated Java text block", ErrUnsupported)
 	}
-	code, comments, err := tokenizeJava(data)
+	tokens, comments, err := tokenizeJava(code)
 	if err != nil {
 		return parsedJava{}, err
 	}
-	parser := &javaParser{file: file, sha256: sha256, code: code, comments: comments}
+	parser := &javaParser{file: file, sha256: sha256, code: tokens, comments: comments}
 	parser.parsePackage()
 	parser.parseTopLevel()
-	return parsedJava{Controllers: parser.Controllers, Endpoints: parser.Endpoints, Problems: parser.Problems, NestedClasses: parser.Nested}, nil
+	problems := parser.Problems
+	if textBlocks > 0 {
+		problems = append(problems, javasrc.TextBlockNote)
+	}
+	return parsedJava{Controllers: parser.Controllers, Endpoints: parser.Endpoints, Problems: problems, NestedClasses: parser.Nested}, nil
 }
 
 func tokenizeJava(data []byte) ([]javaToken, []javaToken, error) {

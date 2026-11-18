@@ -102,7 +102,7 @@ func findingFor(report Report, path string) Finding {
 
 func TestAnalyzeFixtureJDBCSQLFlow(t *testing.T) {
 	snapshot := fixtureSnapshot(t)
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ public class App {
 }
 `,
 	})
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ public class App {
 }
 `,
 	})
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ public class App {
 }
 `,
 	})
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +486,7 @@ public class App {
 }
 `,
 	})
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,7 +661,7 @@ public class App {
 }
 `,
 	})
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -811,7 +811,7 @@ public class App {
 }
 `,
 	})
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -929,7 +929,7 @@ public class App {
 }
 `,
 	})
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -974,7 +974,7 @@ public class App {
 
 func TestAnalyzeInjectionSinkCategories(t *testing.T) {
 	snapshot := namedFixtureSnapshot(t, "java-injection-sinks")
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1074,7 +1074,7 @@ func TestAnalyzeInjectionSinkCategories(t *testing.T) {
 
 func TestAnalyzeExtraSinkCategories(t *testing.T) {
 	snapshot := namedFixtureSnapshot(t, "java-extra-sinks")
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1183,7 +1183,7 @@ func TestAnalyzeExtraSinkCategories(t *testing.T) {
 
 func TestAnalyzeCollectionTaint(t *testing.T) {
 	snapshot := namedFixtureSnapshot(t, "java-collections")
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1272,7 +1272,7 @@ func TestAnalyzeCollectionTaint(t *testing.T) {
 
 func TestAnalyzeCollectionCrossMethodClearAndReflectedReturn(t *testing.T) {
 	snapshot := namedFixtureSnapshot(t, "java-container-reflect")
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1358,7 +1358,7 @@ func TestAnalyzeCollectionCrossMethodClearAndReflectedReturn(t *testing.T) {
 
 func TestAnalyzeArrayRemoveFieldClearProducesAndChains(t *testing.T) {
 	snapshot := namedFixtureSnapshot(t, "java-flow-gaps")
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1536,9 +1536,11 @@ func TestHasFormatSpecifier(t *testing.T) {
 	}
 }
 
-func TestAnalyzeRejectsTextBlockSource(t *testing.T) {
+func TestAnalyzeNeutralisesTextBlockSource(t *testing.T) {
 	snapshot := snapshotFromFiles(t, map[string]string{
 		"src/main/java/demo/App.java": `package demo;
+import org.springframework.web.bind.annotation.*;
+import java.sql.*;
 @RestController
 public class App {
     private String sql = """
@@ -1551,18 +1553,23 @@ public class App {
 }
 `,
 	})
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.Partial || report.Coverage.JavaFilesRejected != 1 || len(report.Findings) != 0 {
-		t.Fatalf("text block handling: %+v", report)
+	// The file is no longer rejected: the block is neutralised, the endpoint is
+	// inventoried and the skip is disclosed instead of silently ignored.
+	if report.Coverage.JavaFilesRejected != 0 || report.Coverage.JavaFilesScanned != 1 || report.Coverage.EndpointsInventoried != 1 {
+		t.Fatalf("text block handling: %+v", report.Coverage)
+	}
+	if !strings.Contains(strings.Join(report.Limitations, " "), "text_block_content_not_analyzed") {
+		t.Fatalf("text block skip is not disclosed: %+v", report.Limitations)
 	}
 }
 
 func TestAnalyzeAdvancedSinksElementPrecisionAndImports(t *testing.T) {
 	snapshot := namedFixtureSnapshot(t, "java-advanced-sinks")
-	report, err := Analyze(context.Background(), snapshot)
+	report, err := AnalyzeWithOptions(context.Background(), snapshot, Options{EmitUnobserved: true})
 	if err != nil {
 		t.Fatal(err)
 	}

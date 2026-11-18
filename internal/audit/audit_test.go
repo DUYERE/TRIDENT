@@ -209,7 +209,7 @@ public class D {
 	}
 }
 
-func TestInspectRejectsTextBlocksAndSkipsNestedClasses(t *testing.T) {
+func TestInspectNeutralisesTextBlocksAndSkipsNestedClasses(t *testing.T) {
 	snapshot := snapshotFromFiles(t, map[string]string{
 		"src/main/java/demo/Blocks.java": `package demo;
 @RestController
@@ -236,8 +236,8 @@ public class Outer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Coverage.JavaFilesRejected != 1 || !report.Partial {
-		t.Fatalf("text block file not rejected: %+v", report.Coverage)
+	if report.Coverage.JavaFilesRejected != 0 || report.Coverage.JavaFilesScanned != 2 {
+		t.Fatalf("text block file must stay analysable: %+v", report.Coverage)
 	}
 	if endpoint(report, "/from-text-block").Path != "" {
 		t.Fatal("text block content matched as an annotation")

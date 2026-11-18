@@ -67,6 +67,7 @@ type Report struct {
 	Project         Project         `json:"project"`
 	Modules         []Module        `json:"modules"`
 	Dependencies    []Dependency    `json:"dependencies"`
+	Manifests       []Manifest      `json:"manifests"`
 	Artifacts       []Artifact      `json:"artifacts"`
 	Advisories      []AdvisoryInfo  `json:"advisories"`
 	AdvisoryMatches []AdvisoryMatch `json:"advisory_matches"`
@@ -76,6 +77,7 @@ type Report struct {
 
 type Project struct {
 	BuildSystem     string   `json:"build_system"`
+	Ecosystems      []string `json:"ecosystems,omitempty"`
 	RootPOMs        []string `json:"root_poms"`
 	RootGradleFiles []string `json:"root_gradle_files,omitempty"`
 	GradleFileCount int      `json:"gradle_file_count"`
@@ -99,6 +101,8 @@ type Module struct {
 
 type Dependency struct {
 	Module         string `json:"module"`
+	Ecosystem      string `json:"ecosystem,omitempty"`
+	Name           string `json:"name,omitempty"`
 	GroupID        string `json:"group_id"`
 	ArtifactID     string `json:"artifact_id"`
 	Version        string `json:"version,omitempty"`
@@ -107,12 +111,22 @@ type Dependency struct {
 	Optional       bool   `json:"optional"`
 	Direct         bool   `json:"direct"`
 	DeclarationPOM string `json:"declaration_pom"`
+	Manifest       string `json:"manifest,omitempty"`
 	ManagementPOM  string `json:"management_pom,omitempty"`
 	PropertyPOM    string `json:"property_pom,omitempty"`
 	Property       string `json:"property,omitempty"`
 	VersionStatus  string `json:"version_status"`
 	VersionReason  string `json:"version_reason,omitempty"`
 	Duplicate      bool   `json:"duplicate,omitempty"`
+}
+
+type Manifest struct {
+	Path         string `json:"path"`
+	Ecosystem    string `json:"ecosystem"`
+	Kind         string `json:"kind"`
+	Dependencies int    `json:"dependencies"`
+	Status       string `json:"status"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 type AdvisoryInfo struct {
@@ -152,6 +166,9 @@ type Coverage struct {
 	POMsRejected           int    `json:"poms_rejected"`
 	GradleFilesScanned     int    `json:"gradle_files_scanned"`
 	GradleFilesRejected    int    `json:"gradle_files_rejected"`
+	ManifestFilesScanned   int    `json:"manifest_files_scanned"`
+	ManifestFilesRejected  int    `json:"manifest_files_rejected"`
+	ManifestDependencies   int    `json:"manifest_dependencies"`
 	AdvisoriesLoaded       int    `json:"advisories_loaded"`
 	DependenciesDeclared   int    `json:"dependencies_declared"`
 	DependenciesResolved   int    `json:"dependencies_resolved"`
@@ -210,9 +227,6 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 	report.Project.GradleFileCount = len(gradlePaths)
 	if len(pomPaths) == 0 && len(gradlePaths) == 0 {
 		report.Limitations = append(report.Limitations, "no_maven_pom_found", "no_gradle_build_file_found", "artifact_hashes_unavailable")
-		sort.Strings(report.Limitations)
-		report.Limitations = dedupe(report.Limitations)
-		return report, nil
 	}
 	if len(pomPaths) > MaxPOMCount {
 		return Report{}, fmt.Errorf("%w: POM count exceeds %d", ErrLimit, MaxPOMCount)
@@ -298,6 +312,22 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 		sortDependencies(dependencies)
 	}
 
+	manifestDependencies, manifests, manifestCoverage, manifestLimitations, manifestPartial := inspectEcosystems(ctx, snapshot)
+	dependencies = append(dependencies, manifestDependencies...)
+	sortDependencies(dependencies)
+	report.Manifests = manifests
+	report.Coverage.ManifestFilesScanned = manifestCoverage.ManifestFilesScanned
+	report.Coverage.ManifestFilesRejected = manifestCoverage.ManifestFilesRejected
+	report.Coverage.ManifestDependencies = manifestCoverage.ManifestDependencies
+	report.Partial = report.Partial || manifestPartial
+	report.Limitations = append(report.Limitations, manifestLimitations...)
+	for _, manifest := range manifests {
+		if manifest.Ecosystem != "" {
+			report.Project.Ecosystems = appendUniqueString(report.Project.Ecosystems, manifest.Ecosystem)
+		}
+	}
+	sort.Strings(report.Project.Ecosystems)
+
 	switch {
 	case len(pomPaths) > 0 && len(gradlePaths) > 0:
 		report.Project.BuildSystem = "Maven+Gradle"
@@ -305,9 +335,23 @@ func Inspect(ctx context.Context, snapshot *project.Snapshot, opts Options) (Rep
 	case len(pomPaths) > 0:
 		report.Project.BuildSystem = "Maven"
 		report.AnalysisKind = "maven_declaration_inventory"
-	default:
+	case len(gradlePaths) > 0:
 		report.Project.BuildSystem = "Gradle"
 		report.AnalysisKind = "gradle_declaration_inventory"
+	default:
+		report.Project.BuildSystem = "unknown"
+		report.AnalysisKind = "ecosystem_declaration_inventory"
+	}
+	if len(report.Project.Ecosystems) > 0 {
+		joined := strings.Join(report.Project.Ecosystems, "+")
+		if report.Project.BuildSystem == "unknown" {
+			report.Project.BuildSystem = joined
+		} else {
+			report.Project.BuildSystem += "+" + joined
+		}
+		if report.AnalysisKind != "ecosystem_declaration_inventory" {
+			report.AnalysisKind = "multi_ecosystem_declaration_inventory"
+		}
 	}
 	if len(gradlePaths) > 0 {
 		report.Limitations = append(report.Limitations, "gradle_not_executed: common Groovy/Kotlin dependency notations only; no plugins, settings evaluation, version catalogs, BOM/platform resolution or transitive configurations")

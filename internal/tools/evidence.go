@@ -107,6 +107,10 @@ func ExtractEvidence(toolName string, result json.RawMessage) ([]Evidence, error
 			}
 			evidence = append(evidence, citation)
 		}
+	case "propose_patch", "verify_patch", "export_case":
+		// Controlled Case write tools produce local artifacts, not source
+		// evidence. Their result must never feed the read-source ledger.
+		return evidence, nil
 	default:
 		return nil, ErrUnknownTool
 	}

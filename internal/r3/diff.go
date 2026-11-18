@@ -90,15 +90,46 @@ func Apply(workspace string, patch []byte) (PatchResult, error) {
 	if info, statErr := os.Stat(root); statErr != nil || !info.IsDir() {
 		return result, fmt.Errorf("workspace does not exist or is not a directory")
 	}
+	// Plan every file first, then write. A context or range error in the third
+	// file used to leave the first two rewritten; validation errors now abort
+	// before any byte changes, so "failed apply" really means "no change".
+	plans := make([]plannedFile, 0, len(patches))
+	changes := make([]FileChange, 0, len(patches))
 	for _, file := range patches {
-		change, applyErr := applyFile(root, file)
-		if applyErr != nil {
-			return result, applyErr
+		plan, change, planErr := planFile(root, file)
+		if planErr != nil {
+			return result, planErr
 		}
-		result.Files = append(result.Files, change)
+		plans = append(plans, plan)
+		changes = append(changes, change)
 	}
+	applied := 0
+	for _, plan := range plans {
+		if commitErr := commitPlan(root, plan); commitErr != nil {
+			// Only files written before this I/O failure are reported, so the
+			// rollback plan never claims work that did not happen.
+			result.Files = changes[:applied]
+			return result, commitErr
+		}
+		applied++
+	}
+	result.Files = changes
 	sort.Slice(result.Files, func(i, j int) bool { return result.Files[i].Path < result.Files[j].Path })
 	return result, nil
+}
+
+// plannedFile is a validated, not yet written change.
+type plannedFile struct {
+	relative string
+	content  []byte
+	create   bool
+}
+
+func commitPlan(root string, plan plannedFile) error {
+	if plan.create {
+		return writeNewFile(root, plan.relative, plan.content)
+	}
+	return writePatchFile(root, plan.relative, plan.content)
 }
 
 func parsePatch(content string) ([]filePatch, error) {
@@ -205,9 +236,11 @@ func parseHunk(lines []string, start int) (hunk, int, error) {
 		}
 		i++
 	}
-	if seenOld != oldCount || seenNew != newCount {
-		return hunk{}, start, fmt.Errorf("hunk line counts do not match header")
-	}
+	// Models frequently get the optional ,old,new counts wrong while the body
+	// itself is unambiguous. Derive the counts from the body and keep exact
+	// context/removal matching in planFile as the real safety boundary.
+	current.oldCount = seenOld
+	current.newCount = seenNew
 	return current, i, nil
 }
 
@@ -238,24 +271,24 @@ func patchPath(value string) (string, error) {
 	return value, nil
 }
 
-func applyFile(root string, file filePatch) (FileChange, error) {
+func planFile(root string, file filePatch) (plannedFile, FileChange, error) {
 	target, err := safeWorkspacePath(root, file.path)
 	if err != nil {
-		return FileChange{}, err
+		return plannedFile{}, FileChange{}, err
 	}
 	if file.create {
-		return createPatchFile(root, target, file)
+		return planNewFile(target, file)
 	}
 	info, err := os.Lstat(target)
 	if err != nil || !info.Mode().IsRegular() {
-		return FileChange{}, fmt.Errorf("patch target %q is not an existing regular file", file.path)
+		return plannedFile{}, FileChange{}, fmt.Errorf("patch target %q is not an existing regular file", file.path)
 	}
 	before, err := os.ReadFile(target)
 	if err != nil {
-		return FileChange{}, err
+		return plannedFile{}, FileChange{}, err
 	}
 	if len(before) > MaxFileBytes || !utf8.Valid(before) || strings.IndexByte(string(before), 0) >= 0 {
-		return FileChange{}, fmt.Errorf("patch target %q is not a bounded UTF-8 text file", file.path)
+		return plannedFile{}, FileChange{}, fmt.Errorf("patch target %q is not a bounded UTF-8 text file", file.path)
 	}
 	lines := strings.Split(string(before), "\n")
 	eol := "\n"
@@ -274,7 +307,7 @@ func applyFile(root string, file filePatch) (FileChange, error) {
 			start = current.oldStart
 		}
 		if start < cursor || start > len(lines) {
-			return FileChange{}, fmt.Errorf("overlapping or out-of-range hunk in %q", file.path)
+			return plannedFile{}, FileChange{}, fmt.Errorf("overlapping or out-of-range hunk in %q", file.path)
 		}
 		out = append(out, lines[cursor:start]...)
 		index := start
@@ -282,13 +315,13 @@ func applyFile(root string, file filePatch) (FileChange, error) {
 			switch line.kind {
 			case ' ':
 				if index >= len(lines) || lines[index] != line.text {
-					return FileChange{}, fmt.Errorf("context mismatch in %q at line %d", file.path, index+1)
+					return plannedFile{}, FileChange{}, fmt.Errorf("context mismatch in %q at line %d", file.path, index+1)
 				}
 				out = append(out, lines[index])
 				index++
 			case '-':
 				if index >= len(lines) || lines[index] != line.text {
-					return FileChange{}, fmt.Errorf("removal mismatch in %q at line %d", file.path, index+1)
+					return plannedFile{}, FileChange{}, fmt.Errorf("removal mismatch in %q at line %d", file.path, index+1)
 				}
 				index++
 				deletions++
@@ -302,54 +335,45 @@ func applyFile(root string, file filePatch) (FileChange, error) {
 	out = append(out, lines[cursor:]...)
 	after := []byte(strings.Join(out, eol))
 	if len(after) > MaxFileBytes {
-		return FileChange{}, fmt.Errorf("patched file %q exceeds size budget", file.path)
-	}
-	if err = writePatchFile(root, file.path, after); err != nil {
-		return FileChange{}, err
+		return plannedFile{}, FileChange{}, fmt.Errorf("patched file %q exceeds size budget", file.path)
 	}
 	beforeSum := sha256.Sum256(before)
 	afterSum := sha256.Sum256(after)
-	return FileChange{
+	return plannedFile{relative: file.path, content: after}, FileChange{
 		Path: file.path, Additions: additions, Deletions: deletions,
 		SHA256Before: hex.EncodeToString(beforeSum[:]), SHA256After: hex.EncodeToString(afterSum[:]),
 	}, nil
 }
 
-func createPatchFile(root, target string, file filePatch) (FileChange, error) {
+func planNewFile(target string, file filePatch) (plannedFile, FileChange, error) {
 	if _, err := os.Lstat(target); err == nil {
-		return FileChange{}, fmt.Errorf("new file %q already exists", file.path)
+		return plannedFile{}, FileChange{}, fmt.Errorf("new file %q already exists", file.path)
 	} else if !os.IsNotExist(err) {
-		return FileChange{}, err
+		return plannedFile{}, FileChange{}, err
 	}
 	var out []string
 	additions := 0
 	for _, current := range file.hunks {
 		if current.oldStart != 0 || current.oldCount != 0 || current.newStart < 1 {
-			return FileChange{}, fmt.Errorf("new file %q has an invalid hunk range", file.path)
+			return plannedFile{}, FileChange{}, fmt.Errorf("new file %q has an invalid hunk range", file.path)
 		}
 		for _, line := range current.lines {
 			if line.kind != '+' {
-				return FileChange{}, fmt.Errorf("new file %q contains non-addition lines", file.path)
+				return plannedFile{}, FileChange{}, fmt.Errorf("new file %q contains non-addition lines", file.path)
 			}
 			out = append(out, line.text)
 			additions++
 		}
 	}
 	if len(out) == 0 {
-		return FileChange{}, fmt.Errorf("new file %q is empty", file.path)
+		return plannedFile{}, FileChange{}, fmt.Errorf("new file %q is empty", file.path)
 	}
 	after := []byte(strings.Join(out, "\n") + "\n")
 	if len(after) > MaxFileBytes || !utf8.Valid(after) {
-		return FileChange{}, fmt.Errorf("new file %q exceeds size or encoding bounds", file.path)
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return FileChange{}, err
-	}
-	if err := writePatchFile(root, file.path, after); err != nil {
-		return FileChange{}, err
+		return plannedFile{}, FileChange{}, fmt.Errorf("new file %q exceeds size or encoding bounds", file.path)
 	}
 	afterSum := sha256.Sum256(after)
-	return FileChange{
+	return plannedFile{relative: file.path, content: after, create: true}, FileChange{
 		Path: file.path, Additions: additions, Deletions: 0,
 		SHA256Before: "", SHA256After: hex.EncodeToString(afterSum[:]),
 	}, nil
@@ -362,6 +386,32 @@ func safeWorkspacePath(root, relative string) (string, error) {
 		return "", fmt.Errorf("patch path escapes the workspace")
 	}
 	return full, nil
+}
+
+func writeNewFile(root, relative string, content []byte) error {
+	target, err := safeWorkspacePath(root, relative)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return err
+	}
+	// O_EXCL keeps the creation promise: the commit phase cannot silently
+	// overwrite a file that appeared after planning.
+	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = file.Write(content); err != nil {
+		_ = file.Close()
+		_ = os.Remove(target)
+		return err
+	}
+	if err = file.Close(); err != nil {
+		_ = os.Remove(target)
+		return err
+	}
+	return nil
 }
 
 func writePatchFile(root, relative string, content []byte) error {

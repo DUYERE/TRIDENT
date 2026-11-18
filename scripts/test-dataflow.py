@@ -91,6 +91,14 @@ def main():
                        cwd=ROOT, env=env, check=True, timeout=180)
 
         def invoke(*args, failure=False, retries=0):
+            # v14 defaults to evidence-only findings. All legacy fixture
+            # assertions in this script intentionally reproduce the v13/v1
+            # semantics with --emit-unobserved; the low-noise default is
+            # verified separately in scripts/test-java-mainline.py.
+            args = list(args)
+            if len(args) >= 2 and args[0] == "audit" and args[1] == "dataflow" \
+                    and "--emit-unobserved" not in args:
+                args.append("--emit-unobserved")
             # [02] Windows may briefly deny the strict snapshot sharing mode while
             # a freshly written file is scanned; retry only that transient.
             for attempt in range(retries + 1):

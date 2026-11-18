@@ -32,7 +32,11 @@ type VerifyOptions struct {
 	JacocoReport     string
 	Timeout          time.Duration
 	ApproveExecution bool
-	Sandbox          Sandbox
+	// KeepWorkspace preserves the writable copy after a hard failure. The
+	// default removes it so repeated verification does not accumulate full
+	// source trees; validation results are kept in the report either way.
+	KeepWorkspace bool
+	Sandbox       Sandbox
 }
 
 type Report struct {
@@ -158,6 +162,7 @@ func Verify(ctx context.Context, opts VerifyOptions) (Report, error) {
 	if err != nil {
 		report.Error = err.Error()
 		report.OriginalSnapshotIntact = snapshotIntact(ctx, opts.SnapshotDir, opts.SnapshotHash)
+		discardFailedWorkspace(&report, opts)
 		return report, err
 	}
 	validation, err := Validate(ctx, workspace.Path, ValidationOptions{
@@ -174,6 +179,7 @@ func Verify(ctx context.Context, opts VerifyOptions) (Report, error) {
 			report.RuntimeStatus = "isolated_validation_only"
 		}
 		report.OriginalSnapshotIntact = snapshotIntact(ctx, opts.SnapshotDir, opts.SnapshotHash)
+		discardFailedWorkspace(&report, opts)
 		return report, err
 	}
 	report.Validation = &validation
@@ -184,9 +190,25 @@ func Verify(ctx context.Context, opts VerifyOptions) (Report, error) {
 	if !report.OriginalSnapshotIntact {
 		report.Status = "snapshot_integrity_failed"
 		report.Error = "pinned snapshot no longer matches the expected hash"
+		discardFailedWorkspace(&report, opts)
 		return report, fmt.Errorf("pinned snapshot integrity failed after validation")
 	}
 	return report, nil
+}
+
+// discardFailedWorkspace removes the writable copy after a hard failure. The
+// report keeps the outcome; only the source tree is dropped. KeepWorkspace is
+// the explicit escape hatch for inspecting a failed run.
+func discardFailedWorkspace(report *Report, opts VerifyOptions) {
+	if opts.KeepWorkspace || report.Workspace.Path == "" {
+		return
+	}
+	if err := os.RemoveAll(report.Workspace.Path); err != nil {
+		report.Limitations = append(report.Limitations, "failed_workspace_left_in_place: "+err.Error())
+		return
+	}
+	report.Workspace = WorkspaceInfo{}
+	report.Limitations = append(report.Limitations, "failed_workspace_removed: the isolated copy was deleted after the failure; pass keep-workspace to inspect it")
 }
 
 func scorePatch(validation ValidationResult, patch PatchResult) QualityScore {

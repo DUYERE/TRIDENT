@@ -48,6 +48,50 @@ const safePatch = `--- a/src/main/java/demo/A.java
 +public class A { int x = 2; }
 `
 
+func TestApplyNormalizesHunkCounts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "A.java"), []byte(originalJava), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The body has one removal and one addition; the header deliberately lies
+	// about the counts. Exact context matching remains the safety boundary.
+	patch := []byte(`--- a/A.java
++++ b/A.java
+@@ -1,9 +1,9 @@
+ package demo;
+-public class A { int x = 1; }
++public class A { int x = 2; }
+`)
+	changed, err := Apply(root, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed.Files) != 1 || changed.Files[0].Additions != 1 || changed.Files[0].Deletions != 1 {
+		t.Fatalf("changes: %+v", changed)
+	}
+	after, err := os.ReadFile(filepath.Join(root, "A.java"))
+	if err != nil || string(after) != "package demo;\npublic class A { int x = 2; }" {
+		t.Fatalf("after = %q, err = %v", after, err)
+	}
+}
+
+func TestApplyRejectsMismatchedContext(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "A.java"), []byte(originalJava), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := []byte(`--- a/A.java
++++ b/A.java
+@@ -1,99 +1,99 @@
+ package demo;
+-public class A { int x = 9; }
++public class A { int x = 2; }
+`)
+	if _, err := Apply(root, patch); err == nil {
+		t.Fatal("mismatched removal was accepted")
+	}
+}
+
 func TestWorkspaceAndPatchSlice(t *testing.T) {
 	snapshot, imported, source := testSnapshot(t, map[string]string{
 		"src/main/java/demo/A.java": originalJava,

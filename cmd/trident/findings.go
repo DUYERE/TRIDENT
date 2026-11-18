@@ -18,11 +18,15 @@ import (
 func runFindings(ctx context.Context, args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("audit findings", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var snapshotDir, expectedHash, advisoryPath, packageMap string
+	var snapshotDir, expectedHash, advisoryPath, packageMap, codeRules, codeLanguage string
+	var includeCode bool
 	flags.StringVar(&snapshotDir, "snapshot", "", "existing trusted snapshot directory")
 	flags.StringVar(&expectedHash, "snapshot-hash", "", "trusted SHA-256 returned by import; keep outside snapshot")
 	flags.StringVar(&advisoryPath, "advisories", "", "optional explicit local advisory catalog JSON")
 	flags.StringVar(&packageMap, "package-map", "", "optional JSON map from group:artifact to package prefixes enabling bounded reachability")
+	flags.BoolVar(&includeCode, "include-code-audit", false, "also merge multi-language code audit findings")
+	flags.StringVar(&codeRules, "code-rules", "", "optional caller-supplied code audit rule catalog JSON")
+	flags.StringVar(&codeLanguage, "code-language", "", "optional comma-separated code audit language filter")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("invalid findings arguments: %w", err)
 	}
@@ -38,6 +42,9 @@ func runFindings(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := maybeMergeCodeAudit(ctx, snapshot, &report, includeCode, codeRules, codeLanguage); err != nil {
+		return err
+	}
 	return json.NewEncoder(out).Encode(report)
 }
 
@@ -46,11 +53,15 @@ func runFindings(ctx context.Context, args []string, out io.Writer) error {
 func runSARIF(ctx context.Context, args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("audit sarif", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var snapshotDir, expectedHash, advisoryPath, packageMap string
+	var snapshotDir, expectedHash, advisoryPath, packageMap, codeRules, codeLanguage string
+	var includeCode bool
 	flags.StringVar(&snapshotDir, "snapshot", "", "existing trusted snapshot directory")
 	flags.StringVar(&expectedHash, "snapshot-hash", "", "trusted SHA-256 returned by import")
 	flags.StringVar(&advisoryPath, "advisories", "", "optional explicit local advisory catalog JSON")
 	flags.StringVar(&packageMap, "package-map", "", "optional JSON map from group:artifact to package prefixes enabling bounded reachability")
+	flags.BoolVar(&includeCode, "include-code-audit", false, "also merge multi-language code audit findings")
+	flags.StringVar(&codeRules, "code-rules", "", "optional caller-supplied code audit rule catalog JSON")
+	flags.StringVar(&codeLanguage, "code-language", "", "optional comma-separated code audit language filter")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("invalid sarif arguments: %w", err)
 	}
@@ -64,6 +75,9 @@ func runSARIF(ctx context.Context, args []string, out io.Writer) error {
 	defer snapshot.Close()
 	report, err := findings.Analyze(ctx, snapshot, findings.Options{AdvisoryPath: advisoryPath, PackageMapPath: packageMap})
 	if err != nil {
+		return err
+	}
+	if err := maybeMergeCodeAudit(ctx, snapshot, &report, includeCode, codeRules, codeLanguage); err != nil {
 		return err
 	}
 	document, err := sarif.Build(report, "")

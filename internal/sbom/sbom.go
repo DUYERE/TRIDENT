@@ -291,6 +291,12 @@ func metadataProperties(report sca.Report, opts Options) []Property {
 }
 
 func componentRef(dependency sca.Dependency) string {
+	if dependency.Ecosystem != "" {
+		if value := purl(dependency); value != "" {
+			return value
+		}
+		return "trident:" + dependency.Ecosystem + ":" + dependency.Name
+	}
 	return mavenRef(dependency.GroupID, dependency.ArtifactID, dependency.Version)
 }
 
@@ -332,10 +338,70 @@ func artifactHashes(report sca.Report) map[string][]Hash {
 }
 
 func purl(dependency sca.Dependency) string {
-	if dependency.Version == "" || !safePURLPart(dependency.Version) || !safePURLPart(dependency.GroupID) || !safePURLPart(dependency.ArtifactID) {
+	if dependency.Version == "" || !safePURLPart(dependency.Version) {
+		return ""
+	}
+	switch dependency.Ecosystem {
+	case "npm":
+		name := dependency.Name
+		if name == "" {
+			name = refPart(dependency.GroupID, dependency.ArtifactID)
+		}
+		return purlWithNamespace("npm", npmNamespace(name), npmName(name), dependency.Version)
+	case "composer":
+		return purlWithNamespace("composer", dependency.GroupID, dependency.ArtifactID, dependency.Version)
+	case "nuget":
+		return purlWithNamespace("nuget", "", dependency.ArtifactID, dependency.Version)
+	case "pip", "python":
+		name := dependency.Name
+		if name == "" {
+			name = dependency.ArtifactID
+		}
+		return purlWithNamespace("pypi", "", strings.ToLower(name), dependency.Version)
+	case "go":
+		module := dependency.Name
+		if module == "" {
+			module = refPart(dependency.GroupID, dependency.ArtifactID)
+		}
+		return purlWithNamespace("golang", "", module, dependency.Version)
+	}
+	if !safePURLPart(dependency.GroupID) || !safePURLPart(dependency.ArtifactID) {
 		return ""
 	}
 	return "pkg:maven/" + refPart(dependency.GroupID, dependency.ArtifactID) + "@" + dependency.Version
+}
+
+func purlWithNamespace(kind, namespace, name, version string) string {
+	if name == "" || !safePURLPath(name) || (namespace != "" && !safePURLPath(namespace)) {
+		return ""
+	}
+	if namespace == "" {
+		return "pkg:" + kind + "/" + name + "@" + version
+	}
+	return "pkg:" + kind + "/" + namespace + "/" + name + "@" + version
+}
+
+func npmNamespace(name string) string {
+	if index := strings.Index(name, "/"); strings.HasPrefix(name, "@") && index > 0 {
+		return strings.ReplaceAll(name[:index], "@", "%40")
+	}
+	return ""
+}
+
+func npmName(name string) string {
+	if index := strings.Index(name, "/"); strings.HasPrefix(name, "@") && index > 0 {
+		return name[index+1:]
+	}
+	return name
+}
+
+func safePURLPath(value string) bool {
+	for _, r := range value {
+		if r <= ' ' || r == '\\' || r == '?' || r == '#' || r == '@' {
+			return false
+		}
+	}
+	return true
 }
 
 func refPart(group, artifact string) string {
@@ -359,7 +425,11 @@ func safePURLPart(value string) bool {
 
 func findDependency(dependencies []sca.Dependency, match sca.AdvisoryMatch) sca.Dependency {
 	for _, dependency := range dependencies {
-		if dependency.Module == match.Module && dependency.GroupID+":"+dependency.ArtifactID == match.Dependency && dependency.Version == match.DeclaredVersion {
+		name := dependency.Name
+		if name == "" {
+			name = dependency.GroupID + ":" + dependency.ArtifactID
+		}
+		if dependency.Module == match.Module && (name == match.Dependency || dependency.GroupID+":"+dependency.ArtifactID == match.Dependency) && dependency.Version == match.DeclaredVersion {
 			return dependency
 		}
 	}

@@ -13,8 +13,9 @@ func TestRepairStopsOnModelFailureWithoutRetry(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	report, err := Repair(context.Background(), RepairOptions{
 		Snapshot: snapshot, SnapshotDir: imported.Path, WorkspaceRoot: workspaceRoot, MaxRounds: 3, Client: client,
-		Propose: ProposeOptions{Paths: []string{"src/main/java/demo/A.java"}, Goal: "fix", Model: "fake", MaxOutputTokens: 128},
-		Verify:  VerifyOptions{Profile: "javac", MainClass: "demo.A", ApproveExecution: true},
+		ApproveExecution: true,
+		Propose:          ProposeOptions{Paths: []string{"src/main/java/demo/A.java"}, Goal: "fix", Model: "fake", MaxOutputTokens: 128},
+		Verify:           VerifyOptions{Profile: "javac", MainClass: "demo.A", ApproveExecution: true},
 	})
 	if err != nil {
 		t.Fatal(err)
