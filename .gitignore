@@ -7,7 +7,15 @@ secrets/
 
 tests/fixtures/**/target/
 
+# Case 复现目录只保留证据与脚本；应用副本、MySQL 数据目录和工具二进制不入库
+cases/*/dbdata/
+cases/*/target/
+cases/*/patched/
+cases/*/composer.phar
+cases/*/vendor/
+
 logs/
+.playwright-mcp/
 .trident/
 .workbuddy/
 *.exe~
