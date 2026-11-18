@@ -8,7 +8,7 @@
 
 1. `internal/sca` 的声明级 Maven 依赖与固定公告精确版本匹配；
 2. `internal/audit` 的 Spring MVC 注解级入口清单；
-3. `internal/dataflow` 的 JDBC SQL Source/Sink 有界数据流。
+3. `internal/dataflow` 的 JDBC SQL Source/Sink 有界数据流（v14 起为默认低噪声证据输入：无观察路径、通用 `unresolved_call` 边界与 MyBatis `#{}` 绑定不再生成 finding，详见 [数据流契约](dataflow-contract.md) §6；`--emit-unobserved` 复现 v1）。统一证据模型不改变任何 finding 的静态/运行时状态，也不把被抑制的证据重新解释为安全结论。
 
 关联只提供上下文，不产生新的漏洞结论，也不把静态证据升级为运行时证据。
 
@@ -110,7 +110,7 @@ Finding ID：
 - 身份：`schema_version=1`、`tool_version`、`snapshot_hash`、`analysis_kind=unified_finding_evidence_v1`、`partial`。
 - `findings[]`：上述字段与假设。
 - `coverage`：finding/hypothesis 状态计数；SCA 依赖与 candidate/unknown/not_affected 计数；入口数；数据流 finding 数；权限控制数、`authz_unprotected` 与权限 finding 数；`java_ast=restricted_subset|partial|not_available`（透传 dataflow，仅声明/调用分辨率，不参与 sink/source 匹配）、`sca_resolution=declaration_only`、`taint_analysis=bounded_lexical_multi_category`、`runtime_status=not_run`、`dependency_reachability=unverified|bounded_entry_call_graph`。
-- `limitations[]`：无 `--package-map` 时包含 `dependency_reachability_unverified`；提供时改为 `reachability_bounded_call_graph` 与 `reflection_not_resolved`，并固定包含 `static_runtime_separation`、`sca_declaration_only`、`advisory_exact_version_only`、`endpoint_inventory_annotation_only`、`dataflow_bounded_lexical`、`authz_control_inventory_lexical`、`authz_unprotected_is_inconclusive`、`absence_is_not_safety`、`correlation_not_exploitation`；子分析 partial 时追加 `sca_report_partial` / `endpoint_inventory_partial` / `dataflow_report_partial` / `authz_report_partial` / `reachability_report_partial`。
+- `limitations[]`：无 `--package-map` 时包含 `dependency_reachability_unverified`；提供时改为 `reachability_bounded_call_graph` 与 `reflection_not_resolved`，并固定包含 `static_runtime_separation`、`sca_declaration_only`、`advisory_exact_version_only`、`endpoint_inventory_annotation_only`、`dataflow_bounded_lexical`、`dataflow_v14_evidence_only`、`authz_control_inventory_lexical`、`authz_unprotected_is_inconclusive`、`absence_is_not_safety`、`correlation_not_exploitation`；子分析 partial 时追加 `sca_report_partial` / `endpoint_inventory_partial` / `dataflow_report_partial` / `authz_report_partial` / `reachability_report_partial`。
 - 参数、快照或完整性错误返回非零且不输出成功 JSON。
 
 ## 7. 验收

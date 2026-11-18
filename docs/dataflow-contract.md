@@ -1,6 +1,6 @@
 # R2：Source/Sink 静态证据契约（JDBC SQL 与非 SQL 注入类别）
 
-- 日期：2026-11-13（第三片建立；第五片扩展 `StringBuilder`/`StringBuffer`/`String.format`；第六片增加返回值污点与 builder 跨方法突变；第七片增加接口/继承分派与字段污点；第八片增加重载选择与未解析父类型边界；第九片增加 lambda、泛型方法与可变参数重载；第十片增加命令注入、SSRF、路径遍历与模板注入 sink；第十一片增加 XSS、反序列化、XXE 与 LDAP 注入 sink；第十二片增加集合容器污点传播；第十三片增加集合跨方法突变与 `clear`、反射型返回值边界和 `SAXReader`/`XMLReader` XXE；第十四片增加数组下标、`remove` 保守语义、字段集合 `clear`、`produces` 感知的反射型返回值、链式反序列化与更多 XXE 入口）
+- 日期：2026-11-13（第三片建立；第五片扩展 `StringBuilder`/`StringBuffer`/`String.format`；第六片增加返回值污点与 builder 跨方法突变；第七片增加接口/继承分派与字段污点；第八片增加重载选择与未解析父类型边界；第九片增加 lambda、泛型方法与可变参数重载；第十片增加命令注入、SSRF、路径遍历与模板注入 sink；第十一片增加 XSS、反序列化、XXE 与 LDAP 注入 sink；第十二片增加集合容器污点传播；第十三片增加集合跨方法突变与 `clear`、反射型返回值边界和 `SAXReader`/`XMLReader` XXE；第十四片增加数组下标、`remove` 保守语义、字段集合 `clear`、`produces` 感知的反射型返回值、链式反序列化与更多 XXE 入口）；**2026-11-15 第十七片：MyBatis 参数绑定建模、非入口 sink 锚定、默认低噪声证据输出（见 §6）**
 - 状态：已实现并完成本地真实 CLI 验收；**不是 Java AST、完整污点分析或运行时验证**。
 - 入口：`trident audit dataflow`、`internal/dataflow/`、`scripts/test-dataflow.py`。
 
@@ -128,13 +128,13 @@
 
 ## 3. 流分析语义
 
-1. 方法内：简单赋值、字符串 `+` 拼接、builder `append`/`toString`、字面量 `String.format`、构造器与静态工厂结果传播 taint；`String sql = q;`、`String sql = "..." + q`、`String sql = sb.toString();`、`String sql = String.format("...%s", q);`、`URL u = new URL(q);`、`Path p = Paths.get(q);` 可识别。
+1. 方法内：简单赋值、字符串 `+` 拼接、builder `append`/`toString`、字面量 `String.format`、构造器与静态工厂结果传播 taint；`String sql = q;`、`String sql = "..." + q`、`String sql = sb.toString();`、`String sql = String.format("...%s", q);`、`URL u = new URL(q);`、`Path p = Paths.get(q);` 可识别。未单独建模的赋值右值（三元/条件表达式、括号组合等）在扫描判定为带污染时直接传播到左值（`flow.kind=expression`）。
 2. 跨方法：通过字段类型/局部变量类型解析同项目方法（同包或唯一简单类名），沿继承链解析、按简单实参类型消解重载，并处理唯一接口/抽象实现，最多 8 层，visited 防环；tainted 实参映射到目标方法参数，并汇总目标方法的 tainted 返回值与 builder 参数突变。
 3. 显式不建模：控制流分支敏感、循环、别名/points-to、实例/线程区分、其他对象字段与容器、lambda 方法体、泛型类型实参、显式数组实参、无法用简单类型消解的重载、快照外父类型成员、反射目标、外部库实现、框架 sanitizer、链式构造器（`new ProcessBuilder(q).start()`）、`HttpClient` builder 链、框架封装的命令/HTTP/模板调用。
 4. builder 仅当接收者类型解析为 `StringBuilder`/`StringBuffer` 时建模；链式/未知接收者、非字面量 `String.format` 模式、`Locale` 重载均为边界而非猜测。
 5. 返回值/突变摘要只对 resolved 同项目方法成立；重复调用使用同一摘要缓存，递归命中标记 unresolved 而不是假定清洁。
 6. 字段污点按类层级、flow-insensitive 地在单个 finding 内传播；无方法体且实现数不唯一的调用输出 `ambiguous_dispatch` 边界，不猜测实现。
-7. 类/方法/字段解析基于有界词法结构；嵌套类跳过并标记 partial；text block 文件拒绝并标记 partial。
+7. 类/方法/字段解析基于有界词法结构；嵌套类跳过并标记 partial；text block 内容替换为 `""` 加等量真实换行（保留 token 行号）后继续解析，限制记为 `text_block_content_not_analyzed`，不再整文件拒绝。
 8. 每个 finding 输出 endpoint、source、sink/protection/boundary、flow、evidence 和 limitations；`runtime_status` 固定 `not_run`。
 9. 多类别分析对每个参数按类别独立遍历；taint 语义共享，sink 与边界按类别隔离。非 SQL 类别未观察时不出 finding，报告级 limitations 明确“未观察不等于安全”。
 
@@ -163,7 +163,7 @@
   - `/synthetic/customers/unsafe`：`static_confirmed`，跨方法 `CustomerController.unsafe → CustomerRepository.findByNameUnsafe`，字符串拼接后 `Statement.executeQuery`（`CustomerRepository.java:28`），来源 `@RequestParam("name")`。
   - `/synthetic/customers/parameterized`：`refuted`，常量 SQL + `PreparedStatement.setString`（`CustomerRepository.java:39`），仅针对该值参数。
   - `/synthetic/customers/dynamic`：`inconclusive`，tainted 值到达反射 `invoke`，目标不可解析。
-- 负例：直接同方法 sink 确认；常量 SQL + 值绑定 refuted；未解析外部调用/递归/无路径为 inconclusive；字符串中的 SQL 文本不产生 sink；text block 文件拒绝并 partial；快照篡改失败关闭。
+- 负例：直接同方法 sink 确认；常量 SQL + 值绑定 refuted；未解析外部调用/递归/无路径为 inconclusive；字符串中的 SQL 文本不产生 sink；text block 内容不参与匹配但仍扫描全文（limitation=`text_block_content_not_analyzed`）；快照篡改失败关闭。
 - 工程仍无 Git 仓库，无 commit。
 
 第五片实际执行（2026-11-13，`ToolVersion=0.2.0-p0.2+r2-jdbc-sql-flow-v2`、`analysis_scope=single_parameter_jdbc_sql_v2`）：
@@ -322,3 +322,76 @@
 - dataflow 在同一快照上运行 `javaast.ScanSnapshot`，仅用于报告 AST 可解析性：`coverage.java_ast=restricted_subset|partial|not_available`、`java_ast_types`、`java_ast_methods`；拒绝文件不影响既有词法 finding 结论。
 - 限制新增 `java_ast_semantic_model_staged` 与改写后的 `lexical_flow_not_ast`：AST 模型尚未接入 sink/source 匹配，控制流与跨方法污点仍不在范围内。
 - 回归：`python scripts/test-dataflow.py`、`python scripts/test-findings.py` 全部通过；既有 15 套样本的 finding 计数与状态未变（仅新增 coverage 字段）。新旧引擎的音量/能力差异见 `docs/evidence/2026-11-14-java-ast-model.md`。
+
+## 6. 第十七片：Java 主线检测力（2026-11-15）
+
+### 6.1 问题基线（实测，不是推测）
+
+对真实项目 `D:\Code\Java\market`（256 文件、186 入口）运行 v13 `audit dataflow`：**109 条 finding，全部 `CWE-89` / `inconclusive` / `boundary.kind=unresolved_call`，0 条 sink 证据**。根因有三：
+
+1. **ORM 未建模**：Controller → `CustomMapper.selectByExample(...)`，Mapper 是接口无方法体，词法引擎把调用记为「不可解析的库边界」。真实的 `#{...}` 参数绑定证据在 `resources/mapper/*.xml` 中，从未被读取。
+2. **入口锚定**：`analyzeEndpoint` 只从 HTTP 注解参数出发；`main`、`@Scheduled`、`MessageListener`、`ObjectInputStream.readObject()` 等无 controller 的 sink 完全不进分析。
+3. **噪声语义**：SQL 类别对每个 endpoint 参数无条件生成一条 finding，即使既没有 sink、也没有边界或路径；「无观察」被当作结论输出。
+
+### 6.2 默认低噪声语义
+
+- 默认只输出**有观察**的 finding：`sink` / `protection` / `boundary` / taint 路径 / 值绑定 / 内容类型反驳 / 类别 sink 观察，任一成立即可。
+- 「既无路径也无边界」不再生成 finding，改记入 `coverage.unobserved_paths` 与报告级 limitation `unobserved_paths_not_emitted`；**无发现不等于安全**，覆盖率数字不是安全结论。
+- 只有通用 `boundary.kind=unresolved_call`（taint 进入无法解析的调用、但没有类别特定 sink/边界）也默认不生成 finding，记入 `coverage.boundary_only`。反射 `dynamic_invocation`、`ambiguous_dispatch`、`ambiguous_overload`、`unresolved_parent`、`string_format_dynamic` 等高信息量边界仍是 finding。
+- MyBatis `#{}` 参数绑定产生的 `refuted` 也默认不生成 finding，只记 `coverage.mybatis_refuted` 与 `orm.statements[]`；它是框架级安全证据，不是漏洞发现。`--emit-unobserved` 下仍输出完整 `refuted` finding。`${}` 替换确认的 `static_confirmed` 始终输出。
+- `--emit-unobserved` 显式复现 v1 语义（`analysis_kind=source_sink_multi_category_v1`），供既有 16 套样本回归使用；默认输出 `analysis_kind=source_sink_multi_category_v2`。
+- 每条 finding 新增 `evidence_strength`：`sink`（观察到汇点）、`protection`（观察到参数绑定/内容类型反驳）、`boundary`（观察到未解析边界）、`unobserved`（仅兼容开关下出现）。
+
+### 6.3 MyBatis 参数绑定建模
+
+输入：受信任快照中的 `*.xml`（Mapper XML）与 Java 注解 SQL。只读、不解析 DTD、不联网、不执行 SQL。
+
+- 识别 `<mapper namespace="...">` 下 `<select|insert|update|delete id="...">` 语句体，以及 `<sql id="...">` 公共片段；记录 `#{...}` 与 `${...}` 的位置、数量与参数名，带文件 SHA-256 与行号。
+- 识别 `@Select/@Insert/@Update/@Delete/@SelectProvider` 等注解中的字符串字面量 SQL；带 `${}` 的注解 SQL 视为拼接风险，带 `#{}` 的视为绑定。
+- 判定分级（**`${}` 不自动等于漏洞**）：
+  - `parameterized`：语句体内只有 `#{}` → 观察到参数绑定，对应 SQL finding 为 `refuted`，`protection.api=mybatis:<namespace>.<id> (#{})`，仅针对该参数与该语句。
+  - `substitution`：语句体内出现 `${...}`，且参数名与 Java 调用侧的实参/方法参数或 Map key 可关联 → `static_confirmed`，`sink.api=mybatis:<namespace>.<id> (${})`。
+  - `framework_fragment`：`${...}` 出现在 `<sql>` 公共片段 / `<if>` 生成式条件（如 MyBatis Generator 的 `${criterion.condition}`）→ **不确认**注入，记 `boundary.kind=mybatis_internal_substitution`，保持 `inconclusive`。理由：这类替换值由框架内部生成，不是请求参数。
+  - `unknown`：`namespace`/`id` 无法唯一解析、`<include>` 引用到含 `${}` 的片段、动态 SQL provider → 不猜测，保持原有边界语义。
+- 索引按 `namespace.id` 精确匹配，或 `id` 在快照内唯一时按简单名匹配；简单名冲突记 `mybatis_ambiguous_method` 并保留边界结论。
+- 报告新增 `orm` 段：`mappers[]`（命名空间、文件、SHA-256、语句数）、`statements[]`（id、类型、位置、绑定/替换计数、判定）、`coverage.mybatis_*` 计数。`finding.orm` 可选字段指向该语句证据。
+- 明确非目标：不解析 MyBatis 运行时 SQL 构建、`<foreach>` 展开结果、Provider 生成的 SQL、插件/拦截器改写、`resultMap` 语义、数据库方言；`refuted` 只表示该语句观察到的绑定证据，不是全应用安全证明。
+
+### 6.4 脱离 HTTP 入口的 sink 锚定
+
+新增 `trident audit sinks`（`analysis_kind=sink_anchored_v1`）与 `audit dataflow --include-sink-anchors`：
+
+- 遍历**全部项目方法**（不限 controller），扫描高危 sink：反序列化 `readObject/readUnshared`、命令 `Runtime.exec/ProcessBuilder.start`、SQL 执行、SpEL/模板求值、XML 解析、LDAP 查询、文件上传写出、出站请求、文件访问。
+- 每条锚点输出：类别/CWE、sink API、文件/SHA-256/行号、所属类与方法、`evidence_strength`、方法参数是否词法可达该 sink 实参、限制。
+- 状态恒为 `inconclusive`，`runtime_status=not_run`：**方法参数不等于攻击者可控输入**，不能升级为 `static_confirmed`；锚点是待人工复核的代码位置，不是漏洞证明。
+- 每个 (file, line, api, cwe) 一条，稳定排序，上限 2000；`--include-sink-anchors` 合并时额外移除 endpoint finding 已覆盖的 (file, line)，独立 `audit sinks` 报告保留全部锚点。
+- 默认不写 `audit dataflow` 的 `findings[]`，只在显式 `--include-sink-anchors` 时合并到 `sink_anchors[]`，避免把大量「仅位置证据」混进漏洞列表。
+
+### 6.5 版本与兼容性
+
+| 项 | v13 | v14 |
+|---|---|---|
+| `tool_version` | `0.2.0-p0.3+r1-source-sink-flow-v13` | `0.2.0-p0.5+r1-source-sink-flow-v14` |
+| `analysis_scope` | `single_parameter_multi_category_v13` | `single_parameter_multi_category_v14` |
+| 默认 `analysis_kind` | `source_sink_multi_category_v1` | `source_sink_multi_category_v2`（`--emit-unobserved` 时为 v1） |
+| 默认 SQL 无路径 | 输出 `inconclusive` | 不输出，记入 coverage |
+| ORM 证据 | 无 | `orm` 段 + `finding.orm` |
+| 非入口 sink | 无 | `audit sinks` / `--include-sink-anchors` |
+
+`findings.Analyze` 与 Web 控制台默认使用 v14 低噪声语义；`scripts/test-dataflow.py` 统一带 `--emit-unobserved` 复现 v1，用于既有 16 套样本回归。旧报告不会被新语义静默重解释。
+
+### 6.6 限制
+
+- MyBatis：`${}` 在框架生成片段中不确认，但也不证明其安全；`<include>`、Provider、动态 SQL、反射 Mapper 绑定未建模；注解 SQL 只识别字面量。
+- Sink 锚定：不证明 source 可控、不建跨方法调用图、不解析框架注册（`@Scheduled`/监听器只作为普通方法扫描）、不判断权限或部署；锚点数量不代表漏洞数量。
+- 低噪声：被抑制的不是「已反驳」，而是「未观察到」；覆盖率提升不等于检测率提升。真实项目检测率仍需在更多项目上验证。
+- 依旧不编译、不运行 Java/Maven、不访问网络、不调用模型；`runtime_status` 恒为 `not_run`。
+
+### 6.7 验收与实测
+
+- `go test ./internal/dataflow -count=1`：MyBatis XML/注解解析、参数绑定与替换判定、框架片段不误报、索引消歧、低噪声过滤、sink 锚点定位与确定性。
+- `python scripts/test-java-mainline.py`（7 组 PASS）：真实 CLI 验收默认低噪声与 `--emit-unobserved` 兼容、MyBatis `refuted`/`confirmed`/`framework_fragment`、注解 SQL、`audit sinks` 对无 controller 类产出锚点、确定性、失败关闭、快照与 fixture 字节不变。
+- 真实项目 `D:\Code\Java\market` 实测（v13 基线 → v14 默认）：`audit dataflow` findings **109 → 0**；v13 的 109 条全部是 `unresolved_call` 的 CWE-89 inconclusive，v14 中 45 条通用边界记入 `coverage.boundary_only`、64 条 MyBatis `#{}` 绑定记入 `coverage.mybatis_refuted`、981 个参数×类别组合无观察记入 `coverage.unobserved_paths`；`orm.statements` 解析出 96 条 SQL 语句（含框架生成片段，未误报注入）；`--emit-unobserved` 下为 109 条（49 inconclusive + 60 refuted）。`audit sinks` 在该项目定位到 1 个非入口锚点（`TestMybatisGenerator.main` 的 `openStream`）。
+- 这些数字只说明**噪声被压制、ORM 证据被显式记录**，不证明该项目没有漏洞，也不构成检测率提升的证明。
+- `python scripts/test-dataflow.py`（带 `--emit-unobserved`）、`test-findings.py`、`test-web.py` 与离线全量门禁回归。
+- 真实项目复测结果写入 `docs/development-progress.md`，只记录实测数字，不把合成样本结论外推为检测率承诺。

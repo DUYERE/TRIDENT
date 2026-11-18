@@ -4,7 +4,7 @@
 
 **当前执行基线：[TRIDENT 统一安全 Agent 执行方案 v2.0](docs/TRIDENT_统一安全Agent执行方案_v2.0.md)。** 旧三角色架构和 P0—P6 平台路线已废止，后续按新方案 R0—R6 推进。
 
-**当前开发基线保留 `0.2.0-p0.2` 离线治理，已新增 R0 样本、R1 快照/四项只读工具、统一 Agent Core/持久 Run/OpenAI 兼容协议适配，R2 离线 Maven/Gradle 声明、公告区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类 Source/Sink 静态证据、统一 Finding/Hypothesis 证据模型、SARIF/import 可达性、只读 Web 分析控制台、九个 Agent 只读工具和 CycloneDX SBOM，以及 R3 补丁生成、策略约束、隔离验证（JUnit XML/JaCoCo/多测试类）、质量评分、多轮修复、Docker/gVisor 沙箱。已完成获准的真实模型只读闭环（DeepSeek `deepseek-flash` Run 43、`deepseek-v4-pro` Run 46、真实 `CodeScan-Artex-main` 快照 Run 48）与真实模型补丁生成 + Maven/Docker 验证；其他模型/快照仍需逐次授权。Maven/Gradle 在线有效依赖树、完整 Java AST/污点分析、硬件 VM 隔离、真实项目 AI 补丁与更多生产验证未实现；这不是完整 R1—R6，也不是 MVP。实际验证与限制以进度记录为准。**
+**当前开发基线保留 `0.2.0-p0.2` 离线治理，已新增 R0 样本、R1 快照/四项只读工具、统一 Agent Core/持久 Run/OpenAI 兼容协议适配，R2 离线 Maven/Gradle 声明、公告区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类 Source/Sink 静态证据、统一 Finding/Hypothesis 证据模型、SARIF/import 可达性、只读 Web 分析控制台、九个 Agent 只读工具、CycloneDX SBOM，7 语言统一 IR 的规则驱动代码审计（`audit code`，PHP/.NET/Python/JS-TS/Java/Go），以及 Java 主线 v14（MyBatis `#{}`/`${}` 建模、非入口 `audit sinks` 锚定、默认低噪声证据输出），以及 R3 补丁生成、策略约束、隔离验证（JUnit XML/JaCoCo/多测试类）、质量评分、多轮修复、Docker/gVisor 沙箱。已完成获准的真实模型只读闭环（DeepSeek `deepseek-flash` Run 43、`deepseek-v4-pro` Run 46、真实 `CodeScan-Artex-main` 快照 Run 48）与真实模型补丁生成 + Maven/Docker 验证；其他模型/快照仍需逐次授权。Maven/Gradle 在线有效依赖树、完整 Java AST/污点分析、完整多语言语法前端与跨过程污点、硬件 VM 隔离、真实项目 AI 补丁与更多生产验证未实现；这不是完整 R1—R6，也不是 MVP。实际验证与限制以进度记录为准。**
 
 **开发交接入口：[当前进度与维护记录](docs/development-progress.md)。** 每个切片在该文档记录已实现/已验证/待完成、准确测试结果和下一步，运行时状态不以 Markdown 作为权威源。剩余功能、验收标准与里程碑见 [剩余功能改进计划](docs/improvement-plan.md)。
 
@@ -12,7 +12,7 @@
 
 输入源码与依赖 → 统一 Agent 分析与挖掘 → 获取漏洞证据 → 独立副本生成补丁 → 隔离验证 → 导出报告与补丁。
 
-首版优先 Java / Maven / Spring；先做一个可运行的分析—验证—修复闭环，再扩大覆盖。分析快照只读，修复副本可写，用户原仓库不被自动覆盖。现有治理与事务代码按需复用，不再以继续建设多 Worker/跨角色调度为主线。
+首版优先 Java / Maven / Spring；先做一个可运行的分析—验证—修复闭环，再扩大覆盖。R2 多语言代码审计已用「统一 token IR + 声明式规则」扩展到 PHP、.NET/C#、Python、JavaScript/TypeScript、Go，但仍是受限词法前端，不等于各语言的完整语义分析。分析快照只读，修复副本可写，用户原仓库不被自动覆盖。现有治理与事务代码按需复用，不再以继续建设多 Worker/跨角色调度为主线。
 
 ## 本地源码快照与只读项目工具（R1 首片）
 
@@ -72,7 +72,7 @@ Web 控制台依赖页提供“导出 SBOM”，对应 `GET /api/sbom`。契约�
 
 ## R2 入口清单：Spring MVC / JAX-RS / Servlet 注解级
 
-`audit endpoints` 复用同一只读快照，不编译或运行 Java。它用有界词法扫描识别 Spring MVC `Controller/RestController`、`RequestMapping` 家族，JAX-RS `@Path`/`@GET` 家族与参数绑定，以及 `@WebServlet` 的 `doGet/doPost` 入口；输出路径、符号、文件 SHA-256、起止行、`fixture:*` 锚点与覆盖限制。注释和字符串中的注解不会误匹配；非字面量路径、text block 文件和嵌套类显式标记 unresolved/partial；Servlet 参数未绑定 `HttpServletRequest.getParameter`，因此不带请求 source。**这是入口清单，不是 Java AST、调用图或污点分析；路由声明不等于部署或可利用。**
+`audit endpoints` 复用同一只读快照，不编译或运行 Java。它用有界词法扫描识别 Spring MVC `Controller/RestController`、`RequestMapping` 家族，JAX-RS `@Path`/`@GET` 家族与参数绑定，以及 `@WebServlet` 的 `doGet/doPost` 入口；输出路径、符号、文件 SHA-256、起止行、`fixture:*` 锚点与覆盖限制。注释和字符串中的注解不会误匹配；非字面量路径与嵌套类显式标记 unresolved/partial；text block 内容替换为空串并保留行号后继续扫描，限制记为 `text_block_content_not_analyzed`（text block 内写的注解仍不识别）；Servlet 参数未绑定 `HttpServletRequest.getParameter`，因此不带请求 source。**这是入口清单，不是 Java AST、调用图或污点分析；路由声明不等于部署或可利用。**
 
 ```bash
 # [01] 沿用上一节导入的快照与摘要；不重新读取源目录。
@@ -93,13 +93,13 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit authz --snapshot "$TRID
 
 ## R2 数据流：JDBC SQL 与非 SQL 注入类别 Source/Sink
 
-`audit dataflow` 复用入口清单，对请求绑定参数做有界方法内/跨方法追踪，识别 JDBC SQL sink（`Statement.execute*`、`prepareStatement`、`JdbcTemplate`/`NamedParameterJdbcTemplate` 查询更新家族、JPA/Hibernate `createQuery`/`createNativeQuery`）以及常量结构 `PreparedStatement` + 值绑定的负例；同一引擎还识别命令注入（`Runtime.exec`、`ProcessBuilder` command→start）、SSRF（`URL.openConnection/openStream`、`RestTemplate`、`HttpRequest.uri`、`WebClient.uri`）、路径遍历（文件流构造器、`Files.*`）、模板注入（SpEL `parseExpression`、模板引擎 `process`）、XSS（响应 `write`/`print`/`println`/`append`）、反序列化（`new ObjectInputStream`/`new XMLDecoder`、污点流 `readObject`、链式 `new ObjectInputStream(...).readObject()`）、XXE（`DocumentBuilder`/`SAXParser`/`SAXReader.parse`、`SAXReader`/`XMLReader.read`、`XMLInputFactory` 流/事件读取、`Unmarshaller`、`Transformer`、`SAXBuilder`、`Digester`、`DocumentHelper.parseText`）、LDAP 注入（`InitialDirContext`/`LdapTemplate` 的 `search`/`lookup`/`authenticate`）与上传（`MultipartFile.transferTo`、`Part.write`）。SQL 构造覆盖字符串 `+`、`StringBuilder`/`StringBuffer.append` + `toString()`、字面量 `String.format` 和构造器/静态工厂结果；跨方法还跟踪 resolved 方法的 tainted 返回值、builder 参数突变、接口/继承分派、重载选择（含 lambda、泛型方法、可变参数）、按类层级的字段污点和 import 感知的简单类型解析；容器传播覆盖 `List`/`Set`/`Map`/`Queue` 的 `add`/`put` 写入与 `get`/`values`/`keySet`/`entrySet`/`iterator` 读取、数组元素下标读写、字段容器写入与 `clear`，字面量下标 `set/add(index, value)`/`get(index)`/`remove(index)` 按元素跟踪，非字面量下标回退到容器聚合；resolved 方法可突变调用方集合/数组参数；聚合 `remove` 采用保守语义（保留容器污点并标记限制），不假装未知下标的元素级精度。响应体 `String`/`CharSequence` 返回按入口 `produces` 判定：`text/html`/`application/xhtml+xml` 静态确认 XSS，明确非 HTML 类型记录为 `refuted`，缺失/未解析仍为 `reflected_return` 边界；普通 `@Controller` 返回视图名不产生 XSS finding。仅常量 `append`、无转换符的 `format`、清洁返回值、常量命令/URL/路径/响应/反序列化流/XML/LDAP 或未触及的类别不产生 sink 证据；计算出的格式串、未知 builder 接收者、多实现分派、无法消解的重载、快照外父类型或未知 sink 接收者输出边界。每个参数始终有一个 SQL finding，其他类别仅在该参数观察到对应 sink/边界时附加 finding，均附 flow、文件 SHA、行号和 `fixture:*` 锚点。**这不是完整污点分析或运行时验证；动态/未解析边界和未观察到路径一律 inconclusive，不冒充安全。**
+`audit dataflow` 复用入口清单，对请求绑定参数做有界方法内/跨方法追踪，识别 JDBC SQL sink（`Statement.execute*`、`prepareStatement`、`JdbcTemplate`/`NamedParameterJdbcTemplate` 查询更新家族、JPA/Hibernate `createQuery`/`createNativeQuery`）以及常量结构 `PreparedStatement` + 值绑定的负例；同一引擎还识别命令注入（`Runtime.exec`、`ProcessBuilder` command→start）、SSRF（`URL.openConnection/openStream`、`RestTemplate`、`HttpRequest.uri`、`WebClient.uri`）、路径遍历（文件流构造器、`Files.*`）、模板注入（SpEL `parseExpression`、模板引擎 `process`）、XSS（响应 `write`/`print`/`println`/`append`）、反序列化（`new ObjectInputStream`/`new XMLDecoder`、污点流 `readObject`、链式 `new ObjectInputStream(...).readObject()`）、XXE（`DocumentBuilder`/`SAXParser`/`SAXReader.parse`、`SAXReader`/`XMLReader.read`、`XMLInputFactory` 流/事件读取、`Unmarshaller`、`Transformer`、`SAXBuilder`、`Digester`、`DocumentHelper.parseText`）、LDAP 注入（`InitialDirContext`/`LdapTemplate` 的 `search`/`lookup`/`authenticate`）与上传（`MultipartFile.transferTo`、`Part.write`）。SQL 构造覆盖字符串 `+`、`StringBuilder`/`StringBuffer.append` + `toString()`、字面量 `String.format` 和构造器/静态工厂结果；跨方法还跟踪 resolved 方法的 tainted 返回值、builder 参数突变、接口/继承分派、重载选择（含 lambda、泛型方法、可变参数）、按类层级的字段污点和 import 感知的简单类型解析；容器传播覆盖 `List`/`Set`/`Map`/`Queue` 的 `add`/`put` 写入与 `get`/`values`/`keySet`/`entrySet`/`iterator` 读取、数组元素下标读写、字段容器写入与 `clear`，字面量下标 `set/add(index, value)`/`get(index)`/`remove(index)` 按元素跟踪，非字面量下标回退到容器聚合；resolved 方法可突变调用方集合/数组参数；聚合 `remove` 采用保守语义（保留容器污点并标记限制），不假装未知下标的元素级精度。响应体 `String`/`CharSequence` 返回按入口 `produces` 判定：`text/html`/`application/xhtml+xml` 静态确认 XSS，明确非 HTML 类型记录为 `refuted`，缺失/未解析仍为 `reflected_return` 边界；普通 `@Controller` 返回视图名不产生 XSS finding。仅常量 `append`、无转换符的 `format`、清洁返回值、常量命令/URL/路径/响应/反序列化流/XML/LDAP 或未触及的类别不产生 sink 证据；计算出的格式串、未知 builder 接收者、多实现分派、无法消解的重载、快照外父类型或未知 sink 接收者输出边界。每条 finding 均附 flow、文件 SHA、行号、`fixture:*` 锚点与 `evidence_strength`。**v14 起默认只输出有观察的结论**：无观察路径、仅通用 `unresolved_call` 边界、以及 MyBatis `#{}` 参数绑定都记入 `coverage`，不再生成漏洞 finding；`--emit-unobserved` 可复现 v1 的「每个参数一个 SQL finding」语义。这不是完整污点分析或运行时验证；反射/歧义分派/重载等高信息量边界仍保留为 `inconclusive`，不冒充安全。
 
 ```bash
 go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit dataflow --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH"
 ```
 
-契约见 [数据流契约](docs/dataflow-contract.md)；真实 CLI 验收为 `python scripts/test-dataflow.py`。
+**Java 主线检测力（v14，2026-11-15）**：① MyBatis 建模——读取 Mapper XML 与 `@Select` 等注解 SQL，区分 `#{...}` 参数绑定（安全证据）、`${...}` 字符串替换（SQL 拼接确认）与 MyBatis Generator 风格 `<sql>` 片段中的框架内部替换（不误报），报告带 `orm` 语句清单与文件 SHA-256；② `trident audit sinks` 脱离 HTTP 入口，扫描全部项目方法中的高危 sink（反序列化、命令、SQL、SpEL、XXE、LDAP、上传、SSRF、文件访问），输出待复核锚点，状态恒为 `inconclusive`（方法参数不等于攻击者可控输入）；③ 默认低噪声证据输出。真实项目 `market` 实测 `audit dataflow` findings 从 109 条（全部 inconclusive、0 sink 证据）降为 0 条，64 条 `#{}` 绑定与 45 条通用边界改记 `coverage`，96 条 Mapper SQL 语句进入 `orm`；`--emit-unobserved` 仍可复现旧语义。`audit dataflow --include-sink-anchors` 可把锚点并入报告。契约见 [数据流契约](docs/dataflow-contract.md) §6；真实 CLI 验收为 `python scripts/test-dataflow.py`（兼容模式）与 `python scripts/test-java-mainline.py`（v14）。
 
 ## R2 证据模型：统一 Finding/Hypothesis
 
@@ -137,9 +137,27 @@ go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit java-model --snapshot "
 
 契约见 [入口清单契约](docs/audit-contract.md) §8；验收为 `python scripts/test-java-ast.py`。
 
+## R2 多语言代码审计：`audit code`
+
+既有 R2 链路全部以 Java/Spring 为前提。本片新增语言无关的规则引擎：PHP、.NET/C#、Python、JavaScript/TypeScript、Java、Go 共 7 个受限词法前端输出同一 token/语句 IR，由声明式 source / sink / sanitizer 规则（58 条内置，覆盖 SQL/命令/代码执行/反序列化/路径/SSRF/XSS/XXE/模板/上传/LDAP/开放重定向/XPath）做有界污点分析，输出带文件 SHA-256 与行号的 source → propagation → sink 证据链、声明式 HTTP 入口、语言覆盖与限制。规则可外置（`--rules`），规则集版本随规则数据哈希变化。借鉴 Semgrep 的 taint 规则形态与 Joern 的统一前端/IR 思路，**未引入 tree-sitter/Roslyn/PHP-Parser 等需要 cgo 或外部运行时的解析器**。
+
+**PHP 入口不再只靠框架文件名**：`audit endpoints` 在既有 `index.php/router.php` 候选之外，还会对不位于 `vendor/tests/src/app/lib/config/routes` 等内部目录、且直接读取 `$_GET/$_POST/$_REQUEST/$_FILES/$_COOKIE` 或 `php://input` 的 PHP 脚本生成 `request_script` 文件级候选。它是“该脚本能消费 HTTP 输入”的证据，不是已部署 URL。`internal/authz` 进一步对 `request_script` 做文件内、首次请求访问行之前的词法控制判定：输出 `protected/public/unprotected/unknown`、`control_line`、`matched_controls` 与 `reason`；`/api/endpoints.entries[].authz` 只附着在 `request_script`，应用入口保持“未评估”。ThinkPHP 的动态 `Route::rule`、数据库路由和框架中间件仍保持原有边界；`unprotected` 只表示未识别到守卫，不等于已证明可未授权访问。
+
+**v2 检测力增强**：① 插值字符串感知——PHP 双引号变量、Python f-string、C# `$"..."`、JS/TS 模板字面量内的插值表达式被提取为污染源（字符串文本仍不能产生 sink/路由，注释与字符串诱饵语义保持）；② 同文件函数摘要——source 包装函数（helper 返回请求输入）、sink 包装函数（污染实参流入函数体内 sink）与参数透传按精确简单名连接一层，跨函数证据链标注 `cross_function_wrapper_sink` 限制。
+
+```bash
+go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit code --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH"
+# 只扫 PHP 与 .NET、加载调用者规则、导出 SARIF 2.1.0
+go -C 'E:/pentest agent/TRIDENT' run ./cmd/trident audit code --snapshot "$TRIDENT_PARENT/snapshot" --snapshot-hash "$TRIDENT_HASH" --language php,csharp --rules rules.json --format sarif
+```
+
+`--format findings` 输出统一证据模型；`audit findings --include-code-audit` 与 `audit sarif --include-code-audit` 可显式合并（默认不带该开关时**旧输出字节不变**）。Web 控制台新增 `#/code` 视图与 `GET /api/code-audit` 只读接口。
+
+**这是受限词法前端上的有界、规则驱动审计，不是完整 AST/类型系统/跨过程污点**：不编译、不运行、不导入被审计代码；注释与字符串中的代码形状不参与匹配；参数化查询、显式类型转换与转义按规则抑制；同文件跨函数只按精确简单名摘要一层，跨文件流、重载/动态分发、反射、框架绑定、ORM/AOP、路由部署状态均未解析。`runtime_status` 恒为 `not_run`，无发现不等于安全。契约见 [多语言代码审计契约](docs/code-audit-contract.md)；验收为 `python scripts/test-code-audit.py`（36 条正例 + 负例零误报）与 `go test ./internal/codescan`。
+
 ## R2 Web 分析控制台（一键模式）
 
-`trident web` 提供分析控制台，视图包括概览、安全发现（含证据抽屉）、HTTP 入口（含权限决策）、权限清单、代码模型、依赖与公告、依赖树、可达性、运行时关联、Agent 观测、源码浏览、设置与边界说明。它复用既有快照与全部只读分析包，不新增分析语义，不执行 Java/Maven、不调用模型、不访问网络，也不提供 Agent 运行/审批/执行控制 API。
+`trident web` 提供分析控制台，视图包括概览、安全发现（含证据抽屉）、HTTP 入口（含权限决策）、权限清单、代码审计（多语言规则发现与证据流）、代码模型、依赖与公告、依赖树、可达性、运行时关联、Agent 观测、源码浏览、设置与边界说明。它复用既有快照与全部只读分析包（含多语言规则引擎），不新增分析语义，不执行 Java/Maven、不调用模型、不访问网络，也不提供 Agent 运行/审批/执行控制 API。
 
 **一键启动**：只需要一条命令，快照导入、摘要计算、配置拾取和公告加载全部自动完成，不再需要手工准备 hash 或逐个加参数。
 
@@ -169,6 +187,30 @@ pinned 模式（`--snapshot` + `--snapshot-hash`）保持原有完全只读语�
 控制台仅监听 loopback，支持单用户 `--token` 与多用户 `--tokens` 令牌文件（JSON `[{id, role, token_hash}]`，只存 SHA-256，mtime 热重载支持轮换/撤销）；`--access-log` 记录 JSONL 审计访问日志（time/token_id/method/path/status，永不记录令牌明文）。除登录页外所有 API 与 `/export/report` 都要求令牌与 `X-Trident-Request: console` 头，响应启用 CSP、`nosniff`、`DENY` 与 `no-store`。`/export/report` 输出确定性 HTML 审阅报告（无时间戳、无外部资源，同一快照同一二进制字节一致）。运维信号：未认证 `GET /healthz` 探活与令牌门禁的 `GET /api/metrics` 只读计数器。
 
 首次请求任一分析 API 时，SCA、入口清单、有界数据流、权限清单、Java 语义模型和统一证据模型各运行一次并缓存；失败会作为终态缓存并返回 `analysis_failed`，不会逐请求重试。页面上的 `runtime_status` 恒为 `not_run`，静态确认、`inconclusive`、`refuted` 与 CLI 含义一致。接口、并发与新增可变配置的边界见 [Web 控制台契约](docs/web-console-contract.md)；真实 CLI 验收为 `python scripts/test-web.py`。
+
+## 多 Agent 编排任务（#/tasks）
+
+在单 Run 对话之外，控制台提供目标驱动的**多 Agent 编排**（参考 CodeScan-Artex 三角色，契约见 [多 Agent 编排契约](docs/agent-orchestration-contract.md)）：Planner 事件驱动派发审计意图，多个 Worker 并发用只读工具读码，结论写回可回溯的探索图（目标 → 意图 → 事实 → 候选发现，带血缘）。关键边界：
+
+- **会话仍是治理 Run**：每个规划/执行会话都是普通 `agent_runs`（CAS、预算硬限、checkpoint、引用验证全部继承），工具面零新增写工具；图写回权在引擎——LLM 终局 JSON 的声明经引用覆盖校验后才落图。
+- **三态语义不变**：Agent 产出一律是 `finding_candidate`（候选），不升级引擎的 static_confirmed；`runtime_status` 恒 `not_run`。
+- **Settlement 收尾轮**：编排会话预算最后一轮前自动注入收尾指令（该轮禁发工具），把已获观察写回终局 JSON，防烂尾且不超预算。
+- **操舵**：`#/tasks` 页可注入意图/战略提示/新增目标/登记 allow-deny 约束/停止任务；编排与手动 Run 互斥。
+- 诚实边界：候选发现的确认留给人 + 引擎三态；真实模型下的多轮收敛质量未验证。
+
+## 模型库与角色（渠道目录 + 能力价格）
+
+控制台「设置 → 模型」把模型配置拆成四层：渠道目录（协议/端点/模型预设，服务端离线快照）→ 模型条目（`modelId`、协议、能力、价格、密钥变量名；协议当前只支持 OpenAI 兼容）→ 角色槽位（`main` 对话主 Agent、`planner` 编排规划轮、`worker` 编排执行会话）→ 服务端解析结果（`followed_main`）。条目可以「按模型 ID 查目录」自动补能力与价格，也可以完全手填；目录之外的端点用「自定义渠道」。
+
+- **密钥两种来源**：启动环境变量，或在模型条目里直接填写的本机密钥（`model_keys.json`，0600，优先于环境变量）。前端只看到 `key_present` / `key_source`，永不回显密钥值。
+- **删除受引用保护**：被角色显式引用的条目不能删除，接口返回引用角色列表。
+- **探测有归因**：认证失败、路径 404、上游 5xx、网络不可达、协议不匹配、无模型，分别给出可执行提示；结果不落库。
+- **成本只估算不结算**：按条目的输入/输出单价和 provider 报告的 token 用量估算单次 Run 成本；未声明价格或用量未知时显示「成本未定」，不写 0。不做跨 Run 汇总。
+- **角色只有三个**：对应 TRIDENT 真实存在的三类模型消费方；没有 AI 守门、LLM 复核或监督会话，因此不设这些角色。
+
+契约见 [模型库与角色解析契约](docs/model-library-contract.md)；验收为 `go test ./internal/webui` 与 `go test ./internal/orchestrator`。
+
+运行时开关也在设置里：**「设置 → Agent 与编排」默认只需点一次「一键启用」**——自动识别本机已保存的会话库连接串和 `secrets/*.json` 里具备创建 Run 权限的主体令牌，真实连接校验后立即生效；手动字段收进「高级设置」折叠区。启用后还需在「设置 → 模型」配好主模型与 API Key。公告目录、Package map、运行时关联报告在「设置 → 分析配置」同样可随时改。各页面的「未配置」提示统一指向设置页；只有以固定快照（无 `--workspace`）启动时配置只读，改用 `--workspace` 启动一次即可，此后不再需要重启。凭据只存本机（0600），接口不回显。契约见 [Agent 运行时配置契约](docs/agent-runtime-contract.md) §8。
 
 ## 统一 Agent Core（R1 本地协议验收）
 
@@ -295,6 +337,12 @@ python 'E:/pentest agent/TRIDENT/scripts/test-gradle-resolve.py'
 # [02m] 运行时 HTTP 验证；loopback 服务、不访问外部网络。
 python 'E:/pentest agent/TRIDENT/scripts/test-runtime.py'
 
+# [02n] 多语言代码审计；7 种语言、真实 CLI/Web、不编译或执行被审计源码。
+python 'E:/pentest agent/TRIDENT/scripts/test-code-audit.py'
+
+# [02o] Java 主线：MyBatis #{} / ${}、非入口 sink 锚定、低噪声证据输出。
+python 'E:/pentest agent/TRIDENT/scripts/test-java-mainline.py'
+
 # [03] 显式迁移、真实数据库测试、离线演示、只读迁移检查。
 python 'E:/pentest agent/TRIDENT/scripts/test-local.py'
 
@@ -319,24 +367,26 @@ docker compose --project-directory 'E:/pentest agent/TRIDENT' -f 'E:/pentest age
 
 | 路径 | 内容 |
 |---|---|
-| `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`dataflow.go`、`findings.go`、`reach.go`、`java_model.go`、`web.go`、`patch.go`、`runtime.go`、`agent.go` | version / project / sca / audit / web / patch / runtime / agent / migrate / check / bootstrap / demo-offline |
+| `cmd/trident/main.go`、`project.go`、`sca.go`、`audit.go`、`code_audit.go`、`dataflow.go`、`findings.go`、`reach.go`、`java_model.go`、`web.go`、`patch.go`、`runtime.go`、`agent.go` | version / project / sca / audit（含 code）/ web / patch / runtime / agent / migrate / check / bootstrap / demo-offline |
 | `internal/sca/` | 离线 Maven/Gradle 声明解析、属性/父 POM/依赖管理、公告精确/区间/别名匹配与模块树；Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准） |
 | `internal/audit/`、`internal/authz/`、`internal/dataflow/` | Spring MVC/JAX-RS/Servlet 注解级入口清单；权限/越权控制清单；10 类 Source/Sink 有界数据流 |
+| `internal/codescan/` | 多语言统一 token/语句 IR、7 个语言前端、声明式 source/sink/sanitizer 规则、有界作用域内污点、确定性报告与 SARIF/统一证据模型适配 |
 | `internal/cache/` | 按文件 SHA-256 + 工具版本缓存的派生索引（仅端点元数据，不含源码） |
 | `internal/httpverify/` | 显式 origin 授权的运行时 HTTP 断言、cookie session、角色矩阵/CSRF 与有界证据 |
 | `internal/correlate/` | 静态 findings 与运行时报告的只读 route/method 关联（`correlated`/`ambiguous`/`not_correlated`） |
 | `internal/findings/`、`internal/sarif/`、`internal/reach/`、`internal/javaast/` | 统一 finding/假设/证据模型；SARIF 2.1.0；类级有界入口可达性；受限 Java 语义模型与方法级调用图 |
-| `internal/webui/` | Web 控制台：单/多用户令牌鉴权（SHA-256 文件热重载）、JSON API、确定性 HTML 导出、JSONL 审计访问日志、嵌入的明暗双主题前端资源；`config.go` 提供工作区/一键导入与运行期配置，`model_views.go` 提供权限与代码模型视图 |
+| `internal/javasrc/` | 三个 Java 解析器共用的 text block 中和：`"""` 内容替换为 `""` + 等量换行（保持行号），限制名 `text_block_content_not_analyzed` |
+| `internal/webui/` | Web 控制台：单/多用户令牌鉴权（SHA-256 文件热重载）、JSON API、确定性 HTML 导出、JSONL 审计访问日志、嵌入的明暗双主题前端资源；`config.go` 提供工作区/一键导入与运行期配置，`model_views.go` 提供权限与代码模型视图，`code_audit.go` 提供多语言审计只读接口 |
 | `internal/sbom/` | 确定性 CycloneDX 1.5 序列化与 metadata/component/vulnerability 映射 |
 | `internal/r3/` | 快照工作区复制、统一 diff 应用、策略约束、离线 Maven/javac/JUnit（XML/JaCoCo）验证、质量评分、多轮修复与 Docker/gVisor |
-| `docs/sca-contract.md`、`docs/audit-contract.md`、`docs/dataflow-contract.md`、`docs/findings-contract.md`、`docs/web-console-contract.md`、`docs/sbom-contract.md`、`docs/patch-contract.md`、`docs/runtime-contract.md`、`docs/deployment.md`、`docs/capacity-cost.md`、`docs/benchmark-report.md`、`docs/release-checklist.md` | SCA、入口清单、数据流、证据模型、Web、SBOM、R3、运行时验证、部署、容量成本、基准与发布检查表 |
-| `scripts/test-sca.py`、`test-audit.py`、`test-authz.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-intel.py`、`test-upgrade.py`、`test-runtime.py`、`test-patch.py`、`test-artifact-hash.py`、`test-reachability.py`、`test-java-ast.py`、`verify-offline.ps1`、`benchmark.py` | 真实 CLI 与官方 Schema/真实 Java/Maven/运行时验收、离线门禁和可复现基准 |
+| `docs/sca-contract.md`、`docs/audit-contract.md`、`docs/code-audit-contract.md`、`docs/dataflow-contract.md`、`docs/findings-contract.md`、`docs/web-console-contract.md`、`docs/sbom-contract.md`、`docs/patch-contract.md`、`docs/runtime-contract.md`、`docs/deployment.md`、`docs/capacity-cost.md`、`docs/benchmark-report.md`、`docs/release-checklist.md` | SCA、入口清单、数据流、证据模型、Web、SBOM、R3、运行时验证、部署、容量成本、基准与发布检查表 |
+| `scripts/test-sca.py`、`test-audit.py`、`test-authz.py`、`test-dataflow.py`、`test-findings.py`、`test-web.py`、`test-sbom.py`、`test-intel.py`、`test-upgrade.py`、`test-runtime.py`、`test-patch.py`、`test-artifact-hash.py`、`test-reachability.py`、`test-java-ast.py`、`test-code-audit.py`、`test-java-mainline.py`、`verify-offline.ps1`、`benchmark.py` | 真实 CLI 与官方 Schema/真实 Java/Maven/运行时验收、离线门禁和可复现基准 |
 | `internal/agent/`、`internal/tools/` | 只读主循环、受控工具与检查点/证据 |
 | `internal/model/openai/` | 官方 Go SDK Chat Completions 薄适配，无隐式外发 |
 | `internal/store/agent_runs*.go` | Run 所有者权限、CAS、预算与恢复 |
 | `docs/development-progress.md` | 开发/验收/遗留门禁与维护接续入口 |
 | `internal/project/` | SourceSnapshot、路径边界、完整性与四个只读工具 |
-| `tests/fixtures/` | 合成 Java/Maven 样本、固定情报与预期断言 |
+| `tests/fixtures/` | 合成 Java/Maven 样本、多语言代码审计样本（polyglot-audit）、固定情报与预期断言 |
 | `docs/snapshot-contract.md` | 快照与工具信任边界，不代表完整 R1 |
 | `db/migrate.go` | 固定连接迁移锁、事务与历史校验 |
 | `db/migrations/` | 前向 Schema 迁移，已应用文件不可改写 |

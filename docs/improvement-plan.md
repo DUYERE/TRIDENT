@@ -32,7 +32,7 @@
 > 大幅推进：控制台 `/metrics` Prometheus 抓取端点、真实 Prometheus/Alertmanager 容器联调
 > （`scripts/test-monitoring.py` 四项 PASS）、624 MB 数据量级备份演练实测 RTO 9.8s 与 RPO 语义
 > （`scripts/test-backup-scale.py`）、容量与成本估算模型（`docs/capacity-cost.md`）。
-> 记录见 [开发进度](development-progress.md) 续十一至续二十三。其余项仍为计划。
+> 记录见 [开发进度](development-progress.md) 续十一至续二十三。2026-11-15 追加 P0-5 多语言代码审计引擎（[多语言代码审计契约](code-audit-contract.md)）与 P0-6 Java 主线检测力（[数据流契约](dataflow-contract.md) §6），均已实现并验收。其余项仍为计划。
 
 ## 1. 原则与约束
 
@@ -56,6 +56,8 @@
 | SCA | Maven/Gradle 声明、离线有效树、公告精确版本/声明区间、依赖升级补丁 | 无制品哈希、无在线校验、Gradle 语义子集 |
 | 入口清单 | Spring MVC/JAX-RS/Servlet 注解级 | 无 AST、无路由拼接与部署前缀 |
 | 数据流 | 9 类注入 + 集合/字段/返回值传播，词法有界 | 无完整调用图、无反射/动态代理/AOP/异步 |
+| 代码审计语言覆盖 | 7 语言统一 IR + 58 条声明式规则（v2：插值字符串感知 + 同文件函数摘要 + 开放重定向/XPath）、有界污点、外置规则、SARIF/统一证据导出 | 无完整 AST/类型系统、无跨文件污点/框架绑定/ORM/反射，同文件摘要仅一层且按简单名，未验证真实项目检测率 |
+| Java 主线（v14） | MyBatis `#{}`/`${}`、框架片段不误报、非入口 `audit sinks` 锚定、默认只输出有观察证据 | 无跨过程污点、无框架注册/Provider 解析、sink 锚点不证明 source 可控；检测率未在更多真实项目验证 |
 | 权限 | 方法注解/拦截器/filter/Security matcher 链，Ant 匹配 | 无 filter-chain 顺序语义、无 context-path/网关 |
 | 统一证据 | Finding/Hypothesis、SARIF 2.1.0、SBOM 1.5 | 依赖到入口为 import 级；无 VEX |
 | 补丁闭环 | 调用者/AI 补丁、隔离副本、Maven/javac/JUnit/Docker/gVisor、质量评分、5 轮修复 | 无硬件 VM、Gradle 不跑验证、无回滚/冲突处理 |
@@ -141,6 +143,27 @@
   断言 2 条链、5 protected/3 public/1 unknown、`ROLE_ADMIN`、`external_path=/app/ctx/hello`、
   快照与 fixture 字节不变；`go test ./internal/authz` 覆盖同一场景。
 - **非目标**：不模拟运行时 filter 执行，不解析外部网关规则，不证明未授权访问。
+
+### P0-5 多语言代码审计引擎（已实现，2026-11-15）
+
+- **目标**：打破 R2 全链路只覆盖 Java/Spring 的局限，把代码审计能力扩展到 PHP、.NET/C#、Python、JavaScript/TypeScript、Go，并用同一套证据与规则模型管理，避免逐语言复制 Java 词法流逻辑。
+- **状态**：已实现（`internal/codescan` `0.2.0-p0.5+r1-multi-language-code-audit-v1`、`trident audit code`、`#/code`）。契约见 [多语言代码审计契约](code-audit-contract.md)。
+- **借鉴与决策**：Semgrep taint 规则的 source/sink/sanitizer 声明式形态与规则自带正/负例测试；Joern x2cpg 的「语言前端 → 统一 IR」；CodeQL 的 source/sink/sanitizer 三元组与路径证据。**不引入** tree-sitter/Roslyn/PHP-Parser：需要 cgo 或外部运行时，违反纯 Go/离线/不执行项目代码/确定性输出边界。自研受限词法前端，明确记为边界而非完整语义分析。
+- **实现**：7 个语言前端只描述注释/字符串/成员符/语句切分/路由形状；统一 token/语句 IR（`occurs`/`calls`/`assign`/`scope`）；50 条内置规则（11 类 CWE）+ 调用者规则 JSON（严格 schema 校验、失败关闭、规则集版本随数据哈希变化）；有界作用域内污点（赋值/拼接/注解参数绑定/接收者 sink），`arg_index` 固定 SQL/命令第一参数以抑制参数化查询误报；3 语句内的参数绑定与安全调用作为有界误报控制；输出 source → propagation → sink 证据链、语言覆盖、声明入口、限制。
+- **集成**：`--format findings|sarif` 复用统一证据模型与 SARIF 2.1.0；`audit findings/sarif --include-code-audit` 可显式合并（默认旧输出字节不变）；Web `#/code` 页 + `GET /api/code-audit` + `/api/overview.code` 摘要；控制台受支持源码 > 1500 文件时跳过并显示原因。
+- **验收**：`go test ./internal/codescan` 与 `python scripts/test-code-audit.py` 全通过——7 语言、25 条正例证据链、显式负例零误报、注释/字符串诱饵、7 类漏洞、24 条声明入口、两次输出字节一致、语言过滤、调用者规则与非法规则失败关闭、统一模型/SARIF、默认 findings 向后兼容、错误快照哈希失败关闭、Web 只读接口/筛选/概览摘要、fixture 与快照字节不变。
+- **非目标**：完整 AST/类型系统/CFG、跨过程或跨文件污点、框架绑定与 ORM/AOP/反射解析、字节码/IL 分析、自动定级、在线规则库、真实项目检测率承诺。未写正/负例的内置规则保持「存在但未单独验证」。
+
+### P0-6 Java 主线检测力（已实现，2026-11-15）
+
+- **目标**：解决评审指出的根本短板——真实项目 `market` 的 `audit dataflow` 输出 109 条 finding，全部 CWE-89 / `inconclusive` / `unresolved_call`、0 条 sink 证据；分析只以 HTTP 入口为锚点。
+- **状态**：已实现（`internal/dataflow` `0.2.0-p0.5+r1-source-sink-flow-v14`、`audit sinks`、契约 [数据流契约](dataflow-contract.md) §6）。
+- **实现**：
+  - MyBatis：Mapper XML / 注解 SQL 只读解析，`#{}` 绑定为反驳证据、`${}` 替换为确认证据、Generator 风格 `<sql>` 片段与 `${criterion.condition}` 归为框架内部替换不误报；`orm` 报告带语句清单与 SHA-256，方法解析按简单名唯一性或 namespace 后缀消歧。
+  - 非入口 sink 锚定：`audit sinks` 遍历全部项目方法，输出高危 sink 位置、参数可达性与证据；状态恒 `inconclusive`，不把方法参数当作攻击者可控输入。`--include-sink-anchors` 可合并到 dataflow 报告。
+  - 低噪声：默认只输出有 sink / protection / 类别边界 / 高信息量边界的 finding；无观察路径、通用 `unresolved_call` 边界与 MyBatis `#{}` 反驳改记 `coverage`；`--emit-unobserved` 复现 v1 语义，既有 16 套样本回归不受影响。
+- **验收**：`go test ./internal/dataflow -count=1` 与 `python scripts/test-java-mainline.py`（7 组 PASS）全通过；`test-dataflow.py` 在兼容模式下全绿；真实 `market` 实测 109 → 0 findings、96 条 Mapper SQL 语句、64 条 `#{}` 绑定与 45 条通用边界进入 coverage。`audit sinks` 在合成样本定位 `main` 的 `readObject` 与定时任务的 `exec`。
+- **非目标**：MyBatis 运行时 SQL 构建 / Provider / `<foreach>` 展开 / 插件改写、跨过程污点与框架注册解析、自动证明 source 可控、真实项目检测率承诺。被抑制的是「未观察到」，不是「已反驳」。
 
 ### P1-1 运行时多角色矩阵与 CSRF 自动化
 
@@ -314,6 +337,8 @@
 |---|---|---|
 | M1 证据可信度 | P0-1 制品哈希 + P0-2 可达性 | 两个新验收脚本通过，findings/SBOM 契约更新，回归全绿 |
 | M2 语义层 | P0-3 Java AST 与调用图 | 现有 fixture 零新增误报，新旧对照报告归档 |
+| M2c Java 主线（2026-11-15） | P0-6 MyBatis 建模 + 非入口 sink 锚定 + 低噪声输出 | `go test ./internal/dataflow` 与 `test-java-mainline.py` 通过；真实项目 109 → 0 噪声 finding；兼容开关保留旧语义 |
+| M2b 多语言审计（2026-11-15） | P0-5 统一 IR + 声明式规则 + 7 语言前端 | `go test ./internal/codescan` 与 `python scripts/test-code-audit.py` 通过；默认 findings 输出字节不变；契约与 Web 视图同步 |
 | M3 权限与运行时 | P0-4 权限链 + P1-1 多角色矩阵 | `test-authz.py`/`test-runtime.py` 扩展通过，Tomcat 回归通过 |
 | M4 闭环增强 | P1-2 关联报告 + P1-3 补丁增强 + P1-4 缓存 | 对应脚本通过，性能阈值生效 |
 | M5 平台化 | P2-1 CI 落地 + P2-2 控制台 + P2-3 运维 | runner 全绿记录、控制台验收、运维演练报告 |

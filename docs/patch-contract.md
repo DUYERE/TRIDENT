@@ -49,7 +49,9 @@ trident patch verify \
 - 复制仅通过 `Snapshot.ReadFile` 逐文件读取并校验大小与 SHA-256；不复制 `.trident-manifest.json`。复制失败清理本次新建目录。
 - 仅支持已存在文本文件的统一 diff：`---/+++` 路径必须一致，拒绝 `/dev/null`、重命名、创建、删除、二进制补丁、绝对路径、`..`、反斜杠、盘符、NUL 和引号。
 - 上下文必须逐行精确匹配；没有 fuzz、偏移搜索或自动三方合并。重叠/越界 hunk、行数不匹配、重复文件路径均失败。
-- 补丁写入采用同目录临时文件 + rename，文件权限 0600；工作区保留供调用者检查，不自动删除已成功或失败的工作区。
+- 补丁写入采用同目录随机命名临时文件（`O_EXCL` 创建）+ rename，文件权限 0600；新建文件用 `O_CREATE|O_EXCL` 直接创建，commit 阶段不会覆盖同名文件。
+- `Apply` 分两阶段：先校验并构造全部文件的新内容（上下文/行号/大小/编码），全部通过后才逐个写入。任一文件校验失败时工作区不发生任何改动；只有写入阶段的 I/O 错误才可能留下已提交的前几个文件，并在 `files` 里如实列出。
+- 硬失败（补丁应用失败、验证 setup 失败、验证后快照完整性失败）默认删除本次工作区副本，报告里记录 `failed_workspace_removed`；`--keep-workspace` 保留副本供检查。验证真正执行但未通过时副本仍保留（报告含命令与输出）。
 - 原快照在验证后再次 `project.Open` 校验；失败则状态为 `snapshot_integrity_failed`。
 
 ## 4. 执行隔离与输出
@@ -121,7 +123,7 @@ trident patch verify \
 - Docker/gVisor JUnit：classpath 条目逐个只读挂载到 `/trident-cp/<n>`，容器内完成 main/test 编译与 JUnitCore 运行；JaCoCo agent 挂载为 `/trident-jacoco.jar`。
 - `--sandbox gvisor` 使用 `--runtime=runsc`，启动前通过 `docker info` 检查 runsc 是否注册；未注册时失败关闭，不回退到普通容器。
 - `patch propose` 支持 `--policy` remediation policy（schema_version=1、最大文件/变更行数、禁止新增正则、首选策略）；默认策略限制 4 文件/200 行并禁止新增 `Runtime.exec`、`ObjectInputStream`、`XMLDecoder`。策略是调用者配置，不是安全证明。
-- `patch repair` 在 1—5 轮内重复 propose→verify，每轮使用新的 workspace；模型失败立即停止、不重试，重复 patch SHA 停止；最终 JSON 包含每轮 proposal/validation/quality。
+- `patch repair` 在 1—5 轮内重复 propose→verify，每轮使用新的 workspace；模型失败立即停止、不重试，重复 patch SHA 停止；最终 JSON 包含每轮 proposal/validation/quality。审批是必填参数：`RepairOptions.ApproveExecution` 缺失时 `Repair` 直接拒绝（`repair.go` 的 `validate()`），库不再替调用方置 `true`。
 - `quality` 为启发式 0—100 分（validation、tests、patch size、files、regression clean），不参与通过/失败判定。
 - 验收：`go test ./internal/r3` 覆盖 JUnit 摘要/XML/JaCoCo、policy、repair failure/bounds、quality、gVisor 参数；`python scripts/test-patch.py` 与 `test-patch-ai.py` 通过；硬件 VM 未验证，真实项目仅完成编译级验证。
 - 2026-11-14 实测：本机 Docker 未注册 `runsc` 时 `--sandbox gvisor` 在启动容器前失败关闭，不执行任何命令；该 setup error 的 `runtime_status` 现为 `not_run`，只有真正执行验证命令后才为 `isolated_validation_only`。
@@ -141,3 +143,11 @@ trident patch verify \
 - 验收：`go test ./internal/r3` 覆盖回滚计划、模块路径逃逸/上限、Gradle 构建文件检测；`python scripts/test-patch.py` 的 `[06]` 断言失败/通过报告的 rollback、rubric 版本、`--module .` 聚合、越界模块拒绝，以及 `gradle-test` profile 的命令、退出码、JUnit 汇总与离线限制（使用 PATH 中的桩 `gradle`，只验证命令构造与报告解析，不证明真实 Gradle 构建）。
 - 未验证：真实 Gradle 工具链与离线缓存、多模块真实构建、回滚命令自动化（按非目标保持人工）。
 - 补丁工件：`docs/evidence/2026-11-14-market-access-control.patch`（+207/-0，4 文件）。这只是隔离副本上的编译+单元测试结果，不代表生产部署或所有接口的运行时权限。
+
+## 9. 2026-11-16（补丁闭环硬化）
+
+- `Apply` 原子化：`planFile` 只读+校验+构造新内容，`commitPlan` 统一写入；第二个文件上下文不匹配时第一个文件不再被改写（`improvement_test.go` 的 `TestApplyIsAtomicWhenALaterFileFails`）。
+- 新建文件用 `O_CREATE|O_EXCL`（`writeNewFile`），plan 与 commit 之间即使出现同名文件也不会被 rename 覆盖。
+- `VerifyOptions.KeepWorkspace` 与 `patch verify --keep-workspace`：默认删除硬失败后的副本，避免反复失败的 verify 累积整份源码树；报告保留状态、错误与限制。
+- `RepairOptions.ApproveExecution` 成为必填参数，`Repair` 不再硬编码 `true`；CLI 仍以 `--approve-execution` 显式授权。
+- 验收：`go test ./internal/r3`（新增 `improvement_test.go` 三例，先目睹 RED 再 GREEN）；`go build ./...`、`go vet ./internal/r3 ./cmd/trident` 通过。真实 docker/gVisor 执行仍未验证。

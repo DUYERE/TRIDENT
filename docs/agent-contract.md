@@ -35,7 +35,7 @@
 ## 5. 预算、协议与证据
 
 - 限制模型尝试、工具步数、单次输出、累计 token 预留/报告、请求/响应/协议存储字节和绝对截止时间；耗尽仍须保存停止原因。无可信计数/价格配置时不宣称账单精确上限，未知用量不当零。
-- 单个 Agent 工具结果最多 24 KiB，恢复检查点最多 48 KiB（下层 project 查询允许更大的 256 KiB，本层另设更小持久上下文上限）；请求/响应过大明确失败，不静默截断。已知响应不能仅因上下文容量失败被冒称未知：有界 accounting-only 终态保留响应摘要、实际用量与未保留原因，停止而不是重复收费。服务错误信息只保存分类，不输出原始错误体/请求认证头。
+- 单个 Agent 工具结果最多 24 KiB；恢复检查点不再设 48 KiB 硬上限（2026-11-16 删除），只受整体持久化存储字节预算和请求/响应/协议存储字节限制；请求/响应过大明确失败，不静默截断。已知响应不能仅因上下文容量失败被冒称未知：有界 accounting-only 终态保留响应摘要、实际用量与未保留原因，停止而不是重复收费。服务错误信息只保存分类，不输出原始错误体/请求认证头。
 - 工具参数拒绝未知/重复字段、尾随 JSON、null、不合类型、过深/过大内容。缺失/重复调用 ID 和不支持调用类型失败关闭；拒绝或截断响应中工具不执行。
 - tool 文本始终是不可信数据；系统提示不代替确定性权限。输出继承快照 hash、文件 hash、行号和 partial，不声称 prompt injection 已完全解决。
 - 最终结论为模型推断。引用须能在已保存 read/search 或分析工具实际读取的证据中核对；引用有效只证明出处一致，不证明漏洞成立。没有 AST、运行验证或补丁，不能产生“修复已验证”。
@@ -54,17 +54,17 @@
 
 所有分析工具单次结果仍受 24 KiB 循环上限约束；分页不复制分析缓存，不产生额外源码读取或网络访问。
 
-### 5.2 检查点压缩（v2 扩展）
+### 5.2 检查点压缩（v2 扩展，默认关闭）
 
-- 当检查点编码超过 40 KiB 软目标时，按固定顺序把**较早的工具结果**替换为合法 JSON 标记：`{"truncated":true,"reason":"agent_checkpoint_budget","original_bytes":N,"sha256":"...","preview":"..."}`；保留 system/user、所有 assistant `tool_calls` 与 tool 配对、证据账本以及最新两条工具结果。
-- 仍超过软目标时，从较新的工具结果向旧压缩，但始终保留最新一条完整；若最新一条加其他状态仍超过 48 KiB 硬上限，才最后压缩它，避免 Run 直接失败。
-- `compactions` 与 `compacted_bytes` 写入检查点作为审计字段；最终答案追加固定 limitation，提示历史工具结果被截断、引用旧上下文前应重新读取。压缩不改变证据账本，已实际读取的引用仍可校验。
-- 该策略不调用模型、不做摘要、不丢弃消息，因此仍是有界且确定性的本地预算控制。
+- 48 KiB 检查点硬上限与 40 KiB 软目标已于 2026-11-16 默认关闭：`maxCheckpointBytes=0`、`checkpointCompactTarget=0`，不再因上下文增长停止 Run，也不再自动截断历史工具结果。
+- 压缩实现保留为可选/测试路径。启用时按固定顺序把较早的工具结果替换为合法 JSON 标记：`{"truncated":true,"reason":"agent_checkpoint_budget","original_bytes":N,"sha256":"...","preview":"..."}`；保留 system/user、所有 assistant `tool_calls` 与 tool 配对、证据账本以及最新两条工具结果。
+- 启用时仍超过软目标则从较新的工具结果向旧压缩，但始终保留最新一条完整；若最新一条加其他状态仍超过硬上限，才最后压缩它。
+- `compactions` 与 `compacted_bytes` 写入检查点作为审计字段；启用压缩并发生后，最终答案追加固定 limitation，提示历史工具结果被截断、引用旧上下文前应重新读取。压缩不改变证据账本，已实际读取的引用仍可校验。
 
 ### 5.3 Accounting-only 终态载荷
 
 - 仅当模型响应已获得、但序列化响应/检查点/本地存储字节预算不足时使用；事件为 `model.completed`，目标状态为 `budget_exhausted`。
-- payload 固定为 `{"reason":"response_byte_limit|checkpoint_limit|stored_byte_limit","response":{"sha256":"<64hex>","bytes":N,"stop":"complete|tool_calls|refusal|length","retained":false},"reported_usage":{"known":bool,"input_tokens":N,"output_tokens":N}}`，上限 4096 字节。
+- payload 固定为 `{"reason":"response_byte_limit|stored_byte_limit","response":{"sha256":"<64hex>","bytes":N,"stop":"complete|tool_calls|refusal|length","retained":false},"reported_usage":{"known":bool,"input_tokens":N,"output_tokens":N}}`，上限 4096 字节。旧 Run 可能保留历史 `checkpoint_limit` 值，仅作兼容读取。
 - 不写替换 checkpoint；usage 未知时 used/reserved delta 必须为 0 并保留预留，usage 已知时 used 必须等于 input+output，预留按 prepared 事件严格配对释放。
 - 该终态不可恢复：不重放已获得的响应，不把未知用量记为零，也不冲抵更早的 unknown 预留。
 
@@ -87,7 +87,7 @@
 
 ### 6.2 压缩与证据导出（2026-11-13）
 
-- 检查点压缩仍不提高 48 KiB 硬上限，但按工具类型设置确定性预览长度：`read_source` 2048（保留头尾），搜索/列表/入口/依赖 1024，findings/dataflow/公告 1536，其他 512；标记始终是合法 JSON，并附带 `tool/original_bytes/sha256/preview` 与可用时的 `summary`（`total/offset/limit/partial/counts/coverage`）。
+- 检查点压缩默认关闭；启用时按工具类型设置确定性预览长度：`read_source` 2048（保留头尾），搜索/列表/入口/依赖 1024，findings/dataflow/公告 1536，其他 512；标记始终是合法 JSON，并附带 `tool/original_bytes/sha256/preview` 与可用时的 `summary`（`total/offset/limit/partial/counts/coverage`）。
 - 压缩不调用模型、不删除消息、不破坏 tool_call/result 配对；最新结果默认保持完整，只有硬上限仍超出时才压缩。
 - `agent export --id --out` 只读导出 Run 与分页收集的全部 Step，默认 30 天保留窗口（`--retention-days` 1—3650），超期需显式 `--include-expired`；`--max-bytes` 默认 1 MiB、最大 8 MiB，超限失败关闭。导出不写数据库、不删除 append-only 记录。
 - 数据库 agent 表保持 append-only；本片没有实现物理删除或自动清理，保留策略是访问控制而非 DB pruning。

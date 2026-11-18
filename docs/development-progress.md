@@ -9,13 +9,68 @@
 | P0.1/P0.2 离线治理 | 已实现，历史验收记录保留 | `p0-contracts.md`、`p0-acceptance.md` |
 | R0 合成 Java/Maven 样本与断言 | 已交付；未执行 Java/Maven/JUnit | `java-fixture-acceptance.md`、`tests/fixtures/java-maven/` |
 | R1 快照与四项只读工具 | 已实现并完成本地验收 | `snapshot-contract.md`、`internal/project/` |
-| R1 Core、Run、OpenAI 适配 | 已实现并完成本地协议验收与两次真实模型只读闭环；DeepSeek `reasoning_content`/Schema 数值兼容、48 KiB 检查点确定性压缩、按工具类型的保留策略与有界结果摘要已实现 | `agent-contract.md`；下方 2026-11-12 与 2026-11-13 记录 |
+| R1 Core、Run、OpenAI 适配 | 已实现并完成本地协议验收与两次真实模型只读闭环；DeepSeek `reasoning_content`/Schema 数值兼容、48 KiB 检查点硬上限已于 2026-11-16 删除（压缩保留为可选/测试路径） | `agent-contract.md`；下方 2026-11-12 与 2026-11-13 记录 |
 | R1 真实模型自主工具闭环 | 已完成获准验收：DeepSeek `deepseek-flash` Run 43、`deepseek-v4-pro` Run 46，均仅合成样本且 `completed`；其他模型/快照需逐次授权 | `agent-contract.md` §6.1；下方 2026-11-13 记录 |
 | R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准）、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0、本地制品 SHA-256/调用者哈希清单、类级有界入口可达性、受限 Java 语义模型与方法级调用图已实现并验收；AST 尚未接入污点引擎，完整控制流/跨方法污点未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/`、`internal/javaast/` |
 | R2 只读 Web 分析控制台 | 已实现并完成本地验收；单快照、loopback、令牌鉴权、只读 JSON API 与嵌入前端；不改变分析语义，不提供 Agent 控制 API | `web-console-contract.md`、`internal/webui/`、`cmd/trident/web.go` |
 | R2 Agent 分析工具 | 已实现并完成本地验收与真实模型/真实项目使用；5 个分析工具、分析缓存、Run 公告配置、实际读取行引用与证据账本桥接 | `agent-contract.md`、`internal/tools/analysis.go`、`internal/agent/` |
 | R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射、本地观测制品 SHA-256；无传递树，依赖可达性不写入 SBOM | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
 | R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/maven-compile/maven-test/javac/JUnit、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；支持新文件/BOM/多文件补丁；真实 Java/Maven/JUnit、真实模型合成补丁、真实项目编译级补丁、集中式访问控制运行时单测与真实 Tomcat/MySQL HTTP 权限测试已完成；运行时 HTTP 验证执行器已实现（显式 origin、cookie session、有界断言）；硬件 VM 与生产验证未实现 | `patch-contract.md`、`runtime-contract.md`、`internal/r3/`、`internal/httpverify/`、`cmd/trident/patch.go`、`cmd/trident/runtime.go`、`docs/evidence/2026-11-14-market-access-control.patch` |
+
+## 2026-11-18：PHP 请求脚本端点级鉴权证据（续 P1.5）
+
+### 修改
+
+- `internal/authz`：新增 `request_script` 作用域的 PHP 脚本适配器。复用 `entrypoint.PHPRequestAccessLine` 绑定首次请求访问行，在文件内、该行之前识别 `permission_check`、`role_check`、`session_guard`、`auth_call`、`auth_file`、`middleware` 与 `explicit_public`；输出 `protected | public | unprotected | unknown`，并带 `control_line`、`matched_controls`、`reason`。
+- `internal/entry`：统一入口只对 `kind=request_script` 附着 `authz`；`application_entry` 不再误收脚本鉴权（此前 `public/router.php` 曾被标“无控制”）。
+- `internal/webui`：`/api/authz` 的 `language_adapters` 返回 `scope/control_line/matched_controls`；`/api/endpoints.entries[].authz` 显示脚本决策、访问要求、原因和控制行；`#/authz` 统计增加“未知/公开”，`#/endpoints` 权限列显示脚本结论。
+- 排除噪声：`isVendorPath` 增加 `static/assets/extend/thinkphp/library/libraries/tests/docs/examples/third_party...`，避免 PHPExcel、UEditor、ThinkPHP 框架文件进入语言适配。
+- 新增 `tests/fixtures/php-script-authz/public/` 夹具：protected、public、open、late、require-auth、role、permission、conflict、same-line、no-request、static 与 thinkphp/library 排除用例。
+
+### 验证
+
+- `go test ./... -count=1`、`go vet ./...`、`node --check internal/webui/assets/app.js` 全部 exit 0（此结果对应最终路径过滤版本；`trident-p2f.exe` 已构建并重启 8791/8793）。
+- `go test ./internal/authz ./internal/entry ./internal/webui -count=1` 通过；`internal/authz` 断言 `protected/public/unprotected/unknown`、控制行与 `application_entry` 不附着。
+- 真实 Gibbon v30.0.00 五文件子集 `/api/endpoints`：`modules/Reports/archive_manage_uploadPreview.php:42` 为 `protected`（`permission_check@33`），`modules/Reports/archive_manage_addProcess.php:28` 为 `unknown`（`php_script_guard_after_request_access`，控制 `permission_check@32`），`index.php` 为 `application_entry` 且不附着脚本鉴权。
+- 真实 ThinkPHP `www.test.com` `/api/endpoints`：`public/ipapi.php:263` 为 `unprotected`；`public/index.php:23`、`public/router.php:16` 保持 `application_entry`/“未评估”。`/api/authz` 语言适配器从数百条降到 6 条（Gibbon 子集），`thinkphp/library`、`public/static`、`extend/PHPExcel` 噪声被排除。
+
+### 边界
+
+- 仅文件内词法、首次请求访问行之前；`include/require` 目标、分支可达性、中间件执行、跨文件登录态不解析。
+- `unprotected` 只表示未识别到守卫，不等于已证明可未授权访问；`unknown` 不等于漏洞。
+- 仍无路由级/框架中间件 authz、完整 PHP AST 或运行时探测；`/api/authz` 顶部 `authzCounts` 仍只统计 Java 端点，PHP 脚本决策在 `language_adapters` 与统一入口 `authz`。
+
+## 2026-11-18：PHP 语言级入口证据（续 P1.5）
+
+### 修改
+
+- `internal/entrypoint`：在既有 `index.php/router.php` 文件名候选之后，新增有界 `request_script` 第二遍扫描。普通 PHP 脚本读取 `$_GET/$_POST/$_REQUEST/$_FILES/$_COOKIE`、`$_SERVER` 请求键或 `php://input` 时生成文件级候选。
+- 排除 `vendor/node_modules/tests/.../src/app/lib/library/thinkphp/think/static/assets/...` 等框架、依赖和静态资源目录；已由文件名规则识别的入口不重复。
+- `internal/evidence` 新增 `kind=request_script`；`internal/entry` 保留该 kind 与 `request_script_heuristic` 置信度，coverage 区分 `filename_heuristic`、`request_script_heuristic` 与混合来源。
+- `internal/webui/assets/app.js` 显示“请求脚本候选”和对应限制；`docs/multi-language-parity-gap.md` 修正过时的“PHP 无 Composer”等口径。
+
+### 验证
+
+- `go test ./... -count=1`、`go vet ./...`、`node --check internal/webui/assets/app.js` 全部 exit 0；最新二进制 `C:\Users\zx\AppData\Local\Temp\trident-p2.exe` 已重启 8791/8793。
+- 真实 Gibbon 五文件快照 `/api/endpoints`：`entry_total=3`、`entry_partial=false`；`modules/Reports/archive_manage_addProcess.php:28`、`modules/Reports/archive_manage_uploadPreview.php:42` 为 `request_script`；coverage 为 `mixed_entry_heuristics`。
+- ThinkPHP `www.test.com` 快照回归：`entry_total=3`，保留 `public/index.php`、`public/router.php`，新增 `public/ipapi.php:263` 为 `request_script`；`thinkphp/library/think/*` 与 `public/static/.../ueditor` 未被误报。8791 入口页硬刷新后显示“请求脚本候选”。
+- P1-2 的 `export_case` 真实 Run：Run 141 暴露返回的 `export_sha256`/`export_bytes` 按未追加换行的 JSON 计算，与磁盘文件不一致；已改为对实际写入字节计算，并加 `caseagent_test.go` 断言。Run 142 在新二进制下返回 `export_sha256=14fe5ea6...`、`export_bytes=21672`，与磁盘文件 21,672 bytes 的实际 SHA-256 一致；`patch_sha256=34792ae5...` 与真实补丁一致，审计 `audit.jsonl` 末条同步。
+- 真实 Gibbon 全量 `target` 导入仍因目录规模/导入超时未完成；当前使用五文件真实子集。PHP authz 仍只有文件级证据，不生成端点决策；PHP 修复验证仍只有 `php -l`。
+
+## 2026-11-16：删除 48 KiB 检查点硬上限（续九）
+
+### 修改
+
+- `internal/agent/loop.go`：`maxCheckpointBytes` 与 `checkpointCompactTarget` 改为包级变量，生产默认均为 `0`；`loadCheckpoint` 与 `commit` 不再按检查点大小拒绝，模型响应提交也不再产生 `checkpoint_limit` accounting-only 终态；默认不自动压缩历史工具结果。
+- `internal/webui/assets/app.js`：删除“会话上下文超过 48 KiB 检查点上限…”提示；旧 Run 的 `checkpoint limit` reason 仅追加历史说明“该限制已删除，可重新发起”。
+- `docs/agent-contract.md` §5.2/§5.3 与 `docs/agent-orchestration-contract.md` 同步：检查点压缩默认关闭，accounting-only reason 仅保留 `response_byte_limit|stored_byte_limit`；旧 `checkpoint_limit` 仅兼容读取。
+
+### 验证
+
+- 新增 `TestCheckpointLimitDisabledByDefault`、`TestLoadCheckpointAcceptsCheckpointAboveLegacyLimit`、`TestCommitAcceptsCheckpointAboveLegacyLimit`；旧 `TestCompactCheckpointBoundsHistoryWithoutBreakingPairing` 在测试内临时设置 48 KiB/40 KiB，继续覆盖可选压缩路径。
+- `node --check internal/webui/assets/app.js`、`go build ./...`、`go test -count=1 ./...`、`go vet ./...` 全部 exit 0。
+- 控制台以新二进制重启，`/api/agent/runtime` 返回 `ready=true`。真实 Run 121 在 40,391 字节检查点、4 次模型调用/7 次工具调用、27,714 tokens 时仍处于 running，未出现 `checkpoint_limit`；随后在 `search_source` 工具执行阶段挂起，属独立问题，控制台重启后该 Run 以 `unknown` 记录（不冒充完成）。
+- 未构造超过 48 KiB 检查点的真实模型 Run；该边界由 `TestLoadCheckpointAcceptsCheckpointAboveLegacyLimit` 与 `TestCommitAcceptsCheckpointAboveLegacyLimit` 的 60,000 字节载荷覆盖。单个工具结果仍上限 24 KiB，整体 `MaxStoredBytes` 仍为 32 MiB。
 
 ## 2026-11-12：已完成快照切片（上轮基线）
 
@@ -1193,6 +1248,80 @@
 - **顺带修复**：① 令牌输入框一直缺 `class="input"`，吃的是浏览器默认样式——暗色下看不出来，亮色下变成深底浅字，补上后走统一输入样式；② 无令牌启动时 `showLogin(msg, true)` 的提示框与卡片上方说明文字重复，改为不显示（保留会话失效等真实提示）。
 - **验收**：`go vet`、`go test ./internal/webui ./cmd/trident` 通过；浏览器实测暗色/亮色/760px 窄屏三种形态、登录流程（进入控制台→概览）、主题切换跟随。
 
+### 2026-11-15：多语言代码审计引擎（P0-5，主攻代码审计能力）
+
+- **动机**：评审结论指出 R2 全链路只覆盖 Java/Spring，且 Java 自身仍以入口锚点 + 词法流为主。逐语言复制 Java 逻辑会把噪声一起复制，因此改为「统一 IR + 声明式规则」。
+- **借鉴（只取架构/规则形态，不引入代码或依赖）**：Semgrep `mode: taint` 的 source/sink/sanitizer 规则形态与规则自带正/负例测试；Joern x2cpg 的「语言前端 → 统一 IR」；CodeQL 的三元组与路径证据。tree-sitter / Roslyn / PHP-Parser 需要 cgo 或外部运行时，与纯 Go、离线、不执行项目代码、确定性输出的边界冲突，明确不引入。
+- **实现**：新增 `internal/codescan`（model/spec/rules/load/lex/ir/analyze/findings）。7 个语言前端（php、csharp、python、javascript、typescript、java、go）只描述注释、字符串、成员符、语句切分与路由形状；统一 token/语句 IR 含规范化调用链、参数切分、赋值目标与作用域；50 条内置规则覆盖 11 类 CWE；`--rules` 支持调用者规则 JSON，未知字段/重复 ID/非法语言/越界参数一律失败关闭，`ruleset_version` 随规则数据 SHA-256 变化。
+- **关键正确性修复（开发中实测发现，均已加回归测试）**：① `chainsIn` 向左拼成员链时误用循环变量，导致 `end`/`kind` 落在链首 → `db.Query()`、`$request->input()`、`html.escape()` 全部漏识别（漏报 + 转义负例误报）；② Go/JS 无分号语言只按 `;` 切语句，整个函数体被合成一条语句 → Go 全漏报；③ 注解带参数时（`@RequestParam("id")`）kind 变成 call，注解源规则不匹配，且注解参数被注册在类作用域污染兄弟方法 → 改为名称匹配并绑定到所属方法体作用域；④ TS `const name: string = ...` 把类型名当成赋值目标 → 加类型注解/`:=`/多返回值处理；⑤ 方法签名头被当作可执行调用产生重复 finding → 声明头跳过；⑥ 新增 `receiver` sink kind 覆盖 `ois.readObject()` 这类危险输入是接收者而非参数的 API。
+- **集成**：`trident audit code`（`--language`/`--rules`/`--format json|findings|sarif`）；`audit findings|sarif --include-code-audit` 显式合并，默认输出字节不变；`codescan.AsFindingsReport`/`MergeFindings` 复用统一证据模型与 SARIF 2.1.0；Web 新增 `#/code` 页、`GET /api/code-audit`、`/api/overview.code` 摘要，控制台受支持源码 > 1500 文件时跳过并显示原因。
+- **验收（本机 Windows，Go 1.27.1）**：`go test ./... -count=1` 全绿、`go vet ./...` 无告警；`go test ./internal/codescan -count=1` 通过（词法隔离、链规范化、语句切分、赋值目标、流证据、负例、receiver sink、7 语言路由、规则校验、确定性）；`python scripts/test-code-audit.py` 11 组断言全 PASS（7 语言、25 条正例证据链、显式负例零误报、注释/字符串诱饵、7 类漏洞、24 条声明入口、两次输出字节一致、语言过滤、调用者规则与非法规则失败关闭、统一模型/SARIF、默认 findings 兼容、错误哈希失败关闭、Web 只读接口/筛选/概览、样本与快照字节不变）；`python scripts/test-web.py` 9 项 PASS 无回归。新增 fixture `tests/fixtures/polyglot-audit`（含嵌套 go.mod，避免 Go 工具链编译合成 Go 样本）。
+- **浏览器实测**：Edge 打开 `#/code`，渲染 25 行发现、7 语言覆盖、24 条入口、12 条限制与规则集版本；PHP 筛选得到 5 行且全为 PHP；证据流折叠显示 `$_GET → mysql_query` 与 4 步传播；除既有 `/api/agent/threads` 412 外无新增控制台错误。首次误判是临时服务用了改动前编译的旧二进制 + 浏览器缓存资源，重新构建并加 cache-bust 参数后恢复正常，非产品缺陷。
+- **未验证 / 遗留**：真实 PHP/.NET/Python/Node/Go 项目检测率、真实框架路由解析、跨函数/跨文件污点、类型系统、框架绑定/ORM/AOP/反射、运行时可利用性；Python 为文件级作用域（已知假阳性来源）；未写正/负例的内置规则只保持存在，不宣称已验证。引擎不编译、不运行、不导入被审计代码，不访问网络、不调用模型。
+- **契约与文档**：新增 `docs/code-audit-contract.md`；同步 README、improvement-plan（P0-5/M2b）、web-console-contract（API/视图/缓存/限制/验收）、release-checklist、`scripts/verify-offline.ps1`（15 个离线脚本）。
+
+### 2026-11-15：Java 主线检测力（P0-6，MyBatis / 非入口 sink / 低噪声）
+
+- **动机**：上一轮结论明确指出多语言引擎没有解决 Java 老引擎的根本短板。真实项目 `D:\Code\Java\market` 实测基线：`audit dataflow` 109 条 finding，全部 `CWE-89` / `inconclusive` / `boundary.kind=unresolved_call`，**0 条 sink 证据**。
+- **契约先行**：`docs/dataflow-contract.md` §6 先写清默认低噪声语义、MyBatis 分级判定、`audit sinks` 状态纪律与 v13→v14 版本矩阵，再实现。
+- **MyBatis 建模**（`internal/dataflow/mybatis.go`）：读取快照中的 Mapper XML 与 `@Select` 等注解 SQL，识别 `<mapper namespace>`、`<select|insert|update|delete|sql id>`、`#{}` / `${}` 及参数名，带文件 SHA-256 与行号。判定分级：`parameterized`（仅 `#{}`，反驳证据）、`substitution`（语句体内 `${}` 且非框架内部，确认证据）、`framework_fragment`（`<sql>` 片段 / `${criterion.condition}` 等生成式条件，不误报）、`unknown`。索引按 `namespace.id` 或唯一简单名解析，简单名冲突时用接收者类型的 namespace 后缀消歧，歧义不任选。调用点在词法引擎标为 `unresolved_call` 之前消费，证据写入 `finding.orm` / `protection` / `sink` 并指向 XML 行。
+- **非入口 sink 锚定**（`internal/dataflow/sinks.go`、`trident audit sinks`）：遍历全部项目方法（含 `main`、定时任务、监听器，不要求 controller），定位反序列化、命令、SQL、SpEL、XXE、LDAP、上传、SSRF、文件访问等高危 API；输出位置、所属方法、参数词法可达性、`evidence_strength` 与限制。状态恒 `inconclusive`、`runtime_status=not_run`——方法参数不等于攻击者可控输入。`--include-sink-anchors` 可合并进 dataflow 报告，默认不混进漏洞列表。
+- **低噪声**（`internal/dataflow/model.go`）：默认 `analysis_kind=source_sink_multi_category_v2`，只输出有 sink / protection / 类别边界 / 高信息量边界（反射、歧义分派、重载、父类型、动态格式串）的 finding；无观察路径记 `coverage.unobserved_paths`、通用 `unresolved_call` 边界记 `coverage.boundary_only`、MyBatis `#{}` 反驳记 `coverage.mybatis_refuted`。`--emit-unobserved` 复现 v1 语义（`analysis_kind=source_sink_multi_category_v1`），`scripts/test-dataflow.py` 统一带该开关，既有 16 套样本断言不变。每条 finding 新增 `evidence_strength`。
+- **开发中修的实现问题**：① 初次实现把「非 SQL 类别」也按通用 observation 放开，java-maven 从 3 条暴涨到 30 条、market 到 1026 条 → 恢复「非 SQL 类别必须 categoryObserved」；② 注解 SQL 的 `@Select` 在词法流里是 `@` + `Select` 两个 token，且接口方法无方法体，改为从后随 `(` 反推方法名。
+- **验收（Go 1.27.1 / Windows）**：`go test ./internal/dataflow -count=1` 全绿（新增 5 个单测：XML 分级、索引消歧、默认/兼容语义与 MyBatis 证据、非入口锚点、旧样本证据保持）；既有 15 处 `dataflow_test.go` 调用统一改为 `AnalyzeWithOptions(..., Options{EmitUnobserved:true})`，与 `test-dataflow.py` 的兼容开关口径一致，不改写旧断言语义；`python scripts/test-java-mainline.py` 7 组 PASS；`python scripts/test-dataflow.py`（兼容模式）、`test-findings.py`、`test-web.py` 无回归；`powershell -File scripts/verify-offline.ps1` 全绿（16 个脚本）。
+- **真实项目复测**：`market` 默认输出 **109 → 0 findings**；`coverage.unobserved_paths=981`、`boundary_only=45`、`mybatis_refuted=64`、`mybatis_statements=96`；`--emit-unobserved` 仍为 109（49 inconclusive + 60 refuted，其中 60 条由 MyBatis `#{}` 提供反驳证据）。`audit sinks` 定位 1 个非入口锚点（`TestMybatisGenerator.main` 的 `openStream`）。合成样本 `java-mybatis-sinks` 上：`#{}` 反驳、`${}` 确认、`<sql>` 片段不误报、注解 SQL 解析、`main` 的 `readObject` 与定时任务的 `exec` 均被锚定。
+- **诚实边界**：0 findings **不表示项目安全**，只表示没有可输出的静态证据；被抑制的是「未观察到 / 通用边界 / 框架绑定证据」，不是「已反驳漏洞」。MyBatis Provider、`<foreach>` 展开、插件改写、跨过程污点、框架注册解析、运行时可利用性、真实项目检测率均未验证。不编译、不运行 Java/Maven、不访问网络、不调用模型；快照与样本字节不变。
+- **文档同步**：dataflow-contract §6、README、improvement-plan（P0-6 / M2c / 基线表）、release-checklist、verify-offline.ps1、`internal/findings` 新增 `dataflow_v14_evidence_only` 限制说明。
+
+### 2026-11-15：真实 PHP 项目使用反馈（导入转圈 / 0 发现 / 会话消失）
+
+- **用户场景**：`trident.exe web --token <token> --workspace .trident`，导入 `D:\Code\PHP\www\www.test.com`（1084 文件 / 42 MB）。三个反馈均属实，均经只读复现定位。
+- **导入转圈**：`projects.json` 显示导入已成功；瓶颈是 `importProject()` 把 toast 与按钮恢复放在 `await ensureOverview(true)` 之后，而首分析同步执行 `codescan.Analyze` 耗时 **35.4 秒**（`audit findings` 等其他分析各 <0.5 秒）。改：`codescan.Analyze` 从 `analyze()` 移到 `codeMu` 惰性缓存（首次 `/api/code-audit` 才跑，结果/跳过/失败均缓存）；`/api/overview` 未运行时返回 `analysis_pending` 不触发分析；前端导入成功立即反馈、恢复按钮、跳转，不再等待首分析；`#/code` 首次加载提示"大项目可能需要数十秒"。
+- **0 发现的正确性**：不正确——用户看的是「安全发现」页（Java/Spring + SCA + 访问控制统一证据模型），对 PHP 项目为 0 属预期；同一快照 `audit code` 有 **22 条**静态发现（21 PHP + 1 JS，`partial=true`，694/1084 文件）。改：findings 零结果页明确说明覆盖范围并给 `#/code` 跳转；概览多语言卡片在惰性未运行时显示「点击运行（非 Java 项目看这里）」；已缓存时显示发现数。
+- **Agent 会话消失**：启动命令未带 `--agent-dsn`，`agentStore=nil` → `/api/agent/threads` 412，前端原来吞成空列表；且该接口默认按当前 `snapshot_hash` 过滤，切换项目后看不到其它项目会话。两者都不是数据删除。改：中文 412 原因 + 启动示例；`?hash=all` 与「全部项目」按钮取消过滤；空列表按 412 / 其它错误 / 全部项目 / 当前项目分别给出说明。
+- **实测（临时 8798 端口 pinned 同一快照）**：首次 `/api/overview` 0.06 s（`code.available=false`）；`/api/code-audit` 35.68 s、22 条；再次 `/api/overview` 0.00 s、`code.findings=22`；`/api/agent/threads` 412 中文。Edge 实测三个页面渲染与交互正常，除预期 412 无新增控制台错误。
+- **回归**：`go test ./...`、`test-web.py`、`test-code-audit.py`（新增「首次概览惰性」与「会话库中文提示」断言）、`test-java-mainline.py`、`powershell -File scripts/verify-offline.ps1` 全绿。
+- **诚实边界**：22 条是静态证据不是确认漏洞，多条在 `extend/PHPExcel` 第三方库；`partial=true` 表示部分文件触发字节/token 预算；用户 `.trident` 与正在运行的进程全程只读未改动。文档同步 `docs/web-console-contract.md`（API/缓存/视图/限制/验收/实际结果）。
+
+### 2026-11-15：Agent 会话库默认开启（DSN 持久化）
+
+- **需求**：用户不想每次启动都拼 `--agent-dsn` 连接串。实现三层解析：`--agent-dsn` 显式参数 > workspace `console.json` 的 `agent_dsn`（0600，`.trident/` 已 git 忽略）> 环境变量 `TRIDENT_AGENT_DSN`。设置页新增「Agent 会话库」输入框：保存前真连库校验（失败 400 `agent_dsn_invalid` 并保留旧值），成功即热替换观察库并持久化；「清除已保存的连接」恢复未配置态；仅保存 DSN 不再清空分析缓存（`consoleConfig` 相等性比较后才 reset）。
+- **降级语义**：显式 flag 的 DSN 连接失败仍 fail-fast（`AgentDSNExplicit`）；持久化/环境 DSN 失败不阻止启动，`/api/agent/threads` 503 `agent_database_unreachable` 带中文原因，设置页显示详情。新增 `swapAgentStore`（加锁热替换 + 关旧连接）。
+- **实测**：`.trident/console.json` 已写入用户真实 DSN；临时实例（仅 `--workspace .trident`，无 DSN 参数）`threads?hash=all` 返回 **52 条历史 Run**（Run 43/46 Spring 审计、Run 48 CodeScan-Artex）；新增 3 个 Go 回归全绿；`go test ./...`（23 包）、`test-web.py`、`test-code-audit.py`、`test-java-mainline.py`、离线全量门禁通过。
+- **边界**：`console.json` 含数据库凭据，仅本机使用；旧二进制读新 `console.json` 会失败（`DisallowUnknownFields`），升级需整组替换；有效连接的 E2E 依赖真实库，门禁只覆盖无效 DSN 的降级路径。
+
+### 2026-11-15：代码审计引擎 v2（插值感知 + 同文件函数摘要）与 Agent 配合度增强
+
+- **需求**：用户要求深度优化代码审计能力与 Agent 配合度。摸底确认三个真实缺口：① 插值字符串（PHP 双引号变量 / Python f-string / C# `$""` / JS-TS 反引号）内的 source 全部漏报——真实项目最高频注入写法；② 同文件跨函数流（helper→sink）不连接；③ Agent `list_findings` 的 category 过滤对 `code:` 发现失效、无语言/位置筛选、上限 10 条、Agent 无法查询规则集。
+- **引擎 v2**（`tool_version=0.2.0-p0.6+r1-multi-language-code-audit-v2`、`analysis_kind=multi_language_code_audit_v2`、规则集 `trident-core-rules-2026-11-15-v2`）：
+  - 插值感知词法：`languageSpec.Interpolation` + `expandInterpolation`（`lex.go`），插值表达式子词法后注入并打 `fromString` 标记；`dropFromStringChains` 保证字符串文本永远不产生 sink/路由/注解绑定（诱饵语义不变），只在表达式求值中充当 source/sanitizer。子词法失败降级为不透明文字，绝不拒绝整个文件。不插值构造（PHP 单引号/heredoc、Python 普通与 r 前缀、Go 原始字符串、`{{}}` 转义）保持不透明。
+  - 同文件函数摘要（`summary.go`，每规则）：source 包装（return 含 source）、taint-through（参数→返回值）、sink 包装（参数直接流入体内 sink，证据链 `source → propagation(调用点) → sink(函数内)`，limitation 加 `cross_function_wrapper_sink`）；精确简单名（PHP 大小写不敏感）、一层深度、调用点在函数自身作用域内跳过、512 函数/文件上限；Go 取参数段第一个 ident 其余取最后（类型前置/后置差异）。
+  - 新规则 8 条：6 语言开放重定向（`redirect`/CWE-601，Go 为第 3 参数、gin/echo 第 2 参数）+ PHP/Java XPath（`xpath`/CWE-643）。内置规则 50 → 58。
+  - 开发中修的真实问题：C# `$"` 前缀 `i++` 后 StringDelimiters 循环仍用缓存 rune 导致整个文件被判 unterminated string（改用当前索引）；f-string 判定未接入普通字符串 handler；摘要名未按 PHP 大小写规则 normalize；sanitizer wrapper 负例语义修正（净化必须发生在 wrapper 体内 sink 的参数处，v1 宽松传播下实参直连 source 的写法本就会命中）。
+- **Agent 工具面**（`internal/tools`）：`list_findings`/`trace_dataflow` 加 `language` 参数与 `language_<name>` counts、`q` 匹配 `location`（file:line）、分页上限 10→25、`code:` 发现按规则类别双匹配修复（`category=sql` 现在能筛到 `php.sql.query`）；新工具 `list_rules`（内置规则集元数据摘要，`q`/`category`/`language` 过滤，披露规则是名字模式）；工具定义 9 → 10，`list_rules` 压缩预算 2048。
+- **fixture 与验收**：polyglot fixture 追加 11 条 v2 正例（插值 SQL ×3、sink/source 包装 ×2、redirect ×3、xpath、TS 模板 XSS）与负例（非插值字符串 ×4、净化包装器）；`test-code-audit.py` EXPECTED 25 → **36 条**、负例行扩容，11 组断言全 PASS（含负例零误报、字节确定性、默认 findings 兼容、快照字节不变）；`go test ./...` 全仓库全绿（23 包）；`test-web.py` 9 项 PASS。新增 Go 测试：插值提取/不透明负例/字符串 sink 诱饵、函数摘要正负例、redirect/xpath 规则、category/language/location 过滤、limit 25、list_rules。
+- **文档同步**：code-audit-contract §10（v2 契约）、web-console-contract（续十一）、README R2 段、improvement-plan 基线表。
+- **诚实边界**：同文件摘要仅一层、按精确简单名——重载、动态分发、跨文件流、递归、框架绑定仍未解析；插值仅覆盖四种标注形式（heredoc、组合前缀、格式说明符边界不透明）；Agent 语义仍是静态证据引用，不升级为可利用性证明；真实项目检测率未验证。
+
+### 2026-11-15：多 Agent 编排切片（参考 CodeScan-Artex 三角色）
+
+- **需求**：用户要求参考 `E:/pentest agent/CodeScan-Artex-main`（SCA Audit，agent 包 11K 行）实现同等编排。完整读其 mainagent/planner/worker/assembly/constraints/wrapup/coldgraph/finding_workflow 后落地 C 级方案：三角色 + 探索图 + PG 存储。
+- **架构决策（与 Artex 的差异都是刻意的）**：① 图写回权在引擎不在 LLM——Planner/Worker 在终局 JSON 声明 intents/facts/candidates，引擎校验引用覆盖后才落图（Artex 是图写回工具进 worker 工具面；TRIDENT 治理面不做写工具）；② MainAgent 无独立 LLM 会话——控制台 #/agent 对话 + REST 操舵 API 承担观察/操舵职责；③ 会话仍是普通 agent_runs——预算/CAS/checkpoint/引用验证零放宽；④ 无心跳/复核/冷压缩（后续切片）。
+- **实现**：契约 `docs/agent-orchestration-contract.md`；迁移 `005_agent_orchestration.sql`（4 表）；`internal/store/orchestration.go`（任务/节点/边/约束 CRUD + 状态 CAS + 图聚合）；`internal/orchestrator/`（engine.go 事件循环 + goals.go 提示构造——硬底线/防重复/量化验收/串行链纪律对齐 Artex planner prompt）；`internal/agent/loop.go` FinalEnvelope v3 + settlement 收尾轮（哨兵防重复 + 收尾轮禁发工具 + 预算内注入）；`internal/webui/agent_orchestration.go` 5 个 API + `#/tasks` 页（列表/创建/图分组/操舵/5 秒轮询）；编排与手动 Run 互斥。
+- **测试**：agent 包——FinalEnvelope v3 校验正负例（observed 覆盖/置信度枚举/intents ≤4/legacy 兼容）+ settlement 两例（预算内写回 + 关闭时保持 budget_exhausted 旧行为）；orchestrator 纯函数（allGoalsMet/pickReadyIntents 确定性排序/planner+worker goal 渲染含纪律与约束）。`go build ./...`、go vet、受影响 4 包全绿；离线门禁全量复跑。
+- **诚实边界**：引擎与 store 的 E2E 依赖真实 PG + 模型（本轮无 scripted 全链编排测试——store 单测与引擎 scripted 驱动是下一步）；真实模型多轮收敛质量未验证；心跳唤醒/steer_work/独立复核未实现。
+
+### 2026-11-16：模型库 v2（参考「全链哨兵」的模型配置设计）
+
+- **需求**：用户提供内网实例，要求学习其模型配置设计并落地 P0/P1/P2；P1 明确要求适配 TRIDENT 的 Agent 现状，不照抄六角色。
+- **研究**：Playwright 注入 Cookie 登录后拆解「设置 → 模型」；从 WebSocket 帧取到真实数据模型（channel → entry → roles → resolved、hasKey、cost、promptCache）。关键结论：渠道目录服务端化、能力/价格结构化、角色槽位 + follow-main + resolved、探测瞬态 + 错误归因、删除引用保护、密钥只回 hasKey、全局默认 vs 会话级覆盖。
+- **落地（刻意差异化）**：TRIDENT 只有三类真实模型消费方，角色定为 `main`（对话主 Agent）/`planner`（编排规划轮）/`worker`（编排执行会话），不设守门/评审/监督/指挥/监测——产品没有这些 LLM 会话，凭空加角色只会制造「配置了不生效」。
+- **P0**：`models.json` schema 2（api、capabilities、cost；schema 1 自动升级并在首次写入落 v2）；7 个 OpenAI 兼容渠道的离线目录 + 3 个只读 API；按模型 ID 查目录补能力价格；探测 7 类归因 + 跨主机重定向拒绝；前端三段式抽屉、能力 chips、价格行。**协议收窄**：运行时只有 OpenAI Chat Completions 适配器，因此只允许 `openai-completions`；其他协议在旧文件中保留展示但聊天/编排拒绝运行（避免「配了但跑不通」）。
+- **P1**：`roles` + `resolved`；`POST /api/agent/models/roles`；删除被引用条目 409 + `details.roles`；对话解析 main，编排分别解析 planner/worker（`orchestrator.Params.WorkerBinding`，两端点可不同、共享任务预算）。
+- **P2**：对话页「跟随默认（主模型）」+ 按项目持久化的会话级覆盖；`/api/agent/steps` 返回 `usage`（input/output/estimated_cost_usd/pricing_source/note），只统计 known usage，不做跨 Run 汇总。
+- **验收**：`go test ./...` 全绿（新增 schema 迁移、字段校验、角色解析、删除保护、目录查询、探测归因、成本估算、双绑定测试）；`go vet` 干净；真实 workspace 的 schema 1 文件成功升级并落盘为 v2；Playwright 实测模型库/角色分配/抽屉/角色选择器页面。
+- **边界**：目录价格是离线快照；能力声明不做探测验证；成本不含缓存分项与阶梯价；无跨 Run 汇总。
+
 ## 维护规则
 
 1. 每个开发切片同步更新能力矩阵及日期记录；明确 implemented/verified/pending/blocked，而不是只追加“完成”。
@@ -1200,3 +1329,121 @@
 3. 保留历史结果，不用新结果覆盖旧失败/未运行事实。原始日志不包含密钥、完整 DSN、源码秘密或 HTTP 认证头。
 4. 修改迁移只新增文件；变更工具/策略/恢复格式需版本化并更新契约。模型接入成功、源码漏洞确认和修复验证是不同门槛。
 5. 继续开发先读 README → 本文件 → 对应契约及当前代码，不重新返回已废止的三角色/P0—P6路线。
+
+### 2026-11-16（续）：模型页反馈三项修复
+
+- **浅色模式勾选框发黑**：根因是 `<meta name="color-scheme" content="dark">` + 缺少 CSS `color-scheme` 覆盖，原生 checkbox/radio/下拉弹层始终按暗色渲染。改为 `dark light` 并在 `:root` / `:root[data-theme="light"]` 声明 `color-scheme`，原生控件跟随主题（实测浅色下为白色底）。
+- **启动时没配 Key 就必须重启**：新增本机密钥能力。`POST /api/agent/models/key` 保存/清除，写入 `<workspace>/model_keys.json`（schema 1，0600，原子替换）；**本机优先于环境变量**，清除后回退；聊天、编排、探测、成本注记统一走 `profileKey`。响应只回 `key_present` / `key_source`，永不回显；删除条目一并删除密钥。设置页新增 API Key 输入与保存/清除按钮，新建条目可在创建时一并保存。新增测试：保存/权限/优先级/清除/随条目删除/拒绝控制字符/不回显。
+- **删除「运行上限」模块**：移除模型页「运行上限」页签、预算面板与抽屉里的上限字段（后端默认值仍作为内部兜底，界面不再暴露）。**修复连带缺陷**：删除该模块时误删了相邻的模型页辅助函数（`viewSettingsModel` 等），导致主题切换或刷新后 `viewSettingsModel is not defined`；已恢复并重新验证模型库/角色分配/主题切换。
+- **验收**：`go test ./internal/webui` 全绿；Playwright 实测浅色主题勾选框、密钥保存→表格显示「密钥本机」→清除→「缺密钥」、主题切换后页面不丢。
+
+### 2026-11-16（续二）：Agent 运行时配置搬进设置
+
+- **动机**：编排页与对话页仍要求启动时带 `--enable-agent-chat --agent-token --agent-dsn`，漏传就只能重启；用户要求像参考产品一样在设置里改。
+- **实现**：`console.json` 新增 `agent_token`、`agent_chat_enabled`；新增 `GET/POST /api/agent/runtime`，启用前真实 `store.Open` + `Authenticate`，失败不落盘；成功后热替换写库会话与编排引擎（互斥：有 Run/编排时 409）；观测库跟随 DSN 重建，失败只记错误。启动时持久化值参与解析，显式参数仍可一次性覆盖；移除 `--agent-endpoint/--agent-model` 的启用前置条件（端点由模型库角色解析）。
+- **前端**：设置页新增「Agent 与编排」卡片（状态 kv、启用开关、DSN、令牌、保存/清除），分析配置卡不再放 DSN；能力状态新增「Agent 编排」。
+- **安全**：响应只回 `dsn_target`（host/db）与 `token_stored`；令牌/DSN 不回显、不导出、不进 Run 配置；固定快照模式拒绝修改。
+- **测试**：`agent_runtime_test.go` 覆盖凭据不回显、缺 DSN/坏 DSN 拒绝、关闭持久化、清除令牌自动停用、运行中拒绝修改。
+- **边界**：启用不代表可运行（仍需模型与密钥）；不支持运行中热切换；数据库凭据轮换后需在设置里更新。
+
+### 2026-11-16（续三）：设置页热配置的收尾
+
+- **排查**：按用户反馈「启动时未配置就要重启，这个问题好多地方存在」逐条扫了面向用户的提示，发现 8 处仍把操作引向启动参数/重启：会话库三个只读端点、编排未启用提示、公告横幅、可达性空态、会话列表空态、API 清单、固定快照模式说明。全部改为「设置页可立即修改，无需重启」，启动参数保留为可选次要路径。
+- **文案一致性**：`chat.reason` 的四个赋值点统一为「未启用：在「设置 → Agent 与编排」里开启（无需重启）」；编排未启用提示去掉面向用户暴露内部文档路径的说法。
+- **UI**：修复「分析配置」卡多余闭合标签造成的按钮错位；Playwright 重载后两个按钮同属 `.form-row mt-14`。
+- **验证**：新增 `TestUnconfiguredAgentHintsPointToSettings`（3 个端点）；本地 PG 一次性 `admin` 主体走通 `POST /api/agent/runtime` 启用 → `ready=true` → 会话历史 200 → 停用，随后删除主体、恢复 `console.json` 字节一致；重建二进制并绕过浏览器缓存复验，当前页无新增 console error。在线实测不是自动化门禁，也不覆盖真实模型调用。
+
+### 2026-11-16（续四）：把「三样东西都要懂」压成一次点击
+
+- **动机**：用户反馈配置太麻烦——要理解 DSN、`principals`、role、64 位令牌，还要去 `secrets/` 里翻文件。
+- **实现**：`docs/agent-runtime-contract.md` §8 定义 `agent_runtime_quick_setup_v1`。新增 `internal/webui/agent_runtime_quick.go`：`quickCandidates()` 只读本机已有配置（已存 DSN / `TRIDENT_DATABASE_URL`、已存令牌 / 两个 `secrets/` 目录），`liveQuickProbe()` 用 `store.Open` + `Authenticate` + 新增的只读 `store.DescribePrincipal` 校验候选；`GET/POST /api/agent/runtime/quick`。`quickProbe` 做成可注入函数，离线测试不连库。
+- **复用而非另开一条链**：把 `handleAgentRuntimeUpdate` 的校验/持久化/热替换抽成 `applyAgentRuntimeRequest`，手动表单与一键启用共用；POST 重新真实连接与认证，探测只作预检，避免 TOCTOU 和「探测说可用就落盘」的伪报。
+- **前端**：设置页主操作改为「一键启用」+ 三个状态 pill，原字段进 `<details>` 高级区；模型密钥缺失时给「设置 → 模型」跳转。CSS 用变量并补浅色模式 pill 配色，无内联样式。
+- **明确不做**：不启 Docker、不 bootstrap 主体、不自动启用（仍要用户点一次）、不替代模型配置、不跳过校验。
+
+### 2026-11-16（续五）：按深度分析报告的排序落地七项修复
+
+- **方法**：全部走 RED→GREEN（先写失败测试并确认失败原因，再最小实现），未写无测试的生产代码。
+- **O1 目标证据门**：`goal_proved` 原先只校验非空/≤256 字节（`internal/agent/loop.go` 的 `validateFinal`）。新增 `^goal-[1-9][0-9]{0,17}$` 与 `ParseGoalRef`；`plannerRound` 逐条校验引用是否为本图已登记 goal 节点、任务是否已有带非空 `evidence` 的 fact/finding_candidate，未通过的声明不写节点状态，拒绝理由拼进 summary 并进入下一轮 trigger（`engine.go` 的 `plannerRound`/`goalNodeIndex`/`evidenceBearingRecords`）。
+- **O2 目标寻址**：操舵新增的 goal 节点真正可被 `goal-N` 引用；`drive` 不再丢弃 `roundSummary`，连续两轮判空才结束。
+- **D1 表达式赋值传播**：`flow.go` 的 `default:` 分支改为传播 `result.taint` 到左值并记 `flow.kind=expression`，删除误导性的 `return_value_taint_not_modeled`。
+- **D4 text block 中和**：新增 `internal/javasrc`（`Strip` 把 `"""` 内容替换为 `""` + 等量换行），`dataflow/parse.go`、`audit/java.go`、`javaast/parse.go` 三处统一调用，限制为 `text_block_content_not_analyzed`；text block 内的注解仍不识别。
+- **W2/O6 跨进程单任务**：新增 `db/migrations/006_orchestration_single_running.sql` 的部分唯一索引（`owner_id` where `state='running'`）；`Engine.Start` 在派发 goroutine 前同步抢占 `created→running`，失败回滚引擎状态；store 把 23505 映射为 `ErrOrchestrationBusy`，控制台返回 409 `orchestration_busy`。本地 `trident_test` 库已执行 `trident migrate`（actor `w2-single-running`），`trident check` 通过。
+- **O_EXCL 写文件**：`internal/webui/atomicwrite.go` 用随机命名临时文件（`os.CreateTemp` 即 `O_EXCL`）+ rename；`config.go` 与 `model_keys.go` 不再用固定的 `.tmp`。测试用硬链接预置同名文件，证明旧实现会写穿、新实现不会。
+- **W3 操舵状态校验**：`/steer` 先 `GetOrchestrationTask`，只接受 `created`/`running`；终态任务返回 409 `orchestration_steer_rejected`，不再产生孤儿节点。
+- **W1 会话限速**：`/api/session` 按客户端 host 计数，5 次失败锁 30 秒（`Retry-After`），成功清零。仍只挡本机脚本猜测，不替代令牌强度。
+- **R1/R2/R3**：`Apply` 两阶段（先全部 plan 再 commit）；新建文件 `O_EXCL`；`VerifyOptions.KeepWorkspace` 与 `patch verify --keep-workspace` 控制失败副本清理；`RepairOptions.ApproveExecution` 成为必填参数。
+- **验证**：`go build ./...` 退出 0；`go vet ./internal/r3 ./cmd/trident` 无输出；`go test -count=1 ./internal/r3 ./internal/dataflow ./internal/orchestrator ./internal/webui ./internal/agent ./internal/audit ./internal/javaast ./internal/javasrc` 八包全 ok。迁移在一次性 scratch 库上按 006 全量重放并用 psql 证明第二个 running 被拒（23505）、前一个完成后可再抢占。
+- **未验证**：真实 docker/gVisor 执行、真实浏览器端到端（`/steer` 的 DB 拒绝分支只测了纯规则函数）、真实模型调用。
+
+### 2026-11-16（续六）：真机启动与闭环验收
+
+- **启动**：`trident-verify.exe`（`TRIDENT 0.2.0-p0.6`）以 `web --workspace .trident --addr 127.0.0.1:8791 --enable-agent-chat --access-log <tmp>` 启动，复用 market 项目（hash `3de9c6c4…`，256 文件/3554368 字节）。`/healthz` 200；无令牌 `/api/overview` 401；带 `X-Trident-Request: console` + `X-Trident-Token` 后 overview 200、`/api/findings` total=182、`/api/endpoints` total=186、`/api/config` 200。
+- **鉴权/限速**：`POST /api/session` 正确令牌 204 + `Set-Cookie: trident_console=…; HttpOnly; SameSite=Strict; Max-Age=28800`；连续 5 次错误 401，随后正确令牌 429 + `Retry-After: 30`（`session_rate_limited`）。access log 只记 time/token_id/method/path/status。
+- **Agent 运行时热启用**：`secrets/` 中两个令牌与库中 `credential_hash` 均不匹配（根因：`credential_hash = sha256(json.Marshal(token))`，即 token 先加 JSON 双引号再 SHA-256，不是 `sha256(raw token)`）。插入一次性 `verify-admin-*` 主体（id 4766）后 `POST /api/agent/runtime {"enabled":true,"token":…}` 返回 200 `ready=true, token_stored=true, model_ready=true`，无需重启。
+- **W2 真机**：用 psql 插入 `state='running'` 的编排任务（id 1），再 `POST /api/agent/orchestration` 创建第二个任务 → 409 `orchestration_busy`，任务 2 落 `failed`，reason 明确「数据库拒绝第二个运行中任务（orchestration_tasks_one_running）」；进程内 `active_task` 此时为 0，证明是 DB 级约束生效。
+- **W3 真机**：running 任务 `/steer`（kind=intent）→ 202 `{node_id:1,state:"open"}`；把任务置为 `completed` 后再次 `/steer` → 409 `orchestration_steer_rejected`。
+- **数据流**：`audit dataflow` 对 market 快照 exit 0，`findings=0`、`java_files_scanned=84`、`methods_parsed=754`、`endpoints_inventoried=186`、`unobserved_paths=981`、`boundary_only=44`、`mybatis_statements=96`、`mybatis_refuted=65`，`partial=true`（`v14` 语义）。
+- **补丁闭环**：`patch verify --snapshot <market> --snapshot-hash <hash> --patch docs/evidence/2026-11-14-market-access-control.patch --profile maven-compile --approve-execution` → `validation_passed`，workspace 256 文件/3554368 字节，`original_snapshot_intact=true`，maven 26.37s，quality 60/C，`runtime_status=isolated_validation_only`；失败补丁（context mismatch `pom.xml:165`）→ `patch_failed`、workspace 自动删除；`--keep-workspace` 保留 256 文件副本。
+- **清理/恢复**：删除验证任务/节点/主体（tasks=0、nodes=0、principals=4764），停止控制台（8791 已释放），`console.json` 恢复为不含 `agent_token`/`agent_chat_enabled` 的原始字节；补丁临时副本删除。
+- **门禁**：`go build ./...`、`go vet ./...` 退出 0；`go test -count=1 ./...` 25 包全 ok（`internal/model` 无测试文件）。
+- **未验证**：真实模型调用（`deepseek-flash` 密钥已存但未发起，涉及外发/费用）；真实 docker/gVisor 执行；浏览器端到端；planner/worker 全流程（本次只验证了启动拒绝与操舵状态机）。
+
+### 2026-11-16（续七）：Agent 真机编排闭环与 14 项修复
+
+- **目标**：在用户承担费用的前提下，用真实 DeepSeek 模型跑通单 Run 与 planner→intent→worker→goal_proved 编排；优先 `deepseek-flash` 省钱。
+- **结果**：task 24（`agent-search-flash`）与 task 25（同目标重跑）均 `completed`、goal `met`。task 24：planner r1 run 109（1 call/0 tool/3836 tokens）→ worker run 110（2 calls/1 tool/10505 tokens，2 facts+1 candidate）→ planner r2 run 111（1 call/0 tool/7002 tokens，`goal_proved`）。task 25：run 112（1/0/3754）→ worker 113（3/2/19563）→ planner 114（1/0/7882）。两任务图均为 goal met、intent done、facts+candidate、spawns/yields 边完整。
+- **修复（RED→GREEN 或真机复测）**：
+  1. `Start` 改用 `context.WithCancel(context.WithoutCancel(parent))`，避免请求 ctx 取消导致任务永久 running。
+  2. `normalizeNodePayload`：空 `json.RawMessage` → `{}`，修 SQLSTATE 22P02。
+  3. 意图预算守卫改 `>=` 并按剩余预算截断落图，修小预算首轮误判。
+  4. planner JSON 示例去 `//` 注释，`TestPlannerGoalJSONExampleIsValid`。
+  5. `finalEnvelopeFromStep` 同时接受 run.completed 直出 envelope 与 legacy `{"result":...}`。
+  6. planner 目标文本禁止调用工具并允许空 hypotheses；run 109/111 实测 1 call/0 tool 产出 JSON。
+  7. `workerNodeState`：unknown、paused → blocked（原先落入 default done）。
+  8. 会话 `MaxOutputTokens` 4096 → 8192，避免 worker 终局 JSON 被截断。
+  9. `NodeRef` 接受数字/带引号/`goal-` 前缀的 parent id，修 planner 被整轮拒绝。
+  10. planner 会话 `AllowUnobservedHypotheses`：允许引用图上已固定证据（planner 无工具），manual/worker 仍要求本轮观测。
+  11. worker 的 hypotheses 带证据时写成 inferred fact，修“worker 成功但图内零证据、goal 永远无法证明”。
+  12. 意图预算用尽且无 open 意图时，仅当图内**无**证据记录才提前结束；有证据则继续 proof 轮。
+  13. 提示词 JSON 字段顺序改为 `limitations` 最后，防模型在 limitations 后提前闭合对象（run 97 的 extra `}`）。
+  14. 对应新增测试：`TestStartDetachesFromRequestCancellation`、`TestOrchestrationNodePayloadDefaultsToEmptyObject`、`TestDrivePlansWithSmallIntentBudget`、`TestDriveCapsPlannerIntentsAtTaskBudget`、`TestFinalEnvelopeFromCompletedStep`、`TestPlannerGoalJSONExampleIsValid`、`TestWorkerNodeStateMapsUnknownToBlocked`、`TestValidateFinalAcceptsQuotedParentID`、`TestValidateFinalPlannerAcceptsGraphEvidence`、`TestDriveWritesHypothesesAsEvidenceFacts`、`TestDriveProofRoundRunsAfterIntentBudget`。
+- **模型/费用**：`deepseek-flash` 直接请求 200；`deepseek-v4-pro` 直接请求 402 `Insufficient Balance`；`default` profile `key_missing`。闭环证据全部来自 flash；task 24/25 成功路径合计 52,542 tokens（21,343 + 31,199），失败重试另计。
+- **门禁**：`go build ./...`、`go vet ./...` 退出 0；`go test -count=1 ./...` 25 包 ok（`internal/model` 无测试文件）。
+- **未覆盖**：仅验证机械检索型目标，复杂审计质量未验证；worker 仍可能在宽目标下预算耗尽/unknown；`list_files` 对模型传 `prefix` 返回 `invalid_arguments`（未改 schema）。
+- **状态**：控制台仍在运行（8791）；测试数据 tasks 3–25、runs 53–114、principal 4767、profile `agent-verify-pro` 保留待复查；`console.json` 含 `agent_token`/`agent_chat_enabled`，停服后需恢复。完整证据见 `TRIDENT-Agent真机验证-2026-11-16.md`。
+
+### 2026-11-16（续八）：统一 Agent 工作台 v1
+
+- **动机**：用户反馈「编排任务和 Agent 配合奇怪、Agent 对话简陋」。根因是会话列表实际列的是 `agent_runs`：每次聊天新建 Run，planner/worker 也写同一张表，worker 跑一次就多一条「会话」；聊天与编排两套入口，任务详情里的 `Run N` 只跳 `#/agent` 不定位。
+- **模型**：新增 `agent_conversations` 作为用户可见上层实体；`agent_conversation_runs` 与 `agent_conversation_tasks` 只做关联，不改 `agent_runs`/`orchestration_tasks` 既有列。Run/Task 唯一归属一个会话；会话按 owner + snapshot 隔离。
+- **迁移**：`db/migrations/007_agent_conversations.sql`。本地 `trident migrate` 以 actor `agent-verify-20261116171409` 应用成功，`schema_migrations` 已到 007；`/api/agent/runtime` 由 `ready=false`（schema gate）变为 `ready=true`。
+- **后端**：`internal/domain/conversation.go`；`internal/store/conversations.go` 提供 `CreateConversation`、`GetConversation`、`ListConversations`、`ConversationDetail`、`LinkConversationRun`、`LinkConversationTask`、`ConversationIDForTask`，全部走 `agentActor` 归属校验。`agent_conversations.go` 新增列表/详情 handler；`agent_chat.go`、`agent_orchestration.go` 增加可选 `conversation_id`，创建 Run/Task 后写关联表，响应回传 `conversation_id`；任务详情返回该字段。
+- **前端**：左栏改为 `/api/agent/conversations`；会话内显示轮次按钮与任务卡；`#chatMode` 支持「单次对话 / 编排任务（小预算）」；`#/agent?run=N` 打开指定 Run，`#/agent?conversation=N` 打开会话，`#/tasks?task=N` 打开任务并在深链时把任务详情提到 Hero 之后；任务节点 Run 链接带 `run`，任务头部「会话 N」回跳会话。
+- **真机**：conversation 1 两次聊天 run 115/116 均 `completed`（各 1 call/0 tool，2753/2853 tokens），详情 `runs=2`；同一会话内编排 task 26 `completed`、`reason=全部目标已判定达成`、图 7 节点，详情 `tasks=1`、`task.conversation_id=1`。浏览器验证：会话工作台显示「2 轮 / 1 任务」、任务卡可点；任务深链落在详情；任务头部「会话 #1」可回跳；`#/agent?run=115` 显示独立 Run。
+- **修复**：`ConversationDetail` 的 joined SELECT 使用未限定列名导致 `column reference "created_at" is ambiguous`（SQLSTATE 42702）；新增 `qualifySQLColumns` 给 `agent_runs`/`orchestration_tasks` 列加别名前缀后恢复。深链优先级：URL 带 `conversation` 时不再复用浏览器内存里的旧 `openId`。
+- **门禁**：`go build ./...`、`go vet ./...` 退出 0；`go test -count=1 ./...` 25 包 ok（`internal/model` 无测试文件）；`node --check internal/webui/assets/app.js` 退出 0。
+- **未完成/边界**：仍不实现「候选发现一键提升为 findings/补丁」；聊天「多轮」只是同一会话内分组展示，**没有把前序 Run 的结论注入下一次模型上下文**；会话标题不可编辑；worker/planner Run 不进入会话列表。测试数据 tasks 3–26、runs 53–116、principal 4767、profile `agent-verify-pro` 保留；代码未提交 git。
+
+### 2026-11-16（续十）：Agent 对话视觉重做（参考全链哨兵控制台）
+
+- **动机**：用户反馈 Agent 对话框仍「太丑」，要求参考 `https://192.168.41.12:7777/` 的对话页视觉与交互。参考页为浅色单栏、白色大留白、紧凑工具条、纯文本回答、底部固定输入卡；原 TRIDENT 在 603px 视口是 268px 会话栏 + 对话栏 + 右侧详情栏，正文被压到约 270px。
+- **布局**：`internal/webui/assets/styles.css` 新增「agent chat: single-column workspace」段。`<=1100px` 时 `.chat-shell` 变单列，250px 会话栏变为 fixed 左抽屉（遮罩、关闭按钮、顶部「会话」入口）；`>1100px` 恢复 250px 会话栏 + 主对话区。抽屉在 517px 视口实测可开合，亮/暗主题均正常。
+- **Header**：`chat-head` 改为 `AGENT SESSION · Run #id` + 两行标题 + 状态/模型调用/工具调用/token/成本统计；操作收敛为「会话 / 重命名 / 复制目标 / 以此目标新建」。
+- **对话**：`buildBlocks` 渲染 `run.goal` 为用户消息块；assistant 加 `AGENT` 标签并去掉旧气泡背景，亮色下也强制透明；工具过程缩成可展开胶囊；最终/状态卡收敛为左强调线。新增 `run.unknown` 状态块（Run 121 现在显示「状态不明 / console stopped during read-only tool execution」及可重新发起的提示），并对 failed/paused/budget_exhausted/cancelled 使用中文状态名。
+- **会话内历史**：右侧默认只显示会话标题和「历史」按钮，`history` 展开后才显示 Run 轮次/编排任务；默认折叠，避免窄屏历史 chip 占掉正文高度。Run 切换仍走 `data-conv-run`。
+- **输入区**：Composer 改为大输入框 + 预设 chips + 运行方式/模型/外发批准 + 右下角发送。`<=720px` 隐藏控件文字标签、把控件压成单行；`<=480px` 再纵排，避免 517px 下标签竖排。
+- **验证**：`node --check internal/webui/assets/app.js` 退出 0；`go build ./...`、`go vet ./...` 退出 0；`go test -count=1 ./...` 25 包全 ok（`internal/model` 无测试文件）。浏览器在 517px 亮/暗主题下验证了单栏、折叠历史、历史展开、抽屉开合；603px 亮色截图见 `C:\Users\zx\AppData\Local\Temp\trident-chat-v9-collapsed.png` 等。
+- **未验证/边界**：`>1100px` 宽屏布局当前浏览器窗口无法调到该宽度，仅有代码级响应式实现，**没有截图证据**；未在本轮发起新的聊天 Run 验证发送后的流式刷新；抽屉截图使用临时 `willChange` 强制重绘，实际生产代码未保留该调试属性。参考站 Cookie 只在浏览器会话中使用，未写入仓库。
+
+### 2026-11-16（续十一）：Web API 前后端一一对应
+
+- **盘点口径**：以 `internal/webui/webui.go` 的 `HandleFunc` 注册为后端全集，以 `internal/webui/assets/app.js` 的 `api()`/`downloadArtifact()` 实际调用为前端全集；路径参数 `{provider}` 与前端模板变量归一后逐方法比对。结果：后端由 61 条降至 57 条 `HandleFunc`；前端 47 条路径 / 53 个方法+路径调用，缺失后端路由 0 条。
+- **删除**：`GET /api/agent/runs`（会话工作台已改用 conversations/threads）、`POST /api/agent/models/default`（默认档案已由 roles 的 `main` 角色维护）、`POST /api/agent/chat/cancel`（固定 501，无前端调用）、`POST /api/project`（单数旧导入入口，已被 `POST /api/projects` 替代）。同步删除 `handleAgentRuns`、`handleModelProfileDefault`、`handleAgentChatCancel`、`handleProjectImport` 及旧导入 DTO；清理 `extended.go` 的 `context`、`agent_chat.go` 的 `strconv`、`config.go` 的 `time` 导入。
+- **保留**：`GET /api/agent/threads` 仍被概览页真实调用；`/api/metrics`、`/metrics`、`/healthz` 是运维/探活面，不是浏览器 UI 调用；`/export/report` 被顶栏导出按钮真实调用。三者均不按“前端未用”删除。
+- **前端**：关于页标题改为「控制台 API」，删除 `/api/agent/runs`，补齐 conversations、chat/state、models、model-channels、model-catalog、runtime、orchestration、projects、config、fs、analysis rerun 等当前调用；修正过期的「没有 Agent 控制或审批 API」文案；编排详情与停止接口的查询参数按实际改为 `id=`，模型目录查询为 `model_id=`/`base_url=`。
+- **契约**：`docs/web-console-contract.md` API 表由 56 行覆盖后端全部 56 条 API 路由（脚本比对无缺项/无多项），删除四个旧接口并补齐 Agent 会话、运行时、模型通道与编排接口；`docs/model-library-contract.md` 删除 `/models/default`，把误写的 `/models/upsert` 修正为 `/api/agent/models`，并注明 roles `main` 同步维护兼容字段 `default`。
+- **测试/脚本**：新增 `internal/webui/routes_test.go`，先红后绿地锁定四个旧接口返回 404；`config_test.go` 改用 `/api/projects` 并适配 `{"project":{...}}` 响应；`agent_dsn_test.go` 移除 `/api/agent/runs`；`scripts/test-web.py` 的未配置 Agent 断言改用 `/api/agent/threads`。
+- **门禁**：`node --check internal/webui/assets/app.js` 退出 0；`go build ./...`、`go vet ./...` 退出 0；`go test -count=1 ./...` 25 包 ok（`internal/model` 无测试文件）；`python scripts/test-web.py` 八项全部 PASS（含多用户令牌、确定性 HTML 导出、JSONL 审计、快照字节不变）。
+- **真机闭环**：最终二进制 `%TEMP%\trident-verify-final.exe` 重启于 `127.0.0.1:8791`；`/api/agent/runtime` 重新连接后 `ready=true`；四个旧路由均 404；`/api/agent/threads`、`/api/agent/conversations`、`/api/agent/orchestration/detail?id=26`、`/api/overview`、`/export/report` 均 200。浏览器的关于页、概览页、Agent 会话页、任务深链均正常；关于页不再出现 `/api/agent/runs` 或旧安全文案。
+- **边界**：本机 Git CLI 不在 PATH，未执行 `git diff --check`；已改用尾随空白扫描并保留实际命令结果。`development-progress.md` 早期条目里的旧接口名称属于历史记录，当前契约以 `web-console-contract.md` API 表为准。

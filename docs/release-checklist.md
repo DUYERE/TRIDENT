@@ -100,7 +100,12 @@ python scripts/benchmark.py 3
 | 数据量级备份恢复与 RTO/RPO | `python scripts/test-backup-scale.py` | 通过：真实迁移 Schema + 624 MB/约 170 万行合成数据；dump 3.6s（归档 37 MB）、restore 6.7s、check+行数核对 3.1s，RTO 9.8s（本机实测）；RPO 语义演示（备份后 5000 行不在恢复点）；生产承诺须在生产硬件重测 |
 | 容量与成本估算模型 | `docs/capacity-cost.md` | 已建立：RTO/RPO 外推公式、静态分析容量（有界上限 + 缓存语义）、DB 增长模型、模型 token 公式（未实测，live-model pending）；每节附实测样本与复核要求 |
 | SARIF GitHub 规则映射 | `go test ./internal/sarif` + Actions `upload-sarif` 步骤 | 通过：规则级 `security-severity`（confirmed 7.5/inconclusive 3.0/refuted 0.0）、`precision`、`tags`（security + CWE-n）、结果级确定性 `primaryLocationLineHash`；run 43585400725 已将该 SARIF 成功上传 GitHub code scanning（告警呈现需在仓库 Security 页人工复核） |
-| 离线全量门禁 | `powershell -File scripts/verify-offline.ps1` | 通过（Go 测试/vet + 14 个离线 CLI 验收脚本） |
+| 多语言代码审计（P0-5，v2） | `go test ./internal/codescan` + `python scripts/test-code-audit.py` | 通过：7 语言前端、36 条正例证据链（含插值字符串感知与同文件函数摘要 v2 正例）、显式负例零误报（含非插值字符串与净化包装器）、9 类漏洞、24 条声明入口、确定性、规则外置/失败关闭、统一证据模型与 SARIF 2.1.0、默认 findings 字节不变、Web `/api/code-audit` 与概览摘要、样本/快照字节不变。仅限合成样本，未验证真实项目检测率；边界见 `docs/code-audit-contract.md` §8/§10 |
+| Agent 运行时配置（设置页，无需重启） | `go test ./internal/webui -count=1` + 在线闭环实测 | 通过：开关/DSN/主体令牌持久化（0600）、启用前真实连接与令牌校验、失败不落盘、运行中 409、清除令牌自动停用、响应只回掩码目标与布尔、启动参数优先于持久化值；未配置提示统一指向设置页（`TestUnconfiguredAgentHintsPointToSettings`）。本地 PG 用一次性主体实测「保存即启用」→ `ready=true` → 历史会话 200 → 停用恢复，主体已删除、`console.json` 字节不变；该实测不是自动化门禁，也不覆盖真实模型调用。边界见 `docs/agent-runtime-contract.md` §6/§7 |
+| Agent 一键启用（quick setup v1） | `go test ./internal/webui -run TestAgentQuick -count=1` + 在线一键实测 | 通过：本机候选自动发现（已存 DSN/令牌、`secrets/*.json`）、只读权限校验（active/human/admin\|scheduler）、GET 不回显凭据、无候选不误报、不可用不落盘、pinned/busy 409、探测成功但真实 DSN 失败时拒绝且不落盘、手动表单与一键启用共用同一校验链。在线实测 `POST /api/agent/runtime/quick` 无请求体即启用并恢复；不启容器、不建主体、不自动启用、不覆盖真实模型调用。边界见 `docs/agent-runtime-contract.md` §8 |
+| 模型库 v2（渠道目录 / 能力价格 / 角色槽位 / 本机密钥） | `go test ./internal/webui -count=1` + `go test ./internal/orchestrator -count=1` | 通过：schema 1→2 迁移（不臆造能力/价格）、协议白名单（仅 openai-completions，旧值保留但拒绝运行）、角色 main/planner/worker 解析与 follow-main、删除引用保护 409 + details.roles、目录查询与 Base URL 亲和、探测 7 类归因与跨主机重定向拒绝、单 Run 成本估算（unknown usage 不写 0）、编排双绑定与任务预算覆盖、本机密钥保存/优先级/清除/随条目删除/不回显。浅色主题原生控件跟随 `color-scheme`；预算页已移除（默认值仅作内部兜底）。离线门禁全绿；真实模型未调用。边界见 `docs/model-library-contract.md` §10 |
+| Java 主线 v14（P0-6） | `go test ./internal/dataflow -count=1` + `python scripts/test-java-mainline.py` | 通过：MyBatis `#{}`/`${}` 分级、框架片段不误报、注解 SQL、非入口 `audit sinks` 锚定、默认低噪声与 `--emit-unobserved` 兼容、确定性、失败关闭、字节不变。真实 `market` 实测 109 → 0 噪声 finding（64 条绑定 + 45 条通用边界改记 coverage，96 条 Mapper SQL 进入 `orm`）；**0 findings 不代表安全**。边界见 `docs/dataflow-contract.md` §6.6 |
+| 离线全量门禁 | `powershell -File scripts/verify-offline.ps1` | 通过（Go 测试/vet + 16 个离线 CLI 验收脚本） |
 | CI 门禁真实 runner 落地 | GitHub Actions 页面 run 记录 | 通过：`offline`（Go 测试 + 10 个 CLI 验收 + SARIF 生成并上传 code scanning）与 `db-governance`（一次性 PostgreSQL 18 容器演练）在 run 43585245302、43585400725 全绿；故意红灯探针 `e1119d3` 使 `Go tests and vet` 失败（run 43585523523），revert `97a04e7` 后恢复；tag `v0.2.0-p0.2` 触发 `release-artifacts` 全绿（run 43587721384，二进制+SBOM+SARIF+校验和产物） |
 | CycloneDX VEX 分析状态 | `go test ./internal/sbom` + `python scripts/test-sbom.py` | 通过：`sca sbom --package-map` 固定保守映射（unreachable→`not_affected/code_not_reachable`、reachable/unknown→`in_triage`，静态可达永不升级为 exploitable）、官方 CycloneDX 1.5 Schema 校验、确定性输出、flag 仅限 sbom 子命令；声明边界见 `docs/sbom-contract.md` §9 |
 | 部署/备份/升级文档 | `docs/deployment.md` | 已提供构建、迁移、备份恢复、凭据分权与版本矩阵；生产恢复演练仍待完成 |
@@ -115,7 +120,9 @@ python scripts/benchmark.py 3
 - 公告区间是调用者声明判据，不是 Maven 版本语义的完整实现；`reachable` 是本快照类级有界图的静态证据，`unreachable` 不排除反射、动态代理、框架装配或运行时生成代码。
 - 制品哈希只覆盖调用者显式本地仓库/缓存中已存在的字节；不验证 GPG/签名，不证明来源或未被篡改。
 - Gradle 有效树优先 `runtimeClasspath`、其次 `compileClasspath`，含 `*RuntimeClasspath`/`*CompileClasspath` 后缀回退；不解释 Android variant、version catalog、BOM/platform 或插件脚本副作用。
-- 静态 finding 的 `runtime_status` 恒为 `not_run`；R3 的 `runtime_status=isolated_validation_only`。
+- 静态 finding 的 `runtime_status` 恒为 `not_run`；R3 的 `runtime_status=isolated_validation_only`；`audit code` 的 `static_confirmed` 只表示受限词法前端在同一作用域内观察到 source→sink 流，不代表类型解析、跨过程流或可利用性。
+- `audit dataflow` v14 默认只输出有观察证据的 finding；无观察路径、通用 `unresolved_call` 边界与 MyBatis `#{}` 绑定记入 `coverage` 而非 finding，用 `--emit-unobserved` 复现 v1。`audit sinks` 的锚点恒为 `inconclusive`，不证明参数可控或可利用。
+- `audit code` 的 7 个语言前端是受限词法前端：不解析完整语法、类型系统、框架绑定、ORM/AOP/反射或跨文件污点；Python 为文件级作用域，是已知假阳性来源；规则按调用/属性名匹配，同名本地 helper 可能影响结论。
 - `runtime http` 的 `runtime_status=observed` 只覆盖调用者声明的请求与断言，不是漏洞利用或生产安全证明，也不自动回写 finding。
 - `runtime correlate` 仅按注解级 route/method 字面量匹配；不解析 context path、部署前缀、路径变量或归一化，`correlated` 不证明参数可控、控制缺失或可利用。
 - `rollback` 只提供原始文件哈希与人工回退说明，不执行回滚命令；`gradle-test` profile 的桩工具链验收只证明命令构造与报告解析，不证明真实 Gradle 构建。
