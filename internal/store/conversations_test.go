@@ -5,6 +5,19 @@ import (
 	"testing"
 )
 
+// B4: the title must be editable but bounded and free of control characters.
+func TestNormalizeConversationTitle(t *testing.T) {
+	got, err := normalizeConversationTitle("  登录入口复核  ")
+	if err != nil || got != "登录入口复核" {
+		t.Fatalf("title trim: %q %v", got, err)
+	}
+	for _, value := range []string{"", "   ", "a\rb", strings.Repeat("x", 513)} {
+		if _, err := normalizeConversationTitle(value); err == nil {
+			t.Fatalf("invalid title accepted: %q", value)
+		}
+	}
+}
+
 func TestNormalizeConversationCreate(t *testing.T) {
 	valid := CreateConversationParams{
 		Key:          "conv-key",

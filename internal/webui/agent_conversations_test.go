@@ -1,10 +1,26 @@
 package webui
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
+
+func TestConversationRenameRequiresStore(t *testing.T) {
+	console := &Console{}
+	request := httptest.NewRequest(http.MethodPost, "/api/agent/conversations/rename",
+		strings.NewReader(`{"id":1,"title":"复核入口"}`))
+	recorder := httptest.NewRecorder()
+	console.handleAgentConversationRename(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("rename without store = %d, want 409", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "agent_database_missing") {
+		t.Fatalf("missing store error: %s", recorder.Body.String())
+	}
+}
 
 func TestConversationTitle(t *testing.T) {
 	if got := conversationTitle("  审计登录入口 \n 第二条"); got != "审计登录入口" {

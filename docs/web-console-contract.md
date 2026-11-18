@@ -81,6 +81,7 @@ trident web --snapshot <dir> --snapshot-hash <sha256> [--advisories <file|dir>]
 | GET | `/api/agent/threads` | 按快照摘要过滤的会话列表（`hash` 缺省为当前项目），每个项目只看到自己的会话 |
 | GET | `/api/agent/conversations` | 当前项目的会话列表（`hash=all` 查看全部；含活动 Run/Task） |
 | GET | `/api/agent/conversations/detail?id=` | 单个会话的 Run、Task 与消息历史 |
+| POST | `/api/agent/conversations/rename` | 修改会话标题（body `{id,title}`；仅 owner 可改，标题 ≤512 字节，拒绝 CR/LF/NUL） |
 | GET | `/api/agent/chat/state` | 对话能力状态：是否启用、模型与端点、密钥是否就绪、当前运行中的 Run、预算上限（无项目也可读） |
 | GET | `/api/agent/models` | 模型库：配置档案列表（端点、模型、密钥变量名、密钥是否就绪、默认标记、每档预算） |
 | POST | `/api/agent/models` | 新建/更新配置档案（`id`、`label`、`endpoint`、`model`、`key_env`、`defaults`）；**不接受密钥本身** |
@@ -103,6 +104,7 @@ trident web --snapshot <dir> --snapshot-hash <sha256> [--advisories <file|dir>]
 | POST | `/api/agent/orchestration/stop?id=` | 停止编排任务及其子 Run |
 | GET | `/api/authz` | 权限/越权控制清单：决策分布、逐入口决策、控制与过滤器链、覆盖与限制（`decision`、`q`、`limit`、`offset`） |
 | GET | `/api/code-audit` | 多语言代码审计只读视图（`language`、`category`、`severity`、`q`、`limit`、`offset`）：规则集版本、分页发现、按语言/类别/严重度计数、语言覆盖、声明入口（≤200）、**符号索引 `symbols`/`calls`/`unresolved`（≤200）与 `symbol_languages`**、限制；新增 `file_partial`、`symbol_partial`、`finding_partial`、`rejected_files`（≤200，只含 `status=rejected`；文件摘要含 `scope=project|vendor|generated`）与 `rejected_scopes`；符号统计以 `coverage.symbols_found/calls_found/unresolved_found` 为全量；声明路由含 `path_status=declared|dynamic_unresolved`，变量路径以 `<dynamic>` 显式标记；**首次请求才触发分析并缓存结果**（进程内 + workspace `cache/code-audit/<snapshot>.<version>.json`，版本/快照不匹配将被忽略），后续请求命中缓存；`available=false` 时返回跳过原因且这些列表为空数组。不新增分析语义，`runtime_status` 恒为 `not_run` |
+| GET | `/api/toolchains` | 语言验证工具链只读探测：固定返回 `php-lint`、`python-compile`、`pytest`、`node-check`、`npm-test`、`go-test`、`dotnet-build`、`dotnet-test`；每条含 `profile/language/tool/available/status/reason/path/limitation`，`status` 为 `available|toolchain_unavailable`。只做主机 PATH 查找，不执行编译器或测试；设置页「验证工具链」卡片直接展示，并明确 `php -l` 仅语法检查 |
 | GET | `/api/symbols` | 符号浏览器（`language`、`kind`、`q`、`limit`≤200、`offset`）：与 `/api/code-audit` 共用同一惰性分析和缓存，支持按语言、声明类型和名称/文件/容器关键词过滤；返回 `items`、`total`、`limit`、`offset`、`kinds`、`languages`、`partial`、`symbol_partial`；分析不可用时返回 `available=false` 和原因，不伪造结果 |
 | GET | `/api/model` | Java 语义模型类型索引（`q`、`limit`、`offset`）；超过 2000 个 Java 文件或解析失败时 `enabled=false` 并给出原因。**额外返回已缓存的 `symbols`/`calls`/`unresolved`/`symbol_languages`/`symbol_partial`；`symbol_partial` 只反映符号轴，文件拒绝不影响它；未运行代码审计时返回 `symbol_reason=analysis_pending`，不主动启动分析，不伪造符号** |
 | GET | `/api/model/type` | 单类型的声明、出向/入向调用边（`fqn`；边上限 200） |
@@ -232,6 +234,7 @@ trident web --workspace .trident --agent-dsn "postgres://user:pw@127.0.0.1:5432/
 
 - 只读控制台不改变 R2 分析能力：没有 Java AST、别名/指向分析、跨模块类型解析或运行时验证；新增的多语言规则引擎同样是受限词法前端，不做类型解析、跨过程污点或框架绑定。
 - `/api/code-audit` 与 `#/code` 只展示 `audit code` 的静态结论，不提供规则编辑、执行、修复或运行时验证入口；规则外置只在 CLI 通过 `--rules` 生效。
+- `/api/toolchains` 只报告主机 PATH 可见性，不执行编译器/测试，也不代表 profile 会通过；Case 验证仍以落盘 `verify.log`/`patch_meta.json` 为准。PHP 只有 `php -l` 语法检查，不得写成 PHP 8 运行时或漏洞已修复。
 - 控制台统一 finding 列表使用 `audit dataflow` v14 默认低噪声输出：无观察路径、通用 `unresolved_call` 边界与 MyBatis `#{}` 绑定不进入 finding 列表（记入 CLI 的 `coverage`）。发现数变少不等于项目更安全；需要 v1 语义或非入口 sink 锚点时分别使用 CLI 的 `--emit-unobserved` 与 `audit sinks`。
 - 不提供多快照工作区、源码导入、任务管理、Agent 会话或工具审批。
 - 不把入口注解当作已部署路由，不把公告精确版本命中当作可利用漏洞。

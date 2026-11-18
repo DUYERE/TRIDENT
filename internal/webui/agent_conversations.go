@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -128,6 +129,46 @@ func (c *Console) handleAgentConversations(w http.ResponseWriter, r *http.Reques
 		"conversations":  items,
 		"active_run":     c.chatActiveRun(),
 		"active_task":    c.orchEngine.ActiveTask(),
+	})
+}
+
+type conversationRenameRequest struct {
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+}
+
+func (c *Console) handleAgentConversationRename(w http.ResponseWriter, r *http.Request) {
+	if c.agentWrite == nil {
+		writeError(w, http.StatusConflict, "agent_database_missing",
+			"会话库未启用：在「设置 → Agent 与编排」里填写连接串与主体令牌并保存")
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, 16<<10)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	var request conversationRenameRequest
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "请求不是合法 JSON")
+		return
+	}
+	if request.ID < 1 || strings.TrimSpace(request.Title) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "id 必须是正整数且标题不能为空")
+		return
+	}
+	conversation, err := c.agentWrite.UpdateConversationTitle(r.Context(), c.agentSession, request.ID, request.Title)
+	if err != nil {
+		status := http.StatusInternalServerError
+		code := "conversation_rename_failed"
+		if errors.Is(err, store.ErrDenied) {
+			status, code = http.StatusNotFound, "conversation_not_found"
+		}
+		writeError(w, status, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"schema_version": SchemaVersion,
+		"conversation":   conversation,
 	})
 }
 

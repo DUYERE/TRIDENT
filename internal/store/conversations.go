@@ -39,6 +39,14 @@ func normalizeConversationCreate(p CreateConversationParams) (CreateConversation
 	return p, nil
 }
 
+func normalizeConversationTitle(title string) (string, error) {
+	title = strings.TrimSpace(title)
+	if title == "" || len([]byte(title)) > 512 || strings.ContainsAny(title, "\r\n\x00") {
+		return "", ErrDenied
+	}
+	return title, nil
+}
+
 const conversationColumns = `id,owner_id,snapshot_hash,title,mode,created_at,updated_at`
 
 func scanConversation(row pgx.Row) (domain.AgentConversation, error) {
@@ -86,6 +94,32 @@ func (s *Store) CreateConversation(ctx context.Context, ss Session, params Creat
 	conversation, err := scanConversation(row)
 	if err != nil {
 		return domain.AgentConversation{}, classifyConversationConflict(err)
+	}
+	return conversation, tx.Commit(ctx)
+}
+
+// UpdateConversationTitle renames an owner-scoped conversation. It is the only
+// mutable field; mode/snapshot stay immutable so history cannot be regrouped.
+func (s *Store) UpdateConversationTitle(ctx context.Context, ss Session, conversationID int64, title string) (domain.AgentConversation, error) {
+	title, err := normalizeConversationTitle(title)
+	if err != nil || conversationID < 1 {
+		return domain.AgentConversation{}, ErrDenied
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.AgentConversation{}, err
+	}
+	defer rollbackAgentTx(tx)
+	a, err := agentActor(ctx, tx, ss)
+	if err != nil {
+		return domain.AgentConversation{}, err
+	}
+	conversation, err := scanConversation(tx.QueryRow(ctx,
+		`UPDATE agent_conversations SET title=$1, updated_at=clock_timestamp()
+		 WHERE id=$2 AND owner_id=$3 RETURNING `+conversationColumns,
+		title, conversationID, a.id))
+	if err != nil {
+		return domain.AgentConversation{}, err
 	}
 	return conversation, tx.Commit(ctx)
 }

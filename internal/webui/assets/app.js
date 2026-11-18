@@ -2193,6 +2193,7 @@
         <div><span class="chip">会话 #${conversation.id}</span><strong>${esc(conversation.title || "(无标题)")}</strong><span class="chip">${tasks.length && runs.length ? "对话 + 任务" : conversation.mode === "orchestrate" ? "编排" : "对话"}</span></div>
         <div class="chat-context-actions">
           <span class="form-hint">${runs.length} 轮对话 / ${tasks.length} 个任务</span>
+          <button class="btn sm ghost" type="button" id="chatRenameConversation">重命名</button>
           ${total > 1 ? `<button class="btn sm ghost" type="button" id="chatHistoryToggle">${expanded ? "收起历史" : "历史"}</button>` : ""}
         </div>
       </div>
@@ -2215,6 +2216,55 @@
       state.agent.showHistory = !expanded;
       renderChatContext();
     });
+    const rename = host.querySelector("#chatRenameConversation");
+    if (rename) rename.addEventListener("click", startConversationRename);
+  }
+
+  async function startConversationRename() {
+    const conversation = state.agent && state.agent.conversation;
+    const host = $("#chatContext");
+    const title = host && host.querySelector(".chat-context-head strong");
+    if (!conversation || !title) return;
+    const input = document.createElement("input");
+    input.className = "input";
+    input.value = conversation.title || "";
+    input.maxLength = 160;
+    title.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = async (save) => {
+      if (done) return;
+      done = true;
+      if (!save) { renderChatContext(); return; }
+      const next = input.value.trim();
+      if (!next || next === conversation.title) { renderChatContext(); return; }
+      try {
+        const payload = await api("/api/agent/conversations/rename", {
+          method: "POST",
+          body: { id: conversation.id, title: next },
+        });
+        state.agent.conversation = payload.conversation || { ...conversation, title: next };
+        state.agent.conversations = (state.agent.conversations || []).map((item) =>
+          item.id === conversation.id ? { ...item, title: state.agent.conversation.title } : item);
+        renderConversationList();
+        renderChatContext();
+        toast("会话标题已更新", "ok");
+      } catch (error) {
+        toast(`重命名失败：${error.message}`, "bad");
+        renderChatContext();
+      }
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
   }
 
   function startThreadRename(run) {
@@ -3772,6 +3822,7 @@
           ${apiRow("GET", "/api/runtime-report", "运行时关联报告（设置页配置报告路径后启用）")}
           ${apiRow("GET", "/api/authz", "权限与越权控制清单")}
           ${apiRow("GET", "/api/code-audit", "多语言代码审计视图")}
+          ${apiRow("GET", "/api/toolchains", "语言验证工具链的只读 PATH 探测")}
           ${apiRow("GET", "/api/symbols", "符号浏览：语言/类型/关键词/分页")}
           ${apiRow("GET", "/api/model", "Java 语义模型类型索引")}
           ${apiRow("GET", "/api/model/type?fqn=", "单类型调用边")}
@@ -4651,10 +4702,11 @@
   // ── settings ───────────────────────────────────────────────────────────
 
   async function viewSettings() {
-    const [config, runtime, quick] = await Promise.all([
+    const [config, runtime, quick, toolchains] = await Promise.all([
       api("/api/config"),
       api("/api/agent/runtime").catch(() => null),
       api("/api/agent/runtime/quick").catch(() => null),
+      api("/api/toolchains").catch(() => null),
     ]);
     state.config = config;
     state.agentRuntime = runtime;
@@ -4662,6 +4714,12 @@
     const features = config.features;
     const rt = runtime || { enabled: false, ready: false, reason: "", dsn_stored: false, token_stored: false, dsn_target: "", model_ready: false, active_run: 0, active_task: 0 };
     const q = quick || { enabled: false, ready: false, can_enable: false, dsn_found: false, dsn_ok: false, principal_found: false, principal_role: "", model_ready: false, dsn_target: "", reason: "快速启用状态不可用" };
+    const chains = (toolchains && toolchains.toolchains) || [];
+    const chainRows = chains.map((item) => kvRow(
+      `${item.language || "unknown"} · ${item.profile}`,
+      item.available ? `可用 · ${item.tool}${item.path ? " · " + item.path : ""}` : `不可用 · ${item.reason || "toolchain_unavailable"}`,
+      item.available ? "good" : "warn",
+    )).join("");
     $("#view").innerHTML = `
       <section class="card">
         <div class="card-head"><h3><svg class="icon"><use href="#i-folder"/></svg>当前项目</h3><span class="card-sub">${config.mode === "workspace" ? "工作区模式" : "固定快照模式"}</span></div>
@@ -4695,6 +4753,16 @@
             <span class="toolbar-count">公告 ${fmtNum(paths.advisories_count)} 个${paths.advisories_error ? " · " + esc(paths.advisories_error) : ""}</span>
           </div>
           ${features.workspace_editable ? "" : `<p class="form-hint warn-text">固定快照模式只读：路径配置需要以 --workspace 启动后才能修改。</p>`}
+        </div>
+      </section>
+
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-check"/></svg>验证工具链</h3><span class="card-sub">主机 PATH 探测 · 非容器</span></div>
+        <div class="card-body">
+          <div class="kv">
+            ${chainRows || kvRow("工具链", toolchains ? "没有可报告的语言 profile" : "无法读取 /api/toolchains", "warn")}
+          </div>
+          <p class="form-hint warn-text">PHP 修复验证目前只有 <code>php -l</code>：它只检查语法，不等于 PHP 8 运行时或漏洞修复证明；工具链缺失时记录 <code>toolchain_unavailable</code>，不会伪造通过。</p>
         </div>
       </section>
 

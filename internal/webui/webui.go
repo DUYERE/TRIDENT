@@ -647,6 +647,7 @@ func (c *Console) Handler() http.Handler {
 	mux.HandleFunc("GET /api/agent/threads", c.handleAgentThreads)
 	mux.HandleFunc("GET /api/agent/conversations", c.handleAgentConversations)
 	mux.HandleFunc("GET /api/agent/conversations/detail", c.handleAgentConversationDetail)
+	mux.HandleFunc("POST /api/agent/conversations/rename", c.handleAgentConversationRename)
 	mux.HandleFunc("GET /api/agent/chat/state", c.handleAgentChatState)
 	mux.HandleFunc("GET /api/agent/models", c.handleModelProfiles)
 	mux.HandleFunc("POST /api/agent/models", c.handleModelProfileUpsert)
