@@ -33,6 +33,16 @@ const productVersion = "0.2.0-p0.6"
 // the build identifier instead of this slice list.
 const productCapabilities = "r1-core + r2-sca-declarations-v2 + r2-maven-effective-tree-v1 + r2-endpoint-inventory-v3 + r2-source-sink-flow-v14 + r2-finding-evidence + r2-readonly-web-console + r2-agent-analysis-tools + r2-cyclonedx-sbom + r2-sarif-reachability + r3-isolated-patch-v3-rollback-gradle + r3-repair-policy-gvisor + r4-gradle-tree-upgrade-authz-chain-v2-runtime-matrix-correlation + derived-index-cache + web-console-multi-token-audit-export + web-console-healthz-metrics + sarif-github-code-scanning-mapping + ci-offline-gate-live + sbom-vex-analysis + console-prometheus-scrape + monitoring-drill + multi-language-code-audit (read-only Agent Core; OpenAI Chat Completions; live-model acceptance pending)"
 
+func projectCommandTimeout(args []string) time.Duration {
+	// Full-tree imports copy and hash every admitted byte. A 300MB / 44k-entry
+	// repository can legitimately exceed two minutes on Windows; queries stay
+	// under the tighter generic ceiling.
+	if len(args) > 0 && args[0] == "import" {
+		return 10 * time.Minute
+	}
+	return 2 * time.Minute
+}
+
 func run() error {
 	if len(os.Args) < 2 {
 		return fmt.Errorf("usage: trident version | project <import|inspect|list|read|search> | sca <inspect|sbom|tree|resolve|upgrade> | audit <endpoints|dataflow|findings|authz|sarif|reachability> | web | patch <propose|verify|repair> | runtime <http|correlate> | agent <run|status|steps|resume|export> | migrate | check | bootstrap <subject> | demo-offline")
@@ -47,7 +57,7 @@ func run() error {
 	if command == "project" {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer cancel()
-		ctx, timeout := context.WithTimeout(ctx, 2*time.Minute)
+		ctx, timeout := context.WithTimeout(ctx, projectCommandTimeout(os.Args[2:]))
 		defer timeout()
 		return runProject(ctx, os.Args[2:], os.Stdout)
 	}

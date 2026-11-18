@@ -8,7 +8,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// B2: a full target import can exceed the generic two-minute CLI ceiling.
+func TestProjectCommandTimeout(t *testing.T) {
+	if got := projectCommandTimeout([]string{"import", "--source", "x"}); got != 10*time.Minute {
+		t.Fatalf("import timeout = %s, want 10m", got)
+	}
+	if got := projectCommandTimeout([]string{"list", "--snapshot", "x"}); got != 2*time.Minute {
+		t.Fatalf("query timeout = %s, want 2m", got)
+	}
+}
 
 func TestProjectCLIWithoutDatabase(t *testing.T) {
 	t.Setenv("TRIDENT_DATABASE_URL", "")
