@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 
+	"trident/internal/codescan"
 	"trident/internal/model"
 	"trident/internal/project"
 )
@@ -72,6 +73,12 @@ var specifications = []toolSpec{
 		fields:      map[string]argumentSpec{"q": {kind: stringArgument}, "limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
 	},
 	{
+		name:        "query_symbols",
+		description: "Browse bounded lexical symbol declarations across supported languages: functions, methods, classes, interfaces, structs, enums, records, traits and types, with file, line, container and parameter names. Declaration evidence only: no type resolution, call graph, framework binding, reachability or runtime result. Use language/kind/q filters and offset pagination.",
+		schema:      `{"type":"object","properties":{"language":{"type":"string","maxLength":16,"description":"Filter by declaration language, e.g. php, java, python, csharp, javascript, typescript, go, or all."},"kind":{"type":"string","maxLength":16,"description":"Filter by declaration kind, e.g. function, method, class, interface, struct, enum, record, trait, type, or all."},"q":{"type":"string","maxLength":256,"description":"Case-insensitive filter over name, qualified name, container, file, kind and language."},"limit":{"type":"integer","minimum":1,"maximum":25,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
+		fields:      map[string]argumentSpec{"language": {kind: stringArgument}, "kind": {kind: stringArgument}, "q": {kind: stringArgument}, "limit": {kind: integerArgument}, "offset": {kind: integerArgument}},
+	},
+	{
 		name:        "trace_dataflow",
 		description: "Return bounded static source-to-sink findings (SQL and eight other injection categories) with status static_confirmed, inconclusive or refuted. Runtime status is always not_run. Citations are actual snapshot lines; absence of a finding is not a safety proof.",
 		schema:      `{"type":"object","properties":{"category":{"type":"string","maxLength":32,"description":"sql, command, ssrf, path, template, xss, deserialization, xxe, ldap, upload, redirect, xpath or all."},"status":{"type":"string","maxLength":32,"description":"static_confirmed, inconclusive, refuted or all."},"language":{"type":"string","maxLength":16,"description":"Filter by source language, e.g. java, php, python, csharp, javascript, typescript, go, or all."},"q":{"type":"string","maxLength":256,"description":"Case-insensitive filter over finding, endpoint, file and parameter fields."},"limit":{"type":"integer","minimum":1,"maximum":25,"description":"Page size; omitted uses 10."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"Zero-based result offset."}},"required":[],"additionalProperties":false}`,
@@ -100,6 +107,7 @@ type Registry struct {
 	observed        map[evidenceFile][]lineRange
 	analysisMu      sync.Mutex
 	analysis        *analysisCache
+	lateCode        *codescan.Report
 }
 
 func New(snapshot *project.Snapshot) *Registry {
@@ -190,6 +198,8 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 		result, err = r.matchAdvisories(ctx, values)
 	case "query_endpoints":
 		result, err = r.queryEndpoints(ctx, values)
+	case "query_symbols":
+		result, err = r.querySymbols(ctx, values)
 	case "trace_dataflow":
 		result, err = r.traceDataflow(ctx, values)
 	case "list_findings":

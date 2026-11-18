@@ -496,7 +496,7 @@ func compactedToolContentFor(tool, content string) string {
 	switch tool {
 	case "read_source":
 		limit = 2048
-	case "search_source", "list_files", "query_endpoints", "inspect_dependencies":
+	case "search_source", "list_files", "query_endpoints", "query_symbols", "inspect_dependencies":
 		limit = 1024
 	case "trace_dataflow", "list_findings", "match_advisories":
 		limit = 1536

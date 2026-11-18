@@ -63,6 +63,29 @@ type analysisResponse struct {
 	Citations          []Evidence     `json:"citations,omitempty"`
 }
 
+// symbolQueryResponse is declaration browsing for the Agent. It reuses the
+// console's cached code report when one is bound and otherwise lazily derives
+// the same bounded lexical index, so symbols and findings do not diverge.
+type symbolQueryResponse struct {
+	SchemaVersion int                        `json:"schema_version"`
+	Tool          string                     `json:"tool"`
+	SnapshotHash  string                     `json:"snapshot_hash"`
+	Available     bool                       `json:"available"`
+	Reason        string                     `json:"reason,omitempty"`
+	Total         int                        `json:"total"`
+	Offset        int                        `json:"offset"`
+	Limit         int                        `json:"limit"`
+	Partial       bool                       `json:"partial"`
+	SymbolPartial bool                       `json:"symbol_partial"`
+	Counts        map[string]int             `json:"counts,omitempty"`
+	Coverage      any                        `json:"coverage,omitempty"`
+	Limitations   []string                   `json:"limitations"`
+	Items         []codescan.Symbol          `json:"items"`
+	Languages     []codescan.LanguageSummary `json:"languages"`
+	Kinds         []codescan.Count           `json:"kinds"`
+	RuntimeStatus string                     `json:"runtime_status"`
+}
+
 type findingView struct {
 	ID            string                 `json:"id"`
 	Kind          string                 `json:"kind"`
@@ -412,6 +435,92 @@ func (r *Registry) queryEndpoints(ctx context.Context, values map[string]any) (a
 		Coverage:           coverage, Limitations: limitations, Items: items,
 		Citations: dedupeEvidence(citations),
 	}, nil
+}
+
+func (r *Registry) querySymbols(ctx context.Context, values map[string]any) (symbolQueryResponse, error) {
+	limit, offset, err := analysisPage(values)
+	if err != nil {
+		return symbolQueryResponse{}, err
+	}
+	query, err := analysisQuery(values)
+	if err != nil {
+		return symbolQueryResponse{}, err
+	}
+	language := strings.ToLower(strings.TrimSpace(stringValue(values, "language")))
+	kind := strings.ToLower(strings.TrimSpace(stringValue(values, "kind")))
+	if len(language) > 16 || len(kind) > 16 {
+		return symbolQueryResponse{}, fmt.Errorf("%w: language or kind exceeds 16 bytes", ErrArguments)
+	}
+	state, err := r.analysisState(ctx)
+	if err != nil {
+		return symbolQueryResponse{}, err
+	}
+	report, err := r.symbolReport(ctx, state)
+	if err != nil {
+		return symbolQueryResponse{}, err
+	}
+	matched := make([]codescan.Symbol, 0, len(report.Symbols))
+	byKind := map[string]int{}
+	for _, symbol := range report.Symbols {
+		if language != "" && language != "all" && symbol.Language != language {
+			continue
+		}
+		if kind != "" && kind != "all" && symbol.Kind != kind {
+			continue
+		}
+		if query != "" && !symbolQueryMatches(symbol, query) {
+			continue
+		}
+		byKind[symbol.Kind]++
+		matched = append(matched, symbol)
+	}
+	start, end := pageBounds(len(matched), offset, limit)
+	items := make([]codescan.Symbol, 0, end-start)
+	items = append(items, matched[start:end]...)
+	kinds := make([]codescan.Count, 0, len(byKind))
+	for key, value := range byKind {
+		kinds = append(kinds, codescan.Count{Key: key, Value: value})
+	}
+	sort.Slice(kinds, func(i, j int) bool { return kinds[i].Key < kinds[j].Key })
+	return symbolQueryResponse{
+		SchemaVersion: analysisSchemaVersion, Tool: "query_symbols", SnapshotHash: r.snapshot.Hash(),
+		Available: true, Total: len(matched), Offset: offset, Limit: limit,
+		Partial: report.Partial, SymbolPartial: report.SymbolPartial,
+		Counts:        map[string]int{"symbols": len(report.Symbols), "matched": len(matched)},
+		Coverage:      report.Coverage,
+		Limitations:   append([]string(nil), report.Limitations...),
+		Items:         items,
+		Languages:     append([]codescan.LanguageSummary(nil), report.Languages...),
+		Kinds:         kinds,
+		RuntimeStatus: "not_run",
+	}, nil
+}
+
+// symbolReport prefers the console's cached report so the Agent sees the same
+// symbol index as the Web page; a CLI registry without one derives it once.
+func (r *Registry) symbolReport(ctx context.Context, state *analysisCache) (*codescan.Report, error) {
+	if state != nil && state.code != nil {
+		return state.code, nil
+	}
+	r.analysisMu.Lock()
+	defer r.analysisMu.Unlock()
+	if r.lateCode != nil {
+		return r.lateCode, nil
+	}
+	report, err := codescan.Analyze(ctx, r.snapshot, codescan.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("symbol analysis failed: %w", err)
+	}
+	r.lateCode = &report
+	return r.lateCode, nil
+}
+
+func symbolQueryMatches(symbol codescan.Symbol, query string) bool {
+	parts := []string{
+		symbol.Name, symbol.QualifiedName, symbol.Container, symbol.File,
+		symbol.Kind, symbol.Language,
+	}
+	return strings.Contains(strings.ToLower(strings.Join(parts, " ")), query)
 }
 
 func (r *Registry) traceDataflow(ctx context.Context, values map[string]any) (analysisResponse, error) {

@@ -258,12 +258,12 @@ func lex(src []byte, spec languageSpec, max int) ([]token, error) {
 		if quoted {
 			continue
 		}
-	for _, delimiter := range spec.StringDelimiters {
-		// Compare the rune at the current index, not the cached loop start:
-		// the C# interpolated-prefix branch has already advanced i past '$'.
-		if string(runes[i]) != delimiter {
-			continue
-		}
+		for _, delimiter := range spec.StringDelimiters {
+			// Compare the rune at the current index, not the cached loop start:
+			// the C# interpolated-prefix branch has already advanced i past '$'.
+			if string(runes[i]) != delimiter {
+				continue
+			}
 			startLine := line
 			quote := runes[i]
 			i++

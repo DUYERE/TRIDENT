@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -267,6 +268,65 @@ func mergedRegistry(t *testing.T) *Registry {
 	return NewWithAnalysis(snapshot, AnalysisOptions{CodeReport: &codeReport})
 }
 
+func symbolReportFixture() codescan.Report {
+	return codescan.Report{
+		SchemaVersion: 1,
+		ToolVersion:   codescan.ToolVersion,
+		AnalysisKind:  codescan.AnalysisKind,
+		Symbols: []codescan.Symbol{
+			{Language: "php", Kind: "function", Name: "login", QualifiedName: "login", File: "src/auth.php", Line: 10},
+			{Language: "php", Kind: "method", Name: "doLogin", QualifiedName: "Auth.doLogin", Container: "Auth", File: "src/Auth.php", Line: 22},
+			{Language: "python", Kind: "function", Name: "login_view", QualifiedName: "login_view", File: "src/views.py", Line: 8},
+		},
+		Languages: []codescan.LanguageSummary{{Language: "php", FilesScanned: 2, Symbols: 2}, {Language: "python", FilesScanned: 1, Symbols: 1}},
+		Partial:   false,
+	}
+}
+
+// Agent symbol browsing must return declarations only, never calls or inferred
+// types, and must stay unavailable when the console has not bound a code report.
+func TestQuerySymbolsFiltersAndBounds(t *testing.T) {
+	snapshot, _, _ := testSnapshot(t, map[string][]byte{"src/auth.php": []byte("<?php function login() {}")})
+	report := symbolReportFixture()
+	registry := NewWithAnalysis(snapshot, AnalysisOptions{CodeReport: &report})
+
+	var all symbolQueryResponse
+	if err := json.Unmarshal(execute(t, registry, "query_symbols", map[string]any{}), &all); err != nil {
+		t.Fatal(err)
+	}
+	if !all.Available || all.Total != 3 || len(all.Items) != 3 {
+		t.Fatalf("symbol page: %+v", all)
+	}
+
+	var php symbolQueryResponse
+	if err := json.Unmarshal(execute(t, registry, "query_symbols", map[string]any{"language": "php", "kind": "method"}), &php); err != nil {
+		t.Fatal(err)
+	}
+	if php.Total != 1 || php.Items[0].Name != "doLogin" || php.Items[0].Container != "Auth" {
+		t.Fatalf("filtered symbols: %+v", php.Items)
+	}
+
+	var page symbolQueryResponse
+	if err := json.Unmarshal(execute(t, registry, "query_symbols", map[string]any{"limit": 1, "offset": 1}), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 3 || len(page.Items) != 1 || page.Items[0].Name != "doLogin" {
+		t.Fatalf("paged symbols: %+v", page)
+	}
+
+	var computed symbolQueryResponse
+	if err := json.Unmarshal(execute(t, New(snapshot), "query_symbols", map[string]any{}), &computed); err != nil {
+		t.Fatal(err)
+	}
+	if !computed.Available || computed.Total < 1 || len(computed.Items) == 0 {
+		t.Fatalf("lazy symbol query: %+v", computed)
+	}
+
+	if _, err := registry.Execute(context.Background(), "query_symbols", json.RawMessage(`{"limit":26}`)); !errors.Is(err, ErrArguments) {
+		t.Fatalf("oversized limit was accepted: %v", err)
+	}
+}
+
 // Regression: category=sql must reach code-audit findings by their rule
 // category, not only the Java unified-model kind mapping.
 func TestListFindingsCategoryReachesCodeFindings(t *testing.T) {
@@ -369,11 +429,11 @@ func TestListRulesExposesBuiltinRuleSet(t *testing.T) {
 	items := page.Items.([]any)
 	first, _ := json.Marshal(items[0])
 	var rule struct {
-		ID        string `json:"id"`
+		ID        string   `json:"id"`
 		Languages []string `json:"languages"`
-		Category  string `json:"category"`
-		CWE       string `json:"cwe"`
-		Sinks     int    `json:"sinks"`
+		Category  string   `json:"category"`
+		CWE       string   `json:"cwe"`
+		Sinks     int      `json:"sinks"`
 	}
 	if err := json.Unmarshal(first, &rule); err != nil {
 		t.Fatal(err)

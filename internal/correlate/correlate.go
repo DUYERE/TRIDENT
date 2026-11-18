@@ -26,6 +26,7 @@ const (
 	MaxInputBytes     = 16 << 20
 	MaxFindings       = 20_000
 	MaxRuntimeResults = 10_000
+	MaxEntries        = 5_000
 	MaxEvidenceIDs    = 16
 	MaxRuntimeRefs    = 64
 )
@@ -77,15 +78,21 @@ type RuntimeSource struct {
 	RuntimeStatus string `json:"runtime_status"`
 }
 
-// Endpoint is the static side of the correlation: annotation-level route
-// evidence as recorded by `trident audit findings`.
+// Endpoint is the static side of the correlation: route evidence recorded by
+// `trident audit findings`, or a route declaration derived from the unified
+// entry report when a code finding has no endpoint of its own.
 type Endpoint struct {
-	Path      string   `json:"path"`
-	Methods   []string `json:"http_methods"`
-	File      string   `json:"file,omitempty"`
-	SHA256    string   `json:"sha256,omitempty"`
-	StartLine int      `json:"start_line,omitempty"`
-	EndLine   int      `json:"end_line,omitempty"`
+	Path       string   `json:"path"`
+	Methods    []string `json:"http_methods"`
+	File       string   `json:"file,omitempty"`
+	SHA256     string   `json:"sha256,omitempty"`
+	StartLine  int      `json:"start_line,omitempty"`
+	EndLine    int      `json:"end_line,omitempty"`
+	Language   string   `json:"language,omitempty"`
+	Kind       string   `json:"kind,omitempty"`
+	PathStatus string   `json:"path_status,omitempty"`
+	Source     string   `json:"source,omitempty"`
+	Derived    bool     `json:"derived,omitempty"`
 }
 
 // RuntimeRef is the runtime side of the correlation: one observed request from
@@ -117,6 +124,7 @@ type Correlation struct {
 type Coverage struct {
 	FindingsTotal           int `json:"findings_total"`
 	FindingsWithEndpoint    int `json:"findings_with_endpoint"`
+	FindingsEndpointDerived int `json:"findings_endpoint_derived"`
 	FindingsWithoutEndpoint int `json:"findings_without_endpoint"`
 	Correlated              int `json:"correlated"`
 	Ambiguous               int `json:"ambiguous"`
@@ -133,6 +141,7 @@ const (
 	limitRouteExact      = "route_method_exact_match: annotation-level paths are compared literally; context path, deployment prefix, path variables and normalization are not resolved"
 	limitNoWriteBack     = "static_findings_not_modified: both inputs are read-only and finding status/runtime_status are never rewritten"
 	limitWildcardMethod  = "method_unrestricted_matches_any_observed_method: a static route without HTTP methods is treated as unrestricted and may match more than one observed method"
+	limitDerivedRoute    = "derived_endpoint_is_file_scoped: a finding without its own endpoint was matched to the only static route declared in its sink file; this does not prove the runtime request executed that finding"
 )
 
 type findingsDoc struct {
@@ -142,12 +151,13 @@ type findingsDoc struct {
 }
 
 type finding struct {
-	ID            string     `json:"id"`
-	Kind          string     `json:"kind"`
-	Status        string     `json:"status"`
-	RuntimeStatus string     `json:"runtime_status"`
-	Endpoint      *endpoint  `json:"endpoint"`
-	Evidence      []evidence `json:"evidence"`
+	ID             string     `json:"id"`
+	Kind           string     `json:"kind"`
+	Status         string     `json:"status"`
+	RuntimeStatus  string     `json:"runtime_status"`
+	Endpoint       *endpoint  `json:"endpoint"`
+	Evidence       []evidence `json:"evidence"`
+	SourceAnalyses []string   `json:"source_analyses"`
 }
 
 type endpoint struct {
@@ -160,8 +170,27 @@ type endpoint struct {
 }
 
 type evidence struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	File      string `json:"file"`
+	StartLine int    `json:"start_line"`
+}
+
+// entriesDoc is the subset of `/api/endpoints` needed to derive a route for a
+// code finding that has no endpoint of its own. Extra fields are ignored.
+type entriesDoc struct {
+	SchemaVersion int        `json:"schema_version"`
+	Entries       []entryRef `json:"entries"`
+}
+
+type entryRef struct {
+	Path        string   `json:"path"`
+	HTTPMethods []string `json:"http_methods"`
+	Kind        string   `json:"kind"`
+	Language    string   `json:"language"`
+	File        string   `json:"file"`
+	PathStatus  string   `json:"path_status"`
+	Source      string   `json:"source"`
 }
 
 type runtimeDoc struct {
@@ -188,7 +217,10 @@ type runtimeResult struct {
 
 // Correlate builds an independent report. Both inputs must be complete reports
 // produced by this tool; malformed or unobserved inputs fail closed.
-func Correlate(findingsInput, runtimeInput Input) (Report, error) {
+func Correlate(findingsInput, runtimeInput Input, entriesInput ...Input) (Report, error) {
+	if len(entriesInput) > 1 {
+		return Report{}, fmt.Errorf("at most one entries report is supported")
+	}
 	if len(findingsInput.Data) == 0 || len(findingsInput.Data) > MaxInputBytes {
 		return Report{}, fmt.Errorf("findings report must contain 1 to %d bytes", MaxInputBytes)
 	}
@@ -235,10 +267,42 @@ func Correlate(findingsInput, runtimeInput Input) (Report, error) {
 		})
 	}
 
+	routesByFile := map[string][]entryRef{}
+	if len(entriesInput) == 1 {
+		input := entriesInput[0]
+		if len(input.Data) == 0 || len(input.Data) > MaxInputBytes {
+			return Report{}, fmt.Errorf("entries report must contain 1 to %d bytes", MaxInputBytes)
+		}
+		var entries entriesDoc
+		if err := json.Unmarshal(input.Data, &entries); err != nil {
+			return Report{}, fmt.Errorf("invalid entries JSON: %w", err)
+		}
+		if len(entries.Entries) > MaxEntries {
+			return Report{}, fmt.Errorf("entries report exceeds %d entries", MaxEntries)
+		}
+		for _, entry := range entries.Entries {
+			path := strings.TrimSpace(entry.Path)
+			file := strings.TrimSpace(entry.File)
+			if path == "" || file == "" || !strings.HasPrefix(path, "/") {
+				continue
+			}
+			switch entry.Kind {
+			case "application_entry", "request_script":
+				continue
+			}
+			routesByFile[file] = append(routesByFile[file], entryRef{
+				Path: path, HTTPMethods: append([]string(nil), entry.HTTPMethods...),
+				Kind: entry.Kind, Language: entry.Language, File: file,
+				PathStatus: entry.PathStatus, Source: entry.Source,
+			})
+		}
+	}
+
 	seen := map[string]bool{}
 	correlations := make([]Correlation, 0, len(findings.Findings))
 	matched := map[string]bool{}
 	wildcardUsed := false
+	derivedUsed := false
 	coverage := Coverage{FindingsTotal: len(findings.Findings), RuntimeResults: len(refs)}
 	for _, item := range findings.Findings {
 		if item.ID == "" {
@@ -256,30 +320,58 @@ func Correlate(findingsInput, runtimeInput Input) (Report, error) {
 			FindingEvidenceID: routeEvidence(item.Evidence),
 			Runtime:           []RuntimeRef{},
 		}
-		if item.Endpoint == nil {
+		var endpoint *Endpoint
+		switch {
+		case item.Endpoint != nil:
+			path := strings.TrimSpace(item.Endpoint.Path)
+			if !strings.HasPrefix(path, "/") {
+				return Report{}, fmt.Errorf("finding %q endpoint path must start with /", item.ID)
+			}
+			endpoint = &Endpoint{
+				Path: path, Methods: normalizeMethods(item.Endpoint.HTTPMethods),
+				File: item.Endpoint.File, SHA256: item.Endpoint.SHA256,
+				StartLine: item.Endpoint.StartLine, EndLine: item.Endpoint.EndLine,
+				Language: findingLanguage(item),
+			}
+		case len(routesByFile) > 0:
+			routes := routesByFile[findingFile(item)]
+			switch len(routes) {
+			case 1:
+				ref := routes[0]
+				endpoint = &Endpoint{
+					Path: ref.Path, Methods: normalizeMethods(ref.HTTPMethods), File: ref.File,
+					Language: ref.Language, Kind: ref.Kind, PathStatus: ref.PathStatus, Source: ref.Source, Derived: true,
+				}
+				entry.Reason = "endpoint_derived_from_finding_file_route"
+				derivedUsed = true
+			case 0:
+			default:
+				entry.Match = MatchNotCorrelated
+				entry.Reason = "multiple_static_routes_for_finding_file"
+				coverage.NotCorrelated++
+				correlations = append(correlations, entry)
+				continue
+			}
+		}
+		if endpoint == nil {
 			coverage.FindingsWithoutEndpoint++
 			entry.Match = MatchNotCorrelated
-			entry.Reason = "finding_has_no_endpoint"
+			if len(routesByFile) > 0 {
+				entry.Reason = "finding_has_no_static_route_in_its_file"
+			} else {
+				entry.Reason = "finding_has_no_endpoint"
+			}
 			coverage.NotCorrelated++
 			correlations = append(correlations, entry)
 			continue
 		}
-		path := strings.TrimSpace(item.Endpoint.Path)
-		if !strings.HasPrefix(path, "/") {
-			return Report{}, fmt.Errorf("finding %q endpoint path must start with /", item.ID)
-		}
 		coverage.FindingsWithEndpoint++
-		methods := make([]string, 0, len(item.Endpoint.HTTPMethods))
-		for _, method := range item.Endpoint.HTTPMethods {
-			method = strings.ToUpper(strings.TrimSpace(method))
-			if method != "" {
-				methods = append(methods, method)
-			}
+		if endpoint.Derived {
+			coverage.FindingsEndpointDerived++
 		}
-		entry.Endpoint = &Endpoint{
-			Path: path, Methods: methods, File: item.Endpoint.File, SHA256: item.Endpoint.SHA256,
-			StartLine: item.Endpoint.StartLine, EndLine: item.Endpoint.EndLine,
-		}
+		entry.Endpoint = endpoint
+		path := endpoint.Path
+		methods := endpoint.Methods
 		for _, ref := range refs {
 			if ref.Path != path {
 				continue
@@ -335,6 +427,9 @@ func Correlate(findingsInput, runtimeInput Input) (Report, error) {
 	if wildcardUsed {
 		limitations = append(limitations, limitWildcardMethod)
 	}
+	if derivedUsed {
+		limitations = append(limitations, limitDerivedRoute)
+	}
 	return Report{
 		SchemaVersion: SchemaVersion,
 		ToolVersion:   ToolVersion,
@@ -364,6 +459,47 @@ func containsMethod(methods []string, method string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeMethods(raw []string) []string {
+	methods := make([]string, 0, len(raw))
+	for _, method := range raw {
+		method = strings.ToUpper(strings.TrimSpace(method))
+		if method == "" {
+			continue
+		}
+		if method == "ANY" {
+			return nil
+		}
+		methods = append(methods, method)
+	}
+	return methods
+}
+
+// findingFile picks the sink file first, matching how code findings are
+// anchored; route evidence is not used because it describes the entry, not the
+// vulnerable line.
+func findingFile(item finding) string {
+	for _, evidence := range item.Evidence {
+		if evidence.Kind == "sink" && strings.TrimSpace(evidence.File) != "" {
+			return evidence.File
+		}
+	}
+	for _, evidence := range item.Evidence {
+		if strings.TrimSpace(evidence.File) != "" {
+			return evidence.File
+		}
+	}
+	return ""
+}
+
+func findingLanguage(item finding) string {
+	for _, analysis := range item.SourceAnalyses {
+		if value, ok := strings.CutPrefix(analysis, "language="); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // routeEvidence keeps the static references that describe the route; other

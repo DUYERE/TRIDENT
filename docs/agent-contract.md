@@ -6,7 +6,7 @@
 
 1. 核心 Go；一个决策循环，不引入三角色、多 Worker 或自主子 Agent 网络。
 2. 首个适配器使用官方 OpenAI Go SDK 的 Chat Completions 协议，明确配置模型/端点。兼容服务必须通过本契约，不假设 Responses、服务器工具或隐藏推理字段均通用。DeepSeek 等兼容服务返回的 `reasoning_content` 作为不透明延续数据接受但不落入最终答案；`reasoning_details`/`reasoning` 仍拒绝。工具 JSON Schema 的数值关键字必须以 JSON number 发送（SDK 会把 `json.Number` 编码成字符串，严格服务会拒绝）。
-3. 工具为九个只读工具：快照 `inspect_project/list_files/read_source/search_source`，分析 `inspect_dependencies/match_advisories/query_endpoints/trace_dataflow/list_findings`。分析工具复用 `sca/audit/dataflow/findings`，只返回有界摘要和已实际读取的快照行引用。Agent 仍不执行 Shell/Maven/Java，不提供写源码、网络检索、补丁或修复能力。
+3. 工具为十一个只读工具：快照 `inspect_project/list_files/read_source/search_source`，分析 `inspect_dependencies/match_advisories/query_endpoints/query_symbols/trace_dataflow/list_findings/list_rules`。分析工具复用 `sca/audit/dataflow/findings/codescan`，只返回有界摘要和已实际读取的快照行引用。Agent 仍不执行 Shell/Maven/Java，不提供写源码、网络检索、补丁或修复能力。
 4. 运行配置可绑定一个绝对的本地公告目录 `--advisories`；它是调用者配置，不是快照内容，不改变外发范围。未配置时 `match_advisories` 明确返回 `configured=false`。
 5. 常规测试只用 Fake 与 loopback HTTP；本地测试服务不是实际 LLM，不可以据其输出宣称自主审计已验收。2026-11-13 用户单独批准了一次 DeepSeek `deepseek-flash`、仅合成样本、单次 Run 最多 10 次模型调用的只读验收，结果见 §6.1；该批准不扩展到其他快照、模型或未来调用。
 
@@ -48,9 +48,11 @@
 |---|---|---|
 | `inspect_dependencies` | `limit` 1–10、`offset` 0–100000 | POM 声明级依赖/模块，不是有效依赖树、classpath、SBOM 或可达性；无源码引用 |
 | `match_advisories` | `limit`、`offset` | 仅精确版本公告匹配；未绑定公告目录时 `configured=false`；无源码引用 |
-| `query_endpoints` | `q`、`limit`、`offset` | Spring MVC 注解级入口；每个入口附已读取的方法行引用 |
+| `query_endpoints` | `q`、`limit`、`offset` | Java 注解入口与七语言声明路由（含 ThinkPHP urlconfig 展开与 dynamic_unresolved）；每个入口附已读取的方法行引用 |
+| `query_symbols` | `language`、`kind`、`q`、`limit`、`offset` | 七语言词法符号声明（函数/方法/类/接口/结构/枚举/record/trait/type）；无类型解析、调用图、框架绑定或运行时结论；无源码引用 |
 | `trace_dataflow` | `category`、`status`、`q`、`limit`、`offset` | 9 类 Source/Sink 静态 finding；`runtime_status=not_run`；最多两个实际读取的引用/条 |
 | `list_findings` | `category`、`status`、`q`、`limit`、`offset` | 统一 Finding/Hypothesis，包括依赖候选；引用契约同上 |
+| `list_rules` | `category`、`language`、`q` | 内置多语言规则元数据；声明式模式，不是语义分析；无源码引用 |
 
 所有分析工具单次结果仍受 24 KiB 循环上限约束；分页不复制分析缓存，不产生额外源码读取或网络访问。
 

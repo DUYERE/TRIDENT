@@ -94,9 +94,10 @@ func runRuntimeHTTP(ctx context.Context, args []string, out io.Writer) error {
 func runRuntimeCorrelate(args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("runtime correlate", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var findingsPath, runtimePath, outPath string
+	var findingsPath, runtimePath, entriesPath, outPath string
 	flags.StringVar(&findingsPath, "findings", "", "JSON report from audit findings")
 	flags.StringVar(&runtimePath, "runtime", "", "JSON report from runtime http")
+	flags.StringVar(&entriesPath, "entries", "", "optional JSON report from /api/endpoints for file-scoped route derivation")
 	flags.StringVar(&outPath, "out", "", "new correlation report file")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("invalid runtime correlate arguments: %w", err)
@@ -119,9 +120,21 @@ func runRuntimeCorrelate(args []string, out io.Writer) error {
 	if samePath(absoluteOut, absoluteFindings) || samePath(absoluteOut, absoluteRuntime) {
 		return fmt.Errorf("correlation output must not overwrite an input report")
 	}
+	var entriesInput []correlate.Input
+	if entriesPath != "" {
+		absoluteEntries, entriesData, err := readCorrelationInput(entriesPath, "entries")
+		if err != nil {
+			return err
+		}
+		if samePath(absoluteOut, absoluteEntries) {
+			return fmt.Errorf("correlation output must not overwrite an input report")
+		}
+		entriesInput = append(entriesInput, correlate.Input{Path: absoluteEntries, Data: entriesData})
+	}
 	report, err := correlate.Correlate(
 		correlate.Input{Path: absoluteFindings, Data: findingsData},
 		correlate.Input{Path: absoluteRuntime, Data: runtimeData},
+		entriesInput...,
 	)
 	if err != nil {
 		return err
@@ -145,7 +158,7 @@ func runRuntimeCorrelate(args []string, out io.Writer) error {
 		"out": absoluteOut, "bytes": len(encoded), "runtime_status": report.RuntimeStatus,
 		"findings": report.Coverage.FindingsTotal, "runtime_results": report.Coverage.RuntimeResults,
 		"correlated": report.Coverage.Correlated, "ambiguous": report.Coverage.Ambiguous,
-		"not_correlated": report.Coverage.NotCorrelated,
+		"not_correlated": report.Coverage.NotCorrelated, "derived": report.Coverage.FindingsEndpointDerived,
 	})
 }
 

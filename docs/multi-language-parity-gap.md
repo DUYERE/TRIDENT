@@ -129,11 +129,10 @@
 - `/api/endpoints` 统一入口现在保留 `path_status` 与 `reason`，变量路径路由以 `dynamic_unresolved` 显式展示。
 - 每个语言有一个 fixture 断言：PHP 函数/类/方法、C# 类/方法、Python 函数、JS/TS 函数、Java 类/方法、Go 函数/结构。
 
-仍未落地：
-- 变量和字符串常量索引（本版显式不暴露原始字符串值，避免泄密和假类型语义）。
-- 类型解析、import/receiver/overload/dynamic dispatch、跨文件调用图、框架绑定。
-- 数据库 `urlconfig` 的真实路由展开、ThinkPHP 默认路由 `convention_candidate`。
-- 这些属于 P2 增量，不应把 `external_or_unresolved` 当成“无调用”或“清洁”。
+时点说明（2026-11-18 更新）：
+- 本节是 P2 v1 的时点记录。变量/字符串常量索引、唯一跨文件调用解析、快照内 `urlconfig` 展开与 `convention_candidate` 已在此后落地，见第 8 节。
+- 仍未落地：类型解析、receiver/overload/dynamic dispatch、完整跨文件调用图、框架绑定；SQLite `.db` 实文件仍不读取。
+- 边界不变：`external_or_unresolved` 不等于“无调用”或“清洁”。
 
 ### P3：鉴权适配器
 

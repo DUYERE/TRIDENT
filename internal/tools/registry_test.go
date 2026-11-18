@@ -74,7 +74,7 @@ func TestDefinitionsFixedReadOnlyAndIndependent(t *testing.T) {
 	definitions := r.Definitions()
 	want := []string{
 		"inspect_project", "list_files", "read_source", "search_source",
-		"inspect_dependencies", "match_advisories", "query_endpoints", "trace_dataflow", "list_findings", "list_rules",
+		"inspect_dependencies", "match_advisories", "query_endpoints", "query_symbols", "trace_dataflow", "list_findings", "list_rules",
 	}
 	if len(definitions) != len(want) {
 		t.Fatalf("unexpected tools: %+v", definitions)

@@ -59,6 +59,77 @@ func runtimeEntry(id, method, path string) map[string]any {
 	}
 }
 
+func entriesJSON(t *testing.T, entries ...map[string]any) []byte {
+	t.Helper()
+	doc := map[string]any{"schema_version": 1, "entries": entries}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal entries: %v", err)
+	}
+	return data
+}
+
+// A code finding has no endpoint of its own; when its sink file has exactly one
+// route declaration, correlation may use that route as a file-scoped candidate
+// but must record the derivation and language explicitly.
+func TestCorrelateDerivesLanguageRouteFromUnifiedEntries(t *testing.T) {
+	findings := findingsJSON(t, map[string]any{
+		"id": "code:php.sql.query:src/news.php:12", "kind": "php.sql.query",
+		"status": "static_confirmed", "runtime_status": "not_run",
+		"evidence": []map[string]any{
+			{"id": "ev:source", "kind": "source", "file": "src/news.php", "start_line": 10},
+			{"id": "ev:sink", "kind": "sink", "file": "src/news.php", "start_line": 12},
+		},
+	})
+	entries := entriesJSON(t,
+		map[string]any{"path": "/news", "http_methods": []string{"GET"}, "kind": "route_declaration", "language": "php", "file": "src/news.php", "path_status": "declared", "source": "declaration"},
+		map[string]any{"path": "", "http_methods": []string{}, "kind": "application_entry", "language": "php", "file": "public/index.php"},
+	)
+	runtime := runtimeJSON(t, runtimeEntry("r1", "GET", "/news"))
+	report, err := Correlate(
+		Input{Path: "findings.json", Data: findings},
+		Input{Path: "runtime.json", Data: runtime},
+		Input{Path: "entries.json", Data: entries},
+	)
+	if err != nil {
+		t.Fatalf("correlate: %v", err)
+	}
+	if len(report.Results) != 1 || report.Results[0].Match != MatchCorrelated {
+		t.Fatalf("derived correlation: %+v", report.Results)
+	}
+	endpoint := report.Results[0].Endpoint
+	if endpoint == nil || endpoint.Path != "/news" || endpoint.Language != "php" || endpoint.Kind != "route_declaration" || endpoint.Source != "declaration" {
+		t.Fatalf("derived endpoint: %+v", endpoint)
+	}
+	if report.Coverage.FindingsEndpointDerived != 1 {
+		t.Fatalf("derived coverage: %+v", report.Coverage)
+	}
+}
+
+func TestCorrelateAmbiguousFileRoutesStayUncorrelated(t *testing.T) {
+	findings := findingsJSON(t, map[string]any{
+		"id": "code:php.x:src/routes.php:5", "kind": "php.sql.query",
+		"status": "static_confirmed", "runtime_status": "not_run",
+		"evidence": []map[string]any{{"id": "ev:sink", "kind": "sink", "file": "src/routes.php", "start_line": 5}},
+	})
+	entries := entriesJSON(t,
+		map[string]any{"path": "/a", "http_methods": []string{"GET"}, "kind": "route_declaration", "language": "php", "file": "src/routes.php"},
+		map[string]any{"path": "/b", "http_methods": []string{"GET"}, "kind": "route_declaration", "language": "php", "file": "src/routes.php"},
+	)
+	runtime := runtimeJSON(t, runtimeEntry("r1", "GET", "/a"))
+	report, err := Correlate(
+		Input{Path: "findings.json", Data: findings},
+		Input{Path: "runtime.json", Data: runtime},
+		Input{Path: "entries.json", Data: entries},
+	)
+	if err != nil {
+		t.Fatalf("correlate: %v", err)
+	}
+	if len(report.Results) != 1 || report.Results[0].Match != MatchNotCorrelated || report.Results[0].Reason != "multiple_static_routes_for_finding_file" {
+		t.Fatalf("ambiguous derived route: %+v", report.Results)
+	}
+}
+
 func TestCorrelateMatchesRoutesInThreeStates(t *testing.T) {
 	findings := findingsJSON(t,
 		findingEntry("unique", "/orders", []string{"GET"},
