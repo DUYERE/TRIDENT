@@ -1,0 +1,255 @@
+diff --git a/modules/Tracking/graphing.php b/modules/Tracking/graphing.php
+index 8e13a65..8a0f9fe 100644
+--- a/modules/Tracking/graphing.php
++++ b/modules/Tracking/graphing.php
+@@ -19,6 +19,7 @@ You should have received a copy of the GNU General Public License
+ along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+ 
++use Gibbon\Data\Validator;
+ use Gibbon\Domain\System\SettingGateway;
+ use Gibbon\Forms\Form;
+ use Gibbon\Forms\DatabaseFormFactory;
+@@ -26,6 +27,9 @@ use Gibbon\Forms\DatabaseFormFactory;
+ //Module includes
+ require_once __DIR__ . '/moduleFunctions.php';
+ 
++$validator = $container->get(Validator::class);
++$_POST = $validator->sanitize($_POST);
++
+ if (isActionAccessible($guid, $connection2, '/modules/Tracking/graphing.php') == false) {
+     // Access denied
+     $page->addError(__('You do not have access to this action.'));
+@@ -42,9 +46,13 @@ if (isActionAccessible($guid, $connection2, '/modules/Tracking/graphing.php') ==
+         echo __('Filter');
+         echo '</h2>';
+ 
+-        $gibbonPersonIDs = (isset($_POST['gibbonPersonIDs']))? $_POST['gibbonPersonIDs'] : null;
+-        $gibbonDepartmentIDs = (isset($_POST['gibbonDepartmentIDs']))? $_POST['gibbonDepartmentIDs'] : null;
+-        $dataType = (isset($_POST['dataType']))? $_POST['dataType'] : null;
++        $gibbonPersonIDs = $_POST['gibbonPersonIDs'] ?? [];
++        $gibbonDepartmentIDs = $_POST['gibbonDepartmentIDs'] ?? [];
++        $dataType = $_POST['dataType'] ?? null;
++
++        // Sanitize the gibbonPersonIDs and gibbonDepartmentIDs lists
++        $gibbonPersonIDs = $validator->sanitizeArrayIDs($gibbonPersonIDs);
++        $gibbonDepartmentIDs = $validator->sanitizeArrayIDs($gibbonDepartmentIDs);
+ 
+         $settingGateway = $container->get(SettingGateway::class);
+         $attainmentAlt = $settingGateway->getSettingByScope('Markbook', 'attainmentAlternativeName');
+@@ -133,6 +141,7 @@ if (isActionAccessible($guid, $connection2, '/modules/Tracking/graphing.php') ==
+                         $personExtra_IA = 'AND ('.substr($personExtra_IA, 0, -4).')';
+                     }
+ 
++                    $dataType = $validator->sanitizeAlphaNumeric($dataType);
+                     $sqlDepartments = '(SELECT DISTINCT gibbonDepartment.name AS department
+                         FROM gibbonMarkbookEntry
+                         JOIN gibbonMarkbookColumn ON (gibbonMarkbookEntry.gibbonMarkbookColumnID=gibbonMarkbookColumn.gibbonMarkbookColumnID)
+diff --git a/modules/Reports/archive_manage_addProcess.php b/modules/Reports/archive_manage_addProcess.php
+index 5f2f040..a31b256 100644
+--- a/modules/Reports/archive_manage_addProcess.php
++++ b/modules/Reports/archive_manage_addProcess.php
+@@ -36,10 +36,23 @@ if (isActionAccessible($guid, $connection2, '/modules/Reports/archive_manage_add
+ } else {
+     // Proceed!
+     $reportArchiveGateway = $container->get(ReportArchiveGateway::class);
++    $validator = $container->get(Validator::class);
++
++    $path = $_POST['path'] ?? '';
++    if (substr($path, 0, 8) != '/uploads') {
++        $path = '/uploads/' . trim($path, ' /');
++    }
++
++    $securePath = $validator->sanitizeFilePath($path, $session->get('absolutePath'));
++    if (empty($securePath)) {
++        $URL .= '&return=error1';
++        header("Location: {$URL}");
++        exit;
++    }
+ 
+     $data = [
+         'name'             => $_POST['name'] ?? '',
+-        'path'             => $_POST['path'] ?? '',
++        'path'             => $securePath ?? '',
+         'readonly'         => $_POST['readonly'] ?? 'Y',
+         'viewableStaff'    => $_POST['viewableStaff'] ?? 'N',
+         'viewableStudents' => $_POST['viewableStudents'] ?? 'N',
+@@ -47,8 +60,6 @@ if (isActionAccessible($guid, $connection2, '/modules/Reports/archive_manage_add
+         'viewableOther'    => $_POST['viewableOther'] ?? 'N',
+     ];
+ 
+-    $data['path'] = '/'.trim($data['path'], '/');
+-
+     // Validate the required values are present
+     if (empty($data['name']) || empty($data['path'])) {
+         $URL .= '&return=error1';
+diff --git a/modules/Reports/archive_manage_editProcess.php b/modules/Reports/archive_manage_editProcess.php
+index 9beabe2..fcea216 100644
+--- a/modules/Reports/archive_manage_editProcess.php
++++ b/modules/Reports/archive_manage_editProcess.php
+@@ -38,10 +38,23 @@ if (isActionAccessible($guid, $connection2, '/modules/Reports/archive_manage_edi
+ } else {
+     // Proceed!
+     $reportArchiveGateway = $container->get(ReportArchiveGateway::class);
++    $validator = $container->get(Validator::class);
++
++    $path = $_POST['path'] ?? '';
++    if (substr($path, 0, 8) != '/uploads') {
++        $path = '/uploads/' . trim($path, ' /');
++    }
++
++    $securePath = $validator->sanitizeFilePath($path, $session->get('absolutePath'));
++    if (empty($securePath)) {
++        $URL .= '&return=error1';
++        header("Location: {$URL}");
++        exit;
++    }
+ 
+     $data = [
+         'name'             => $_POST['name'] ?? '',
+-        'path'             => $_POST['path'] ?? '',
++        'path'             => $securePath ?? '',
+         'readonly'         => $_POST['readonly'] ?? 'Y',
+         'viewableStaff'    => $_POST['viewableStaff'] ?? 'N',
+         'viewableStudents' => $_POST['viewableStudents'] ?? 'N',
+@@ -49,8 +62,6 @@ if (isActionAccessible($guid, $connection2, '/modules/Reports/archive_manage_edi
+         'viewableOther'    => $_POST['viewableOther'] ?? 'N',
+     ];
+ 
+-    $data['path'] = '/'.trim($data['path'], '/');
+-
+     // Validate the required values are present
+     if (empty($gibbonReportArchiveID) || empty($data['name'])) {
+         $URL .= '&return=error1';
+diff --git a/modules/Reports/archive_manage_uploadProcess.php b/modules/Reports/archive_manage_uploadProcess.php
+index 5196338..e727f26 100644
+--- a/modules/Reports/archive_manage_uploadProcess.php
++++ b/modules/Reports/archive_manage_uploadProcess.php
+@@ -46,19 +46,12 @@ if (isActionAccessible($guid, $connection2, '/modules/Reports/archive_manage_upl
+     $fileSeparator = $_POST['fileSeparator'] ?? '';
+     $fileSection = $_POST['fileSection'] ?? '';
+ 
+-    if (empty($file) || empty($gibbonReportArchiveID) || empty($gibbonSchoolYearID) || empty($reportIdentifier) || empty($reportDate)) {
++    if (empty($gibbonReportArchiveID) || empty($gibbonSchoolYearID) || empty($reportIdentifier) || empty($reportDate)) {
+         $URL .= '&return=error1';
+         header("Location: {$URL}");
+         exit;
+     }
+ 
+-    $absolutePath = $session->get('absolutePath');
+-    if (!is_file($absolutePath.'/'.$file)) {
+-        $URL .= '&return=error1';
+-        header("Location: {$URL}");
+-        exit;
+-    }
+-    
+     $reportArchiveGateway = $container->get(ReportArchiveGateway::class);
+     $reportArchiveEntryGateway = $container->get(ReportArchiveEntryGateway::class);
+     $studentGateway = $container->get(StudentGateway::class);
+@@ -70,14 +63,27 @@ if (isActionAccessible($guid, $connection2, '/modules/Reports/archive_manage_upl
+         exit;
+     }
+ 
+-    $reportFolder = $gibbonSchoolYearID.'-'.preg_replace('[/~`!@%#$%^&*()+={}\[\]|\\:;"\'<>,.?\/]', '', $reportIdentifier);
+-    $destinationFolder = $archive['path'].'/'.$reportFolder;
++    $validator = $container->get(Validator::class);
++    $file = $validator->sanitizeFilename($file);
++    $allowedPath = $archive['path'] . '/temp/' . $file;
++
++    $absolutePath = $session->get('absolutePath');
++    if (empty($file) || !is_file($absolutePath.'/'.$allowedPath)) {
++        $URL .= '&return=error1';
++        header("Location: {$URL}");
++        exit;
++    }
++
++    $gibbonSchoolYearID = $validator->sanitizeNumeric($gibbonSchoolYearID);
++    $reportIdentifier = $validator->sanitizeAlphaNumeric($reportIdentifier, true);
++    $reportFolder = $gibbonSchoolYearID.'-'.$reportIdentifier;
++    $destinationFolder = $archive['path'].'/'.$gibbonSchoolYearID.'-'.$reportIdentifier;
+     if (!is_dir($absolutePath.$destinationFolder)) {
+         mkdir($absolutePath.$destinationFolder, 0755, true);
+     }
+ 
+     $fileUploader = new FileUploader($pdo, $session);
+-    $reports = $fileUploader->uploadFromZIP($absolutePath.'/'.$file, $destinationFolder, ['pdf']);
++    $reports = $fileUploader->uploadFromZIP($absolutePath.'/'.$allowedPath, $destinationFolder, ['pdf']);
+ 
+     $partialFail = false;
+     $count = 0;
+@@ -137,7 +143,9 @@ if (isActionAccessible($guid, $connection2, '/modules/Reports/archive_manage_upl
+         }
+     }
+ 
+-    unlink($absolutePath.'/'.$file);
++    if (file_exists($absolutePath.'/'.$allowedPath)) {
++        unlink($absolutePath.'/'.$allowedPath);
++    }
+ 
+     $URL .= $partialFail
+         ? "&return=warning1"
+diff --git a/src/Data/Validator.php b/src/Data/Validator.php
+index 5f10f12..fda7c54 100644
+--- a/src/Data/Validator.php
++++ b/src/Data/Validator.php
+@@ -233,6 +233,60 @@ class Validator
+         return $values;
+     }
+ 
++    /**
++     * Sanitize a string so that it may only contain alphanumeric values.
++     */
++    public function sanitizeAlphaNumeric(string $value, bool $allowDashes = false)
++    {
++        return preg_replace($allowDashes ? '/[^a-zA-Z0-9-_]/' : '/[^a-zA-Z0-9]/', '', $value);
++    }
++
++    /**
++     * Sanitize a string so that it may only contain numeric values.
++     */
++    public function sanitizeNumeric(string $value, bool $allowDecimals = false)
++    {
++        return preg_replace($allowDecimals ? '/[^0-9,.]/' : '/[^0-9]/', '', $value);
++    }
++
++    /**
++     * Sanitize an array of values that may only contain numeric IDs.
++     */
++    public function sanitizeArrayIDs(array $values)
++    {
++        return array_map(function ($value) {
++            return preg_replace('/[^0-9]/', '', (string) $value);
++        }, $values);
++    }
++
++    /**
++     * Sanitize a file name to remove special characters and directories.
++     */
++    public function sanitizeFilename(string $filename)
++    {
++        return preg_replace('/[^a-zA-Z0-9_.-]/', '', basename($filename));
++    }
++
++    /**
++     * Sanitize a file path to prevent traversal and reject paths outside the base.
++     */
++    public function sanitizeFilePath(string $filePath, string $basePath, bool $relative = true)
++    {
++        $filePath = str_replace('\\', '/', $filePath);
++        $filePath = preg_replace('/[^a-zA-Z0-9_.\/-]/', '', $filePath);
++        $filePath = trim($filePath, ' /');
++        $basePath = rtrim($basePath, '/');
++        $fullPath = realpath($basePath . '/' . $filePath);
++
++        if ($fullPath === false || strpos($fullPath, $basePath . '/') !== 0) {
++            return false;
++        }
++
++        return $relative
++            ? substr($fullPath, strlen($basePath))
++            : $fullPath;
++    }
++
+     /**
+      * Wrapper for strip_tags, accepts an array of tags rather than a string.
+      *

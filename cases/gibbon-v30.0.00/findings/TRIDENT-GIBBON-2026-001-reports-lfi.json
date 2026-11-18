@@ -1,0 +1,71 @@
+{
+  "finding_id": "TRIDENT-GIBBON-2026-001",
+  "title": "Authenticated Reports archive path traversal to PHP include (LFI -> remote code execution)",
+  "cve": "CVE-2026-8208",
+  "severity": "critical",
+  "status": "confirmed",
+  "authentication": "authenticated administrator session",
+  "repository": "https://github.com/GibbonEdu/core",
+  "vulnerable_version": "v30.0.00",
+  "vulnerable_commit": "c431e25fdc874adece5d2dc7e408e9aa2d1abadb",
+  "fixed_version": "v30.0.01",
+  "fixed_commit": "b3b0219f49f2328508b989afd7e9b0843450cb9f",
+  "provenance": "Independent source review against the pinned vulnerable commit; the public advisory and official v30.0.01 diff are used only as ground-truth comparison, not as a claim of first discovery.",
+  "attack_chain": [
+    "POST /modules/Reports/archive_manage_addProcess.php with a path outside /uploads (for example /legit_files).",
+    "POST /index.php?q=/modules/Reports/archive_manage_uploadPreview.php with a ZIP whose outer filename contains .php (spicy.php.zip) and whose entry names include PHP code plus a real student PDF.",
+    "uploadPreview writes the ZIP to archive['path'].'/temp', preserving the .php substring in the randomized filename.",
+    "GET /index.php?q=<archive path>/temp/<uploaded file> passes isAddressValid(), whose only PHP requirement is that the address contains .php; /legit_files is not blocked.",
+    "View::fetchFromFile() executes include $filepath, and the PHP code embedded in a ZIP entry name is evaluated."
+  ],
+  "source_evidence": [
+    {
+      "file": "modules/Reports/archive_manage_addProcess.php",
+      "lines": "40-50",
+      "sha256": "F126E58429E0B93D9DDF76439D3874A295E6DB18F31E75B82F67219839354C75",
+      "observation": "path is read directly from $_POST, only trimmed to a leading slash, then persisted by ReportArchiveGateway::insert. There is no allowlist or base-path restriction.",
+      "source": "$_POST['path']",
+      "sink": "ReportArchiveGateway::insert($data)"
+    },
+    {
+      "file": "modules/Reports/archive_manage_uploadPreview.php",
+      "lines": "107-127",
+      "sha256": "CB84C9A47E5825EBBB2B05C4043F4511A773E8AC6C18E1AE73A0428D01FE336E",
+      "observation": "FileUploader::upload($tempFile['name'], $tempFile['tmp_name'], $archive['path'].'/temp') preserves the outer .php.zip filename; the resulting path is emitted as the hidden field 'file'.",
+      "source": "$_FILES['file']['name']",
+      "sink": "$archive['path'].'/temp'"
+    },
+    {
+      "file": "index.php",
+      "lines": "664-684",
+      "sha256": "D2705FAB33CFD5E967F20C91FF607CB11C4EC14A644868507779CF10A9643CC3",
+      "observation": "The q parameter is normalized to an address, checked by Page::isAddressValid(), then passed to Page::writeFromFile()."
+    },
+    {
+      "file": "src/View/Page.php",
+      "lines": "445-457",
+      "sha256": "0EA6835D2C4421FF1E26B5D7E884A6AA0F0355FE49174DE26ECB4F1188D3B13E",
+      "observation": "isAddressValid requires only that the address contain .php, and blocks .., installer, uploads, config.php. It does not enforce a fixed base directory."
+    },
+    {
+      "file": "src/View/View.php",
+      "lines": "77-95",
+      "sha256": "5878BE3D9D0DC80DC9571703656886470CF6DA870DF6320AC18CC35BBA8E3056",
+      "observation": "fetchFromFile() executes include $filepath. This is the code-execution sink."
+    }
+  ],
+  "runtime_proof": {
+    "script": "poc_lfi.py",
+    "evidence_file": "evidence/lfi-run.json",
+    "archive_id": "6",
+    "uploaded_file": "legit_files/temp/spicy.php_md9qzTRarULbxG0u.zip",
+    "request_url": "http://127.0.0.1:8081/index.php?q=/legit_files/temp/spicy.php_md9qzTRarULbxG0u.zip",
+    "http_status": 200,
+    "response_bytes": 43056,
+    "marker": "TRIDENT_LFI_OK",
+    "marker_observed": true,
+    "result": "VULNERABLE"
+  },
+  "remediation": "Force archive paths under /uploads, resolve the path with realpath and reject anything outside the application root, sanitize the upload filename, and only delete/read from archive['path'].'/temp'/'<sanitized filename>'. Do not rely on isAddressValid as a directory allowlist.",
+  "ground_truth": "The official v30.0.01 diff adds Validator::sanitizeFilePath and forces archive paths to /uploads in addProcess/editProcess, sanitizes filenames in uploadProcess, and restricts file operations to the archive temp directory."
+}

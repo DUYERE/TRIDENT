@@ -1,0 +1,53 @@
+name: trident-gibbon
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: trident-gibbon-db
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: trident-demo-pass
+      MYSQL_DATABASE: gibbon
+    ports:
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - ./dbdata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ptrident-demo-pass"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trident-gibbon-vuln
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8081:80"
+    volumes:
+      - ./target:/var/www/html
+    environment:
+      GIBBON_DB_HOST: db
+      GIBBON_DB_NAME: gibbon
+      GIBBON_DB_USER: root
+      GIBBON_DB_PASS: trident-demo-pass
+
+  web-patched:
+    image: trident-gibbon-web:latest
+    container_name: trident-gibbon-patched
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8082:80"
+    volumes:
+      - ./patched:/var/www/html
+    environment:
+      GIBBON_DB_HOST: db
+      GIBBON_DB_NAME: gibbon
+      GIBBON_DB_USER: root
+      GIBBON_DB_PASS: trident-demo-pass

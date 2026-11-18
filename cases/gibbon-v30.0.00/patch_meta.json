@@ -1,0 +1,50 @@
+{
+  "case": "gibbon-v30.0.00",
+  "findings": [
+    "TRIDENT-GIBBON-2026-001",
+    "TRIDENT-GIBBON-2026-002"
+  ],
+  "patch_file": "patch.diff",
+  "patch_sha256": "BE5812B01E313DF991FF1FFE10D85201D38BD6F4BCBB8459FA7AD396C80AE2FD",
+  "generator": "deterministic_fallback",
+  "generator_note": "The patch is a minimal security fix derived from the official v30.0.01 security diff and independently applied/verified. It is not presented as an AI-generated patch.",
+  "files": [
+    {
+      "path": "src/Data/Validator.php",
+      "change": "add sanitizeAlphaNumeric, sanitizeNumeric, sanitizeArrayIDs, sanitizeFilename, sanitizeFilePath"
+    },
+    {
+      "path": "modules/Tracking/graphing.php",
+      "change": "load Validator, sanitize POST, sanitize ID arrays and dataType"
+    },
+    {
+      "path": "modules/Reports/archive_manage_addProcess.php",
+      "change": "force archive path under /uploads and realpath-check the base"
+    },
+    {
+      "path": "modules/Reports/archive_manage_editProcess.php",
+      "change": "same archive path controls as addProcess"
+    },
+    {
+      "path": "modules/Reports/archive_manage_uploadProcess.php",
+      "change": "sanitize filename and restrict ZIP read/delete to archive temp path"
+    }
+  ],
+  "checks": {
+    "php_lint": "passed for all five changed files",
+    "patch_apply_check": "passed (git apply --check --ignore-whitespace)",
+    "vulnerable_lfi": "TRIDENT_LFI_OK observed in HTTP 200 response",
+    "vulnerable_sqli": "23.48 s injected vs 4.93 s baseline; delta 18.54 s",
+    "patched_login": "passed",
+    "patched_tracking": "passed",
+    "patched_sqli": "neutralized; 5.13 s under 8 s threshold",
+    "patched_reports_normal_archive": "passed",
+    "patched_lfi_marker": "absent",
+    "result": "FULL_CASE_VERIFIED"
+  },
+  "verification_log": {
+    "file": "verify.log",
+    "sha256": "BCB9750E1C30180F3A383EB5A082B1718FE21C4CD8590F8477B9EC3F58E1C33F"
+  },
+  "upstream_submitted": false
+}

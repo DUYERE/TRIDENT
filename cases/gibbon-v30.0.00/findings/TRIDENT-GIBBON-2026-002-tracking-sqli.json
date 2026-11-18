@@ -1,0 +1,67 @@
+{
+  "finding_id": "TRIDENT-GIBBON-2026-002",
+  "title": "Authenticated Tracking graphing SQL injection through duplicated department IDs",
+  "cve": "CVE-2026-8207",
+  "severity": "high",
+  "status": "confirmed",
+  "authentication": "authenticated staff session with Tracking graphing access",
+  "repository": "https://github.com/GibbonEdu/core",
+  "vulnerable_version": "v30.0.00",
+  "vulnerable_commit": "c431e25fdc874adece5d2dc7e408e9aa2d1abadb",
+  "fixed_version": "v30.0.01",
+  "fixed_commit": "b3b0219f49f2328508b989afd7e9b0843450cb9f",
+  "provenance": "Independent source review plus runtime timing proof against the pinned vulnerable commit; the public advisory and official v30.0.01 diff are used only as ground-truth comparison.",
+  "attack_chain": [
+    "graphing.php reads $_POST['gibbonDepartmentIDs'] and $_POST['dataType'] without sanitizing the ID array.",
+    "The only pre-query validation checks dataType against the literal strings attainment/effort; array members remain untouched.",
+    "The code constructs named PDO placeholders from each array member and also appends the same value to the SQL predicate text.",
+    "Because the placeholder name and the SQL fragment are derived from the same value, a duplicate ID such as 0005 and '0005 OR SLEEP(10)' reuses :department_MB0005 and appends OR SLEEP(10) to the predicate.",
+    "A valid department with no matching fixture row makes both department predicates false, so the injected SLEEP is evaluated; the response is delayed by about 20 seconds."
+  ],
+  "source_evidence": [
+    {
+      "file": "modules/Tracking/graphing.php",
+      "lines": "45-47",
+      "sha256": "55B7F1F9E18685416DAED4E4F24FEB48D87B4195EEF7DE7D7849E0FD1B6B48C9",
+      "observation": "gibbonPersonIDs, gibbonDepartmentIDs and dataType are assigned directly from $_POST.",
+      "source": "$_POST['gibbonDepartmentIDs']"
+    },
+    {
+      "file": "modules/Tracking/graphing.php",
+      "lines": "90",
+      "sha256": "55B7F1F9E18685416DAED4E4F24FEB48D87B4195EEF7DE7D7849E0FD1B6B48C9",
+      "observation": "The guard only checks non-null values and whether dataType is attainment or effort; it does not validate the ID array."
+    },
+    {
+      "file": "modules/Tracking/graphing.php",
+      "lines": "109-134, 173-198",
+      "sha256": "55B7F1F9E18685416DAED4E4F24FEB48D87B4195EEF7DE7D7849E0FD1B6B48C9",
+      "observation": "Each department/person ID becomes both an array key for the parameter map and a concatenated fragment of the SQL predicate; duplicate IDs create the reusable placeholder plus an appended expression."
+    },
+    {
+      "file": "modules/Tracking/graphing.php",
+      "lines": "145, 156, 199-220",
+      "sha256": "55B7F1F9E18685416DAED4E4F24FEB48D87B4195EEF7DE7D7849E0FD1B6B48C9",
+      "observation": "$departmentExtra_MB, $departmentExtra_IA, $personExtra_MB and $personExtra_IA are interpolated into the SQL text before PDO prepare/execute."
+    }
+  ],
+  "runtime_proof": {
+    "script": "poc_sqli.py",
+    "evidence_file": "evidence/sqli-run.json",
+    "baseline": {
+      "department_ids": ["0005"],
+      "http_status": 200,
+      "seconds": 3.0
+    },
+    "injected": {
+      "department_ids": ["0005", "0005 OR SLEEP(10)"],
+      "http_status": 200,
+      "seconds": 23.52
+    },
+    "delta_seconds": 20.51,
+    "threshold_seconds": 8.0,
+    "result": "VULNERABLE"
+  },
+  "remediation": "Sanitize $_POST through Validator, coerce both ID arrays with sanitizeArrayIDs(), and sanitize $dataType with sanitizeAlphaNumeric() before it is used in dynamic SQL identifiers. The official v30.0.01 fix applies exactly these controls.",
+  "ground_truth": "The official v30.0.01 diff adds Validator and sanitizeArrayIDs/sanitizeAlphaNumeric in modules/Tracking/graphing.php, and adds the corresponding Validator methods."
+}

@@ -1,0 +1,13 @@
+{
+  "base_url": "http://127.0.0.1:8082",
+  "login_ok": true,
+  "tracking_page_ok": true,
+  "sqli_neutralized": true,
+  "sqli_seconds": 5.66,
+  "normal_archive_created": true,
+  "archive_id": "7",
+  "uploaded_temp_path": "uploads/temp/spicy.php_HLLGAhdp5UNGxwWu.zip",
+  "lfi_marker_observed": false,
+  "lfi_blocked": true,
+  "result": "PATCH_VERIFIED"
+}

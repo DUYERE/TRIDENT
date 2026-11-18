@@ -1,0 +1,39 @@
+{
+  "case": "gibbon-v30.0.00",
+  "repository": "https://github.com/GibbonEdu/core",
+  "vulnerable_version": "v30.0.00",
+  "vulnerable_commit": "c431e25fdc874adece5d2dc7e408e9aa2d1abadb",
+  "fixed_reference": {
+    "version": "v30.0.01",
+    "commit": "b3b0219f49f2328508b989afd7e9b0843450cb9f"
+  },
+  "findings": [
+    {
+      "finding_id": "TRIDENT-GIBBON-2026-001",
+      "cve": "CVE-2026-8208",
+      "title": "Authenticated Reports archive path traversal to PHP include (LFI -> RCE)",
+      "severity": "critical",
+      "status": "confirmed",
+      "runtime_result": "VULNERABLE",
+      "evidence": "findings/TRIDENT-GIBBON-2026-001-reports-lfi.json"
+    },
+    {
+      "finding_id": "TRIDENT-GIBBON-2026-002",
+      "cve": "CVE-2026-8207",
+      "title": "Authenticated Tracking graphing SQL injection through duplicated department IDs",
+      "severity": "high",
+      "status": "confirmed",
+      "runtime_result": "VULNERABLE",
+      "evidence": "findings/TRIDENT-GIBBON-2026-002-tracking-sqli.json"
+    }
+  ],
+  "patch": {
+    "file": "patch.diff",
+    "meta": "patch_meta.json",
+    "result": "FULL_CASE_VERIFIED"
+  },
+  "upstream": {
+    "directory": "upstream",
+    "submitted": false
+  }
+}
