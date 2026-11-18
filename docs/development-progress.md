@@ -11,13 +11,68 @@
 | R1 快照与四项只读工具 | 已实现并完成本地验收 | `snapshot-contract.md`、`internal/project/` |
 | R1 Core、Run、OpenAI 适配 | 已实现并完成本地协议验收与两次真实模型只读闭环；DeepSeek `reasoning_content`/Schema 数值兼容、48 KiB 检查点硬上限已于 2026-11-16 删除（压缩保留为可选/测试路径） | `agent-contract.md`；下方 2026-11-12 与 2026-11-13 记录 |
 | R1 真实模型自主工具闭环 | 已完成获准验收：DeepSeek `deepseek-flash` Run 43、`deepseek-v4-pro` Run 46，均仅合成样本且 `completed`；其他模型/快照需逐次授权 | `agent-contract.md` §6.1；下方 2026-11-13 记录 |
-| R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准）、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0、本地制品 SHA-256/调用者哈希清单、类级有界入口可达性、受限 Java 语义模型与方法级调用图已实现并验收；AST 尚未接入污点引擎，完整控制流/跨方法污点未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/`、`internal/javaast/` |
+| R2 供应链/AST/漏洞分析 | 声明级 Maven/Gradle、Maven/Gradle 有效依赖树（临时副本、默认离线、显式按工具批准）、公告精确版本与调用者声明区间/别名、模块依赖树、Spring MVC/JAX-RS/Servlet 入口清单、10 类注入与非 SQL 类别（命令注入/SSRF/路径遍历/模板注入/XSS/反序列化/XXE/LDAP/上传）Source/Sink（含 `+`/builder/`format`/返回值/builder 突变/继承分派/字段污点/重载/集合与字面量元素/导入感知类型解析/`produces` 反射返回值/链式反序列化/更多 XXE）、统一 Finding/Hypothesis、SARIF 2.1.0、本地制品 SHA-256/调用者哈希清单、类级有界入口可达性、受限 Java 语义模型与方法级调用图已实现并验收；AST 解析出的唯一调用目标在词法解析 unresolved/ambiguous 时按文件+行号+调用名回退参与跨方法解析；完整控制流/跨方法污点未实现 | `sca-contract.md`、`audit-contract.md`、`dataflow-contract.md`、`findings-contract.md`、`internal/sca/`、`internal/audit/`、`internal/dataflow/`、`internal/findings/`、`internal/sarif/`、`internal/reach/`、`internal/javaast/` |
 | R2 只读 Web 分析控制台 | 已实现并完成本地验收；单快照、loopback、令牌鉴权、只读 JSON API 与嵌入前端；不改变分析语义，不提供 Agent 控制 API | `web-console-contract.md`、`internal/webui/`、`cmd/trident/web.go` |
-| R2 Agent 分析工具 | 已实现并完成本地验收与真实模型/真实项目使用；5 个分析工具、分析缓存、Run 公告配置、实际读取行引用与证据账本桥接 | `agent-contract.md`、`internal/tools/analysis.go`、`internal/agent/` |
+| R2 Agent 分析工具 | 已实现并完成本地验收与真实模型/真实项目使用；11 个只读工具（4 快照 + 7 分析）、分析缓存、Run 公告配置、实际读取行引用与证据账本桥接 | `agent-contract.md`、`internal/tools/analysis.go`、`internal/agent/` |
 | R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射、本地观测制品 SHA-256；无传递树，依赖可达性不写入 SBOM | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
 | R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/maven-compile/maven-test/javac/JUnit、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；支持新文件/BOM/多文件补丁；真实 Java/Maven/JUnit、真实模型合成补丁、真实项目编译级补丁、集中式访问控制运行时单测与真实 Tomcat/MySQL HTTP 权限测试已完成；运行时 HTTP 验证执行器已实现（显式 origin、cookie session、有界断言）；硬件 VM 与生产验证未实现 | `patch-contract.md`、`runtime-contract.md`、`internal/r3/`、`internal/httpverify/`、`cmd/trident/patch.go`、`cmd/trident/runtime.go`、`docs/evidence/2026-11-14-market-access-control.patch` |
 
-## 2026-11-18（续二）：P7 收口与 C1/C2 核验
+## 2026-11-18（续三）：A/B/C 剩余项收口
+
+### A3 SQLite urlconfig
+
+- 新增 `internal/codescan/thinkphp_sqlite.go`：快照字节落临时文件、`PRAGMA query_only=ON`、仅查 `sqlite_master` 中名字含 `urlconfig` 的表、`PRAGMA table_info` 定位 aliases/url 列、标识符双引号转义、最多 500 行 / 5 秒。
+- `internal/codescan/thinkphp.go` 候选扩展到 `.db/.sqlite/.sqlite3`，上限 32 MiB；`internal/project/policy.go` 只放行文件名含 `urlconfig` 的 SQLite。
+- 依赖 `modernc.org/sqlite v1.62.0`（纯 Go），`go mod tidy` 补齐 `golang.org/x/sync` 条目。
+- 验收：SQLite 单表解析、无表、真实 `project.Import → Open → loadURLConfigRows` 集成测试通过；真实 `www.test.com` 路由表仍在 MySQL 运行时库，`app/route.php:17` 保持 `database_urlconfig_absent`。
+
+### A4 有界 receiver/container 解析
+
+- `codescan.Call` 新增 `receiver_type`；`scanSymbolIndex` 从 `$x = new Type` 推导文件内变量类型，`$this/self/static` 取调用者容器，裸类名取末段；同名多候选按 `Symbol.Container` 过滤。
+- 新增 `TestReceiverContainerDisambiguatesMethodCalls`：`$u` 与 `$this` 解析到 `User.save`，未类型化 `$o` 保持 `ambiguous_symbol`。
+- 边界 `receiver_type_file_local`：跨方法返回类型、字段类型、接口/重载/动态分派与完整跨文件调用图未做。
+
+### A5 PHP 框架级鉴权
+
+- `internal/authz/language.go` 删除泛化 `extends (Auth|Controller)` 误报；识别 `$middleware/$beforeActionList`、`->middleware('auth')`、`Auth::check/checkLogin`；按类名解析 `extends BaseController` 继承链（最多 8 层），输出 controller scope 的 `php_controller_declared_auth` / `php_controller_inherited_auth`；路由级输出 `php_route_middleware`。
+- `LanguageAdapter` 新增 `ControlFile` 指向基类文件；夹具 `tests/fixtures/php-framework-authz`。
+- 验收：`go test ./internal/authz -count=1` 通过。仅 PHP，.NET/Python/JS/Go 框架级中间件继承未做。
+
+### A6 工具链探测 Web 化与 PHP 验证边界
+
+- 新增 `internal/r3/toolchains.go` 固定探测 `php-lint/python-compile/pytest/node-check/npm-test/go-test/dotnet-build/dotnet-test`；缺失工具从 `start_error` 改为 `toolchain_unavailable`，映射为 `ValidationError`。
+- `profileLimitations()` 为 PHP/Python/Node/Go/.NET profile 写入 `php_lint_syntax_only` 等明确边界；新增 `GET /api/toolchains` 与设置页“验证工具链”卡片。
+- 验收：`go test ./internal/r3 ./internal/webui`、`python scripts/test-web.py` 8 项全 PASS。
+
+### B1 Java AST 接入污点引擎
+
+- `internal/dataflow` 从 `javaast.ScanSnapshot` 改为 `javaast.Analyze`，一次解析同时获得声明覆盖与调用边；新增 `java_ast_bridge.go`，按 `文件+行号+调用名` 保存 AST 已解析目标。
+- 词法解析器 unresolved/ambiguous 时，`resolveCallWithAST` 用 AST 唯一目标回退；不扩大词法方法集，不绕过参数兼容，不参与 source/sink 匹配。
+- 验收：`TestJavaASTHintResolvesAmbiguousCall`、`TestJavaASTAnalysisIsAttachedToTaintIndex`、`go test ./internal/dataflow -count=1` 通过。控制流、分支敏感、别名/points-to、完整跨方法污点仍未实现。
+
+### B2 Gibbon 全量导入
+
+- 根因：`cmd/trident` 对 `project` 子命令固定 2 分钟上下文；全量 `cases/gibbon-v30.0.00/target` 首次实测在 132.93 秒被取消。
+- 修复：`project import` 使用 10 分钟，查询子命令保持 2 分钟；新增 `TestProjectCommandTimeout`。
+- 验收：同一 target 重新导入 `EXIT=0`、41.45 秒、3,107 文件 / 31,099,411 字节、`partial=true`、`vendor` 按策略排除；`snapshot_hash=40f1586c…`。
+
+### B3 生产/VM 门槛
+
+- 新增 `docs/production-vm-gates.md`：发布前置、硬件 VM/等效隔离、生产部署、验收记录格式四组可勾选门槛；明确 Docker/gVisor 不能替代硬件 VM，两条门槛当前未通过。
+- 从 `deployment.md` 与 `release-checklist.md` §6 链接。
+
+### B4 Agent 多轮上下文与会话
+
+- 复核：`internal/agent/context.go` 已有 `PriorContext`（同会话 terminal Run、untrusted 提示、字节上限），`agent_chat.go` 已注入；会话详情已返回 `tasks`，planner/worker Run 不再单独占会话。
+- 补齐：`store.normalizeConversationTitle`、`Store.UpdateConversationTitle`、`POST /api/agent/conversations/rename`、会话头“重命名”入口。
+- 验收：`go test ./internal/store -run TestNormalizeConversationTitle`、`go test ./internal/webui -run TestConversationRenameRequiresStore`、全仓 `go test ./...` 通过。心跳唤醒、`steer_work`、独立复核未在本批展开。
+
+### 门禁与剩余
+
+- `go test ./... -count=1`、`go vet ./...`、`node --check internal/webui/assets/app.js` 全绿。
+- `python scripts/test-web.py` 8 项 PASS；`python scripts/test-code-audit.py` 11 项 PASS。
+- 未做：真实浏览器人工验收、硬件 VM、生产部署、A5 其他语言框架级继承、A4 完整跨文件调用图、B4 心跳/steer/独立复核。
+
 
 ### P7 统一展示面与入口 kind
 
