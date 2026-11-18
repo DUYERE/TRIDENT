@@ -48,6 +48,10 @@ type Request struct {
 	Messages        []Message `json:"messages"`
 	Tools           []Tool    `json:"tools"`
 	MaxOutputTokens int64     `json:"max_output_tokens"`
+	// ReasoningEffort is passed only when the caller explicitly controls
+	// provider thinking. "none" keeps a deterministic tool-shaped response from
+	// spending the whole output budget on hidden reasoning.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type Usage struct {

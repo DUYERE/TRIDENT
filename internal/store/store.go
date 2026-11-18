@@ -114,6 +114,31 @@ func (s *Store) Authenticate(ctx context.Context, token string) (Session, error)
 	}
 	return ss, tx.Commit(ctx)
 }
+// PrincipalInfo describes an authenticated principal without exposing its
+// credential. The console uses it to check Run-creation permission before
+// offering one-click enable; it never writes to the database.
+type PrincipalInfo struct {
+	Subject string
+	Role    string
+	Kind    string
+	Status  string
+}
+
+func (s *Store) DescribePrincipal(ctx context.Context, ss Session) (PrincipalInfo, error) {
+	var info PrincipalInfo
+	err := s.pool.QueryRow(ctx,
+		`SELECT subject, role, principal_type, status FROM principals WHERE credential_hash=$1`,
+		ss.hash,
+	).Scan(&info.Subject, &info.Role, &info.Kind, &info.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PrincipalInfo{}, ErrDenied
+	}
+	if err != nil {
+		return PrincipalInfo{}, err
+	}
+	return info, nil
+}
+
 func allowed(a actor, roles ...string) error {
 	for _, r := range roles {
 		if a.role == r {

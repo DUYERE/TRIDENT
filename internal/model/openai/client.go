@@ -148,6 +148,13 @@ func (c *Client) parameters(req model.Request) (sdk.ChatCompletionNewParams, err
 	} else {
 		params.MaxCompletionTokens = sdk.Int(req.MaxOutputTokens)
 	}
+	switch req.ReasoningEffort {
+	case "":
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		params.ReasoningEffort = sdk.ReasoningEffort(req.ReasoningEffort)
+	default:
+		return params, safeError(model.ErrProtocol, "invalid reasoning effort")
+	}
 	// [04] Definitions are function-only JSON schemas; names cannot be duplicated.
 	names := make(map[string]bool)
 	for _, tool := range req.Tools {

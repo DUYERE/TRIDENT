@@ -24,7 +24,14 @@ func main() {
 	}
 }
 
-const productVersion = "TRIDENT 0.2.0-p0.2 + r1-core + r2-sca-declarations-v2 + r2-maven-effective-tree-v1 + r2-endpoint-inventory-v3 + r2-source-sink-flow-v13 + r2-finding-evidence + r2-readonly-web-console + r2-agent-analysis-tools + r2-cyclonedx-sbom + r2-sarif-reachability + r3-isolated-patch-v3-rollback-gradle + r3-repair-policy-gvisor + r4-gradle-tree-upgrade-authz-chain-v2-runtime-matrix-correlation + derived-index-cache + web-console-multi-token-audit-export + web-console-healthz-metrics + sarif-github-code-scanning-mapping + ci-offline-gate-live + sbom-vex-analysis + console-prometheus-scrape + monitoring-drill (read-only Agent Core; OpenAI Chat Completions; live-model acceptance pending)"
+// productVersion is the concise build identifier shown in the console UI and
+// the first line of `trident version`.
+const productVersion = "0.2.0-p0.6"
+
+// productCapabilities records the full capability slices. It is build
+// bookkeeping for `trident version` only: the console deliberately shows just
+// the build identifier instead of this slice list.
+const productCapabilities = "r1-core + r2-sca-declarations-v2 + r2-maven-effective-tree-v1 + r2-endpoint-inventory-v3 + r2-source-sink-flow-v14 + r2-finding-evidence + r2-readonly-web-console + r2-agent-analysis-tools + r2-cyclonedx-sbom + r2-sarif-reachability + r3-isolated-patch-v3-rollback-gradle + r3-repair-policy-gvisor + r4-gradle-tree-upgrade-authz-chain-v2-runtime-matrix-correlation + derived-index-cache + web-console-multi-token-audit-export + web-console-healthz-metrics + sarif-github-code-scanning-mapping + ci-offline-gate-live + sbom-vex-analysis + console-prometheus-scrape + monitoring-drill + multi-language-code-audit (read-only Agent Core; OpenAI Chat Completions; live-model acceptance pending)"
 
 func run() error {
 	if len(os.Args) < 2 {
@@ -32,7 +39,8 @@ func run() error {
 	}
 	command := os.Args[1]
 	if command == "version" {
-		fmt.Println(productVersion)
+		fmt.Println("TRIDENT " + productVersion)
+		fmt.Println("capabilities: " + productCapabilities)
 		return nil
 	}
 	// [01] 本地项目工具不连接数据库，不调用模型，也不执行项目代码。

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,5 +79,27 @@ func TestConfigAnalysisAdvisoryPath(t *testing.T) {
 	c.AnalysisAdvisoryPath = "/tmp/advisory.json\nnext"
 	if c.Validate() == nil {
 		t.Fatal("control characters accepted")
+	}
+}
+
+func TestConfigPriorContextAndRepairFlagRoundTrip(t *testing.T) {
+	c := configFixture()
+	c.PriorContext = "Run 1 completed: prior summary"
+	c.RepairEnabled = true
+	encoded, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeConfig(encoded)
+	if err != nil || !decoded.RepairEnabled || decoded.PriorContext != c.PriorContext {
+		t.Fatalf("round trip: %+v %v", decoded, err)
+	}
+	c.PriorContext = strings.Repeat("x", MaxPriorContextBytes+1)
+	if c.Validate() == nil {
+		t.Fatal("oversized prior context accepted")
+	}
+	c.PriorContext = "line\rbreak"
+	if c.Validate() == nil {
+		t.Fatal("CR in prior context accepted")
 	}
 }

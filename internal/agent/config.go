@@ -33,6 +33,22 @@ type Config struct {
 	// AnalysisAdvisoryPath binds the optional local advisory catalog used by the
 	// read-only analysis tools. It is configuration, not snapshot content.
 	AnalysisAdvisoryPath string `json:"analysis_advisory_path,omitempty"`
+	// SettlementEnabled turns on the in-budget settlement round: with exactly
+	// one model call left, the loop injects a fixed wrap-up user message so the
+	// model writes back what it has instead of being cut off. Orchestration
+	// sessions enable it; manual single runs keep the legacy behavior.
+	SettlementEnabled bool `json:"settlement_enabled,omitempty"`
+	// AllowUnobservedHypotheses is set only for planner sessions. A planner has
+	// no tools, so every citation it can make comes from the prefetched graph;
+	// run-local observation checks would reject every explanatory hypothesis.
+	// Planner hypotheses are never written to the graph.
+	AllowUnobservedHypotheses bool `json:"allow_unobserved_hypotheses,omitempty"`
+	// PriorContext is a bounded, non-authoritative summary of earlier Runs in
+	// the same conversation. It is injected once at initial checkpoint creation.
+	PriorContext string `json:"prior_context,omitempty"`
+	// RepairEnabled selects the repair-capable prompt and is paired with an
+	// explicitly approved caseagent registry. It never grants approval by itself.
+	RepairEnabled bool `json:"repair_enabled,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -49,6 +65,9 @@ func (c Config) Validate() error {
 		if len(c.AnalysisAdvisoryPath) > 1024 || strings.ContainsAny(c.AnalysisAdvisoryPath, "\r\n\x00") || !filepath.IsAbs(c.AnalysisAdvisoryPath) {
 			return fmt.Errorf("analysis advisory path must be an absolute local path")
 		}
+	}
+	if c.PriorContext != "" && (len(c.PriorContext) > 8<<10 || strings.ContainsRune(c.PriorContext, '\x00') || strings.ContainsRune(c.PriorContext, '\r')) {
+		return fmt.Errorf("prior context must be bounded text without NUL or CR")
 	}
 	u, e := url.Parse(c.Endpoint)
 	if e != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || strings.ContainsAny(c.Endpoint, "\r\n\x00") {

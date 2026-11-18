@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"trident/internal/domain"
 	"trident/internal/model"
 	"trident/internal/tools"
 )
@@ -63,7 +65,79 @@ func TestCompactionKeepsPerToolSummary(t *testing.T) {
 	}
 }
 
+func TestCheckpointLimitDisabledByDefault(t *testing.T) {
+	messages := []model.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: "audit goal"},
+	}
+	for i := 0; i < 4; i++ {
+		id := "call-" + string(rune('a'+i))
+		messages = append(messages,
+			model.Message{Role: "assistant", Content: "reading", Calls: []model.ToolCall{{ID: id, Name: "read_source", Arguments: json.RawMessage(`{"path":"a.go"}`)}}},
+			model.Message{Role: "tool", CallID: id, Content: largeToolContent(20000)},
+		)
+	}
+	exec := &execution{cp: loopCheckpoint{Version: checkpointVersion, Messages: messages}}
+	before := exec.checkpointSize()
+	if before <= 48<<10 {
+		t.Fatalf("test history is too small: %d", before)
+	}
+	exec.compactCheckpoint()
+	if exec.cp.Compactions != 0 {
+		t.Fatalf("default execution must not compact or cap history; compactions=%d", exec.cp.Compactions)
+	}
+	if after := exec.checkpointSize(); after != before {
+		t.Fatalf("default execution changed checkpoint size: before=%d after=%d", before, after)
+	}
+}
+
+func TestLoadCheckpointAcceptsCheckpointAboveLegacyLimit(t *testing.T) {
+	cp := loopCheckpoint{
+		Version: checkpointVersion,
+		Messages: []model.Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: "audit goal"},
+			{Role: "assistant", Content: largeToolContent(60000)},
+		},
+	}
+	raw, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) <= 48<<10 {
+		t.Fatalf("test checkpoint was not above the legacy cap: %d", len(raw))
+	}
+	if _, err := loadCheckpoint(domain.AgentRun{Goal: "audit goal", Checkpoint: raw}); err != nil {
+		t.Fatalf("load rejected a checkpoint above the old 48 KiB cap: %v", err)
+	}
+}
+
+func TestCommitAcceptsCheckpointAboveLegacyLimit(t *testing.T) {
+	runner := &memoryRunner{run: domain.AgentRun{
+		ID: 1, State: domain.AgentRunRunning, Version: 1,
+		Limits: domain.AgentLimits{MaxModelCalls: 8, MaxToolCalls: 8, MaxTokens: 1 << 20, MaxStoredBytes: 32 << 20},
+	}}
+	exec := &execution{runner: runner, run: runner.run, cp: loopCheckpoint{
+		Version: checkpointVersion,
+		Messages: []model.Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: "audit goal"},
+			{Role: "assistant", Content: largeToolContent(60000)},
+		},
+	}}
+	if err := exec.commit(context.Background(), domain.AgentStepCheckpoint, "large checkpoint", nil, 0, 0, 0, 0); err != nil {
+		t.Fatalf("commit rejected a checkpoint above the old 48 KiB cap: %v", err)
+	}
+	if got := len(runner.run.Checkpoint); got <= 48<<10 {
+		t.Fatalf("test checkpoint was not above the legacy cap: %d", got)
+	}
+}
+
 func TestCompactCheckpointBoundsHistoryWithoutBreakingPairing(t *testing.T) {
+	oldMax, oldTarget := maxCheckpointBytes, checkpointCompactTarget
+	maxCheckpointBytes, checkpointCompactTarget = 48<<10, 40<<10
+	defer func() { maxCheckpointBytes, checkpointCompactTarget = oldMax, oldTarget }()
+
 	messages := []model.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: "audit goal"},
