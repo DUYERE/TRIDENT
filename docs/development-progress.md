@@ -57,6 +57,65 @@
 - P1-2 的 `export_case` 真实 Run：Run 141 暴露返回的 `export_sha256`/`export_bytes` 按未追加换行的 JSON 计算，与磁盘文件不一致；已改为对实际写入字节计算，并加 `caseagent_test.go` 断言。Run 142 在新二进制下返回 `export_sha256=14fe5ea6...`、`export_bytes=21672`，与磁盘文件 21,672 bytes 的实际 SHA-256 一致；`patch_sha256=34792ae5...` 与真实补丁一致，审计 `audit.jsonl` 末条同步。
 - 真实 Gibbon 全量 `target` 导入仍因目录规模/导入超时未完成；当前使用五文件真实子集。PHP authz 仍只有文件级证据，不生成端点决策；PHP 修复验证仍只有 `php -l`。
 
+## 2026-11-17：P0 真实 Case 闭环与 P1/P2 跨语言层（补记）
+
+> 本日为补记：当天证据分散在 `.trae/documents/` 各计划文档与 `cases/gibbon-v30.0.00/`，此处汇总并给出可复核入口。
+
+### P0 证据驱动的真实 Case（Gibbon v30.0.00）
+
+- 双实例：`trident-gibbon-vuln`（127.0.0.1:8081）、`trident-gibbon-patched`（127.0.0.1:8082）、`trident-gibbon-db`（127.0.0.1:3307，MySQL 8.0，一次性演示库）。
+- 两个运行时确认的发现：`TRIDENT-GIBBON-2026-001`（Reports 归档 LFI→PHP 执行，标记 `TRIDENT_LFI_OK`）、`TRIDENT-GIBBON-2026-002`（认证后 Tracking 时间盲注，注入 23.48s、与基线差值 18.54s，阈值 8s）。
+- 补丁 `patch.diff`（255 行，`src/View/Page.php`）与 `verify.log`（`FULL_CASE_VERIFIED`）；`upstream/` 含规范化补丁、advisory、复现步骤、测试计划与 PR 正文，仅本地，未提交上游。
+- 边界：两个发现均需登录；LFI 用本地标记而非持久 webshell；SQLi 依赖种子 Markbook 行；官方 v30.0.01 diff 是 ground truth，不主张首次发现。
+
+### P1 入口统一（试点）
+
+- `internal/evidence` 统一证据模型；`internal/entry` 三类 Provider（Java 注解、codescan 七语言声明路由、应用入口文件）。
+- `/api/endpoints` 增加 `entries/entry_total/entry_coverage/entry_partial/entry_limitations`，保留旧 `items/total/application_entries`；入口页新增统一证据表。
+- 真实 `www.test.com` 实测 `total=0`、`entry_total=2`、`entry_partial=false`（`public/index.php`、`public/router.php`）。
+
+### P2 跨语言符号层与符号浏览
+
+- `internal/codescan` 输出 `symbols/calls/unresolved`，上限 2000/4000/2000；`/api/code-audit`、`/api/model`、`#/code`、`#/model` 消费。
+- 第二批：`/api/symbols`（language/kind/q/limit/offset）；`#/code` 支持筛选、分页与源码行跳转；`FileSummary.scope=project|vendor|generated` 与 `rejected_scopes`。
+- 实测 `www.test.com`：符号 2000、class 145、`Layuipaginate` 搜索 15 条、分页 1–50/2000→51–100、`rejected_scopes=vendor:12`、跳转 `app/Layuipaginate.php:L8`。
+- 未完成：变量/常量索引、跨文件/类型解析、调用图（计划 C1）。
+
+### P3–P6 有界适配器
+
+- `internal/authz/language.go`：PHP/C#/Python/JS/TS/Go 声明级控制模式，输出 `protected/public/unprotected/unknown`；未识别控制一律 unknown，不默认 public。
+- `internal/sca/ecosystems.go`：Composer/NuGet/pip/npm/Go 声明与锁文件；`internal/sbom` 输出非 Maven purl。
+- `internal/reach/language.go`：七语言 import/require/use 与依赖包前缀匹配，三态输出，限制 `language_reachability_file_local`（无 route→controller 绑定）。
+- `internal/r3/language_profiles.go`：`php -l`、`python -m py_compile`、`node --check`、`go test`、`dotnet build`；工具链缺失报 `toolchain_unavailable`，不伪造通过。
+- 夹具与测试：`tests/fixtures/{multi-authz,php-script-authz,polyglot-audit}` 与 `internal/{authz,sca,sbom,reach,r3}` 单测。
+
+### P1-2 Agent 修复工具与多轮上下文
+
+- 三工具 `propose_patch` / `verify_patch` / `export_case`，要求服务端 `ApproveRepair`；产物只落 `<workspace>/repairs/<case>/`，审计写 `audit.jsonl`。
+- 真实 Run（隔离 8793、Gibbon 五文件子集）：Run 134 产出 1,790B 补丁（`src/View/Page.php` +23/−7，SHA-256 `34792ae5…`）；Run 135 `verify_patch` 因 PATH 无 `php` 报错、`export_case` 导出 21,672B；Run 136 补 PHP 7.3 PATH 后 `validation_passed`（5 文件 `php -l` exit 0，quality B/80）。
+- 边界：`php -l` 只做语法检查，不是 PHP 8 运行时或漏洞修复证明；Run 最终 envelope 失败不当作补丁成功。
+
+## 2026-11-18（续）：基线入库与控制台复验
+
+### 修改
+
+- `.gitignore`：新增 `cases/*/dbdata|target|patched|vendor` 与 `composer.phar` 忽略项——Case 目录含约 850MB 应用副本与 MySQL 数据目录，只保留证据与脚本入库。
+- 将 11-15 之后的全部工作按 7 个切片提交：`c0dbd6c` chore、`54bbbf7` 分析内核、`7a1cead` Agent 运行时、`5c707d0` Case/修复工具、`f0bd759` Web 控制台、`9f5cf15` 文档、`25f0f1d` 门禁脚本；`main` 领先 `origin/main` 8 个提交，未推送。
+
+### 验证
+
+- 提交前门禁：`go build ./...`、`go vet ./...`、`node --check internal/webui/assets/app.js` 退出 0；`go test -count=1 ./...` 29 包全绿（`internal/model` 无测试文件）。
+- 以 `trident-baseline.exe`（build 0）重启控制台 `127.0.0.1:8791`；`/healthz` 200、`/api/agent/runtime` `ready=true`（`dsn_target=127.0.0.1:55432/trident_test`、`model_ready=true`）、`/api/overview`、`/api/agent/conversations`、`/api/endpoints`、`/api/code-audit`、`/api/config` 均 200。
+- 真实 `www.test.com`：`entry_total=4`（`public/index.php:23`、`public/router.php:16`、`public/ipapi.php:263` request_script、`app/route.php:17` route_declaration / `dynamic_unresolved`），`entry_partial=true`；`/api/authz` 返回 31 条语言适配器；`/api/symbols?limit=5` 返回 total=2000、5 条。
+
+### 发现（未修，待定口径）
+
+- `/api/authz` 的语言适配器当前覆盖到 `app/admin/model/*`、`app/route.php`、`public/ipapi.php` 等并非请求脚本的文件，并为模型层给出 `unprotected`；与「仅 `request_script` 附着 authz」的入口口径不一致，容易被读成“模型层无鉴权”。展示面与入口 kind 的收敛待决。
+
+### 边界
+
+- 本次只做基线入库与运行面复验，未新增分析能力；P3–P7 计划中 C1（变量/跨文件调用）、C2（ThinkPHP 动态路由展开）仍未实现。
+
 ## 2026-11-16：删除 48 KiB 检查点硬上限（续九）
 
 ### 修改

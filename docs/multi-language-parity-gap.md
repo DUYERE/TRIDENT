@@ -24,10 +24,10 @@
 | 应用入口文件候选 | 新增 `Application.java/Main.java` 识别 | `public/index.php`、`router.php` + 有界 `request_script` | 新增 `Program.cs`、`Startup.cs` | 新增 `manage.py`、`wsgi.py`、`app.py` | 新增 `server.js/ts`、`app.js/ts` 等 | 新增 `main.go` | **文件级候选，不证明 URL**；PHP 请求脚本按内容识别，不依赖 ThinkPHP |
 | 语义模型（类型/方法/调用） | `internal/javaast` 受限 Java 语义模型 | 无 | 无 | 无 | 无 | 无 | Java 专有 |
 | 数据流 | `internal/dataflow` JDBC/SQL 等 Java 有界分析 | 仅 codescan 同文件污点 | 仅 codescan 同文件污点 | 仅 codescan 同文件污点 | 仅 codescan 同文件污点 | 仅 codescan 同文件污点 | 两套模型未统一；Java 有独立引擎，其他语言只有声明式规则 |
-| 鉴权/访问控制 | Spring Security、MVC interceptor、Servlet filter、手工 session | 请求脚本端点级词法决策（`protected/public/unprotected/unknown`）+ 文件级控制证据 | 无适配器 | 无适配器 | 无适配器 | 无适配器 | `internal/authz` 的 Java 主线仍只加载 `.java`；PHP 请求脚本有端点级有界决策，但不是路由/中间件执行；其他语言仍只有文件级或未接入，不能默认 public |
+| 鉴权/访问控制 | Spring Security、MVC interceptor、Servlet filter、手工 session | 请求脚本端点级词法决策（`protected/public/unprotected/unknown`）+ 文件级控制证据 | 声明级控制模式（`[Authorize]`/`AllowAnonymous`/`RequireAuthorization`） | 声明级控制模式（`login_required`/`permission_required`/`Depends`） | 声明级控制模式（`requireAuth`/`passport.authenticate`/`UseGuards`） | 声明级控制模式（`AuthMiddleware`/`BasicAuth`/`RequireAuth`） | `internal/authz/language.go` 已注册六类语言控制模式，输出 protected/public/unprotected/unknown；仍是文件内词法、非路由/中间件执行，未识别控制不默认 public |
 | SCA/依赖 | Maven/Gradle 声明与有效树 | Composer `composer.json/lock` | NuGet `.csproj/packages.config` | pip `requirements/pyproject` | npm `package.json/lock` | Go `go.mod/go.sum` | `internal/sca` 已支持六类生态；公告匹配已覆盖 Composer/npm/NuGet/PyPI/Go |
 | SBOM | 由 SCA 生成 | Composer purl | NuGet purl | PyPI purl | npm purl | Go purl | `internal/sbom` 已支持 `pkg:composer` 等非 Maven purl |
-| 可达性 | Java 类级调用图 | 无 | 无 | 无 | 无 | 无 | `internal/reach` 只解析 Java import/同包类型 |
+| 可达性 | Java 类级调用图 | 有界 import/require 匹配（`language_reachability_file_local`） | 同左 | 同左 | 同左 | 同左 | `internal/reach/language.go` 已加七语言 import/require/use → 依赖包前缀匹配；无 route→controller 绑定，反射/动态 include 仍为 unknown |
 | 运行时 HTTP 关联 | 通用 HTTP 执行器可验证给定路由 | 理论可用 | 理论可用 | 理论可用 | 理论可用 | 理论可用 | `internal/httpverify`/`correlate` 语言无关，但静态路由输入仍主要来自 Java 入口 |
 | 补丁验证 | Maven、Gradle、javac、JUnit | `php -l` | `dotnet build` | `python -m py_compile` | `node --check` | `go test` | `caseagent` 已有语言 profile；PHP 仍只做语法 lint，不等于 PHP 8 运行时或漏洞修复证明 |
 | Agent 工具 | `inspect_dependencies`、`trace_dataflow`、`list_findings` 等 | `codescan` 语言过滤可用 | 同左 | 同左 | 同左 | 同左 | 代码审计工具已多语言；依赖/入口/数据流工具描述和底层仍偏 Java |
