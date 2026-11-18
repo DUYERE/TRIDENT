@@ -129,7 +129,7 @@ func TestPinnedConsoleRejectsConfigurationChanges(t *testing.T) {
 	if response.StatusCode != http.StatusConflict {
 		t.Fatalf("pinned console must reject config updates: %d %s", response.StatusCode, body)
 	}
-	response, body = c.postJSON("/api/project", map[string]string{"source": t.TempDir()})
+	response, body = c.postJSON("/api/projects", map[string]string{"source": t.TempDir()})
 	if response.StatusCode != http.StatusConflict {
 		t.Fatalf("pinned console must reject imports: %d %s", response.StatusCode, body)
 	}
@@ -220,18 +220,20 @@ func TestWorkspaceConfigurationRoundTrip(t *testing.T) {
 	}
 
 	// Importing the same source converges on the same digest and keeps serving.
-	response, body = c.postJSON("/api/project", map[string]string{"source": source})
+	response, body = c.postJSON("/api/projects", map[string]string{"source": source})
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("import: %d %s", response.StatusCode, body)
 	}
 	var imported struct {
-		Hash  string `json:"hash"`
-		Files int    `json:"files"`
+		Project struct {
+			Hash  string `json:"hash"`
+			Files int    `json:"files"`
+		} `json:"project"`
 	}
 	if err = json.Unmarshal(body, &imported); err != nil {
 		t.Fatal(err)
 	}
-	if imported.Hash != config.Project.Hash || imported.Files == 0 {
+	if imported.Project.Hash != config.Project.Hash || imported.Project.Files == 0 {
 		t.Fatalf("re-import must converge on the same snapshot: %+v", imported)
 	}
 	response, body = c.do(http.MethodGet, "/api/overview", true, true)

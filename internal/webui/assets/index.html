@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>TRIDENT · 只读安全分析控制台</title>
   <link rel="icon" href="/assets/favicon.png" type="image/png">
   <link rel="stylesheet" href="/assets/styles.css">
@@ -34,6 +34,7 @@
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
     <symbol id="i-layer" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5M3 17l9 5 9-5"/></symbol>
     <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 5h11l-1.8 3.5L16 12H5"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.6L4 16M4 20v-4h4"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></symbol>
     <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.4M12 19.1v2.4M21.5 12h-2.4M4.9 12H2.5M18.7 5.3l-1.7 1.7M7 17l-1.7 1.7M18.7 18.7 17 17M7 7 5.3 5.3"/></symbol>
     <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11Z"/></symbol>
@@ -61,10 +62,12 @@
           <div class="nav-label">分析</div>
           <a class="nav-item" href="#/overview" data-route="overview"><svg class="icon"><use href="#i-grid"/></svg><span>概览</span></a>
           <a class="nav-item" href="#/findings" data-route="findings"><svg class="icon"><use href="#i-bug"/></svg><span>安全发现</span><em class="nav-badge" id="navFindings" hidden>0</em></a>
+          <a class="nav-item" href="#/cases" data-route="cases"><svg class="icon"><use href="#i-flag"/></svg><span>Case 工作台</span><em class="nav-badge" id="navCases" hidden>0</em></a>
           <a class="nav-item" href="#/endpoints" data-route="endpoints"><svg class="icon"><use href="#i-route"/></svg><span>HTTP 入口</span><em class="nav-badge" id="navEndpoints" hidden>0</em></a>
           <a class="nav-item" href="#/dependencies" data-route="dependencies"><svg class="icon"><use href="#i-package"/></svg><span>依赖与公告</span></a>
           <a class="nav-item" href="#/tree" data-route="tree"><svg class="icon"><use href="#i-layer"/></svg><span>依赖树</span></a>
           <a class="nav-item" href="#/authz" data-route="authz"><svg class="icon"><use href="#i-lock"/></svg><span>权限清单</span></a>
+          <a class="nav-item" href="#/code" data-route="code"><svg class="icon"><use href="#i-bug"/></svg><span>代码审计</span></a>
           <a class="nav-item" href="#/model" data-route="model"><svg class="icon"><use href="#i-code"/></svg><span>代码模型</span></a>
           <a class="nav-item" href="#/reachability" data-route="reachability"><svg class="icon"><use href="#i-shield"/></svg><span>可达性</span></a>
           <a class="nav-item" href="#/runtime" data-route="runtime"><svg class="icon"><use href="#i-flag"/></svg><span>运行时关联</span></a>
@@ -72,6 +75,7 @@
         <div class="nav-group">
           <div class="nav-label">工作区</div>
           <a class="nav-item" href="#/agent" data-route="agent"><svg class="icon"><use href="#i-server"/></svg><span>Agent 对话</span></a>
+          <a class="nav-item" href="#/tasks" data-route="tasks"><svg class="icon"><use href="#i-flag"/></svg><span>编排任务</span></a>
           <a class="nav-item" href="#/source" data-route="source"><svg class="icon"><use href="#i-code"/></svg><span>源码浏览</span></a>
           <a class="nav-item nav-parent" href="#/settings" data-route="settings" data-group="settings"><svg class="icon"><use href="#i-sliders"/></svg><span>设置</span><svg class="icon chev"><use href="#i-chev-down"/></svg></a>
           <div class="nav-sub" id="navSettingsSub">
@@ -99,18 +103,34 @@
           <button class="icon-btn nav-collapse" id="navCollapse" type="button" aria-label="收起侧边栏" title="收起侧边栏">
             <svg class="icon"><use href="#i-menu"/></svg>
           </button>
-          <label class="project-switch" title="切换当前项目">
-            <span class="dot ok"></span>
-            <select id="projectSwitcher" aria-label="切换当前项目"></select>
-            <svg class="icon"><use href="#i-chev-down"/></svg>
-          </label>
+          <div class="project-menu" id="projectMenu">
+            <button class="project-switch" id="projectSwitchBtn" type="button" aria-haspopup="listbox" aria-expanded="false" title="切换当前项目">
+              <span class="dot ok"></span>
+              <span class="project-switch-label" id="projectSwitchLabel">未选择项目</span>
+              <svg class="icon chev"><use href="#i-chev-down"/></svg>
+            </button>
+            <div class="project-menu-panel" id="projectMenuPanel" hidden>
+              <div class="project-menu-head">
+                <span class="eyebrow">已导入项目</span>
+                <span class="form-hint">发现与会话按快照隔离</span>
+              </div>
+              <div class="project-menu-list" id="projectMenuList" role="listbox" aria-label="已导入项目"></div>
+              <div class="project-menu-foot">
+                <button class="btn sm ghost" type="button" id="manageProjects"><svg class="icon"><use href="#i-folder"/></svg>管理项目</button>
+              </div>
+            </div>
+          </div>
           <div class="topbar-title">
             <span class="eyebrow" id="pageEyebrow">TRIDENT / OVERVIEW</span>
             <h1 id="pageTitle">概览</h1>
           </div>
         </div>
         <div class="topbar-actions">
-          <span class="pill runtime" title="静态证据不等于运行时可利用"><span class="dot warn"></span>runtime_status = not_run</span>
+          <span class="pill runtime" title="所有结论来自只读静态分析：未运行项目代码、未发送任何请求。静态确认不等于可利用，运行时验证需要单独的授权流程。">
+            <svg class="icon"><use href="#i-shield"/></svg>
+            <span class="runtime-text">静态证据</span>
+            <span class="runtime-code mono">not_run</span>
+          </span>
           <button class="icon-btn theme-toggle" id="themeToggle" type="button" title="切换亮色/暗色主题"><svg class="icon"><use href="#i-sun"/></svg></button>
           <button class="btn ghost" id="exportBtn" type="button" title="下载统一 Finding/Hypothesis JSON">
             <svg class="icon"><use href="#i-download"/></svg><span>导出证据</span>

@@ -281,10 +281,14 @@ def main():
             sarif_text = body.decode("utf-8")
             require(status == 200 and '"2.1.0"' in sarif_text and '"runs"' in sarif_text,
                     f"sarif download failed: {status}")
-            for path in ("/api/reachability", "/api/runtime-report", "/api/agent/runs"):
+            status, _, body = request(base, "/api/reachability", headers=authorized)
+            reachability = json.loads(body.decode("utf-8"))
+            require(status == 200 and "coverage" in reachability and "language_files_scanned" in reachability["coverage"],
+                    f"reachability without package map must return bounded language coverage: {status}")
+            for path in ("/api/runtime-report", "/api/agent/threads"):
                 status, _, body = request(base, path, headers=authorized)
                 require(status == 412, f"{path} without configuration must be 412: {status}")
-            print("[02b] dependency tree, SARIF download and 412 guidance for unconfigured views: PASS")
+            print("[02b] dependency tree, SARIF download, bounded reachability and 412 guidance: PASS")
             print("[03] runtime_status=not_run, traversal rejection and evidence report: PASS")
             print("[04] /healthz liveness probe and token-gated /api/metrics counters: PASS")
         finally:

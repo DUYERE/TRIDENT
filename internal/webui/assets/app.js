@@ -10,14 +10,19 @@
     overview: null,
     route: "overview",
     findings: { items: [], total: 0, filtered: 0, counts: null, severities: [], offset: 0, limit: 50, status: "all", category: "all", severity: "all", q: "", seq: 0, loading: false },
-    endpoints: { items: [], total: 0, offset: 0, limit: 50, q: "", authz: "all", authzMap: {}, authzCounts: null, coverage: null, seq: 0, loading: false },
+    cases: { items: [], available: false, root: "cases", q: "", status: "all", loading: false, seq: 0 },
+    caseDetail: null,
+    endpoints: { items: [], total: 0, offset: 0, limit: 50, q: "", authz: "all", authzMap: {}, authzCounts: null, coverage: null, entries: [], entryCoverage: [], entryPartial: false, entryLimitations: [], seq: 0, loading: false },
     authz: { items: [], total: 0, offset: 0, limit: 50, q: "", decision: "all", limitations: [], seq: 0 },
+    code: { items: [], total: 0, offset: 0, limit: 50, q: "", language: "all", category: "all", severity: "all", limitations: [], seq: 0 },
+    symbols: { items: [], total: 0, offset: 0, limit: 50, q: "", language: "all", kind: "all", seq: 0 },
     model: { items: [], total: 0, offset: 0, limit: 50, q: "", seq: 0 },
     config: null,
     modelSettings: null,
     browse: { path: "", parent: "", entries: [], roots: [], pick: "" },
     source: { mode: "files", prefix: "", files: [], cursor: "", total: 0, path: "", line: 0, file: null, search: null, searchQ: "" },
-    agent: { chat: null, threads: [], openId: 0, steps: [], run: null, busy: false, timer: null, lastSeq: 0 },
+    agent: { chat: null, conversations: [], conversationId: 0, conversation: null, runs: [], tasks: [], openId: 0, steps: [], run: null, busy: false, timer: null, lastSeq: 0 },
+    pendingRepair: false,
     drawerId: null,
   };
 
@@ -25,14 +30,18 @@
     projects: { title: "项目", eyebrow: "TRIDENT / PROJECTS" },
     overview: { title: "概览", eyebrow: "TRIDENT / OVERVIEW" },
     findings: { title: "安全发现", eyebrow: "TRIDENT / FINDINGS" },
+    cases: { title: "Case 工作台", eyebrow: "TRIDENT / CASES" },
+    case: { title: "Case 详情", eyebrow: "TRIDENT / CASES / DETAIL" },
     endpoints: { title: "HTTP 入口", eyebrow: "TRIDENT / ENDPOINTS" },
     dependencies: { title: "依赖与公告", eyebrow: "TRIDENT / DEPENDENCIES" },
     tree: { title: "依赖树", eyebrow: "TRIDENT / DEPENDENCY TREE" },
     reachability: { title: "可达性", eyebrow: "TRIDENT / REACHABILITY" },
     authz: { title: "权限清单", eyebrow: "TRIDENT / AUTHORIZATION" },
-    model: { title: "代码模型", eyebrow: "TRIDENT / JAVA MODEL" },
+    code: { title: "代码审计", eyebrow: "TRIDENT / MULTI-LANGUAGE CODE AUDIT" },
+    model: { title: "代码模型", eyebrow: "TRIDENT / CODE MODEL" },
     runtime: { title: "运行时关联", eyebrow: "TRIDENT / RUNTIME CORRELATION" },
     agent: { title: "Agent 对话", eyebrow: "TRIDENT / AGENT CHAT" },
+    tasks: { title: "编排任务", eyebrow: "TRIDENT / ORCHESTRATION" },
     source: { title: "源码浏览", eyebrow: "TRIDENT / SOURCE" },
     settings: { title: "设置", eyebrow: "TRIDENT / SETTINGS" },
     "settings-model": { title: "模型", eyebrow: "TRIDENT / SETTINGS / MODEL" },
@@ -266,21 +275,36 @@
         applySettings(document.body.dataset.settings !== "open");
       });
     });
-    $("#projectSwitcher").addEventListener("change", async (event) => {
-      const hash = event.target.value;
-      if (!hash || hash === (state.config && state.config.project.hash)) return;
-      try {
-        await api("/api/projects/select", { method: "POST", body: { hash } });
-        resetAnalysisState();
-        await ensureConfig(true);
-        await refreshProjectSwitcher();
-        toast("已切换项目", "ok");
-        await renderRoute();
-      } catch (error) {
-        toast(error.message, "bad");
-        await refreshProjectSwitcher();
-      }
-    });
+    const projectMenu = $("#projectMenu");
+    const projectPanel = $("#projectMenuPanel");
+    const projectBtn = $("#projectSwitchBtn");
+    const closeProjectMenu = () => {
+      if (!projectPanel) return;
+      projectPanel.hidden = true;
+      if (projectBtn) projectBtn.setAttribute("aria-expanded", "false");
+    };
+    if (projectBtn && projectPanel) {
+      projectBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const open = projectPanel.hidden;
+        projectPanel.hidden = !open;
+        projectBtn.setAttribute("aria-expanded", String(open));
+        if (open) refreshProjectSwitcher();
+      });
+      document.addEventListener("click", (event) => {
+        if (projectMenu && !projectMenu.contains(event.target)) closeProjectMenu();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeProjectMenu();
+      });
+    }
+    const manageProjects = $("#manageProjects");
+    if (manageProjects) {
+      manageProjects.addEventListener("click", () => {
+        closeProjectMenu();
+        go("projects");
+      });
+    }
     $("#exportBtn").addEventListener("click", exportReport);
     $("#exportHtmlBtn").addEventListener("click", exportHtmlReport);
     $("#themeToggle").addEventListener("click", toggleTheme);
@@ -296,6 +320,20 @@
     });
     $("#drawerBackdrop").addEventListener("click", closeDrawer);
     $("#drawer").addEventListener("click", (event) => {
+      const createCase = event.target.closest("[data-create-case]");
+      if (createCase) {
+        createCaseFromFinding(createCase.dataset.createCase);
+        return;
+      }
+      const ask = event.target.closest("[data-ask-agent]");
+      if (ask) {
+        const finding = state.drawerFinding;
+        const location = finding && finding.location ? `（${finding.location}）` : "";
+        state.pendingAgentGoal = `请复核发现 ${ask.dataset.askAgent}${location}：先引用它给出的证据行确认可达性，再给出利用前提与修复建议；只引用实际读到的行，无法验证的部分标注 UNVERIFIED INFERENCE。`;
+        closeDrawer();
+        go("agent");
+        return;
+      }
       const target = event.target.closest("[data-src]");
       if (target) {
         const line = Number(target.dataset.line || 1);
@@ -425,7 +463,7 @@
     view.innerHTML = skeletonView();
     view.scrollTop = 0;
     try {
-      if (name !== "projects") {
+      if (name !== "projects" && name !== "cases" && name !== "case") {
         const config = await ensureConfig();
         if (!config.project.hash) {
           go("projects");
@@ -435,14 +473,18 @@
       if (name === "projects") await viewProjects();
       else if (name === "overview") await viewOverview();
       else if (name === "findings") await viewFindings();
+      else if (name === "cases") await viewCases();
+      else if (name === "case") await viewCase(params);
       else if (name === "endpoints") await viewEndpoints();
       else if (name === "dependencies") await viewDependencies();
       else if (name === "tree") await viewTree();
       else if (name === "authz") await viewAuthz();
+      else if (name === "code") await viewCode();
       else if (name === "model") await viewModel();
       else if (name === "reachability") await viewReachability();
       else if (name === "runtime") await viewRuntime();
-      else if (name === "agent") await viewAgent();
+      else if (name === "agent") await viewAgent(params);
+      else if (name === "tasks") await viewOrchTasks(params);
       else if (name === "source") await viewSource(params);
       else if (name === "settings") await viewSettings();
       else if (name === "settings-model") await viewSettingsModel();
@@ -466,9 +508,27 @@
     $("#retryView").addEventListener("click", renderRoute);
   }
 
+  async function selectProject(hash) {
+    if (!hash || hash === (state.config && state.config.project.hash)) return;
+    const panel = $("#projectMenuPanel");
+    if (panel) panel.hidden = true;
+    try {
+      await api("/api/projects/select", { method: "POST", body: { hash } });
+      resetAnalysisState();
+      await ensureConfig(true);
+      await refreshProjectSwitcher();
+      toast("已切换项目", "ok");
+      await renderRoute();
+    } catch (error) {
+      toast(error.message, "bad");
+      await refreshProjectSwitcher();
+    }
+  }
+
   async function refreshProjectSwitcher() {
-    const select = $("#projectSwitcher");
-    if (!select) return;
+    const label = $("#projectSwitchLabel");
+    const list = $("#projectMenuList");
+    if (!label || !list) return;
     let projects = [];
     try {
       const payload = await api("/api/projects");
@@ -478,13 +538,26 @@
     }
     const current = (state.config && state.config.project && state.config.project.hash) || "";
     if (!projects.length) {
-      select.innerHTML = `<option value="">未选择项目</option>`;
+      label.textContent = "未选择项目";
+      list.innerHTML = `<div class="project-menu-empty">${emptyState("i-folder", "还没有项目", "到「项目」页导入本地源码目录后，这里会列出全部快照。")}</div>`;
       return;
     }
-    select.innerHTML = projects.map((entry) => {
+    const active = projects.find((entry) => entry.hash === current) || projects[0];
+    label.textContent = String(active.source || "").split(/[\\/]/).filter(Boolean).pop() || active.hash.slice(0, 12);
+    list.innerHTML = projects.map((entry) => {
       const name = String(entry.source || "").split(/[\\/]/).filter(Boolean).pop() || entry.hash.slice(0, 12);
-      return `<option value="${esc(entry.hash)}"${entry.hash === current ? " selected" : ""}>${esc(name)}</option>`;
+      const isCurrent = entry.hash === current;
+      return `<button class="project-option${isCurrent ? " current" : ""}" type="button" role="option" aria-selected="${isCurrent}" data-hash="${esc(entry.hash)}" title="${esc(entry.source || "")}">
+        <span class="project-option-main">
+          <strong>${esc(name)}</strong>
+          <span class="mono">${esc(entry.hash.slice(0, 10))} · ${fmtNum(entry.files)} 文件 · ${fmtBytes(entry.bytes)}</span>
+        </span>
+        ${isCurrent ? '<span class="project-current"><span class="dot ok"></span>当前</span>' : '<span class="project-current muted">切换</span>'}
+      </button>`;
     }).join("");
+    $$("#projectMenuList .project-option").forEach((option) => {
+      option.addEventListener("click", () => selectProject(option.dataset.hash));
+    });
   }
 
   async function ensureOverview(force) {
@@ -511,14 +584,30 @@
     findingsBadge.textContent = overview.counts.total;
     findingsBadge.hidden = overview.counts.total === 0;
     const endpointsBadge = $("#navEndpoints");
-    endpointsBadge.textContent = overview.analysis.endpoint_coverage.endpoints_found;
-    endpointsBadge.hidden = overview.analysis.endpoint_coverage.endpoints_found === 0;
+    const applicationEntries = overview.analysis.application_entries || 0;
+    const entryTotal = overview.analysis.endpoint_coverage.endpoints_found + applicationEntries;
+    endpointsBadge.textContent = entryTotal;
+    endpointsBadge.hidden = entryTotal === 0;
   }
 
   // ── overview ───────────────────────────────────────────────────────────
 
   async function viewOverview() {
     const overview = await ensureOverview();
+    // Keep the overview in sync with the findings page: when the lazy
+    // multi-language audit has not run yet, warm it in the background and
+    // re-render so the finding counts land without a manual refresh.
+    if (overview.code && !overview.code.available && String(overview.code.reason || "").startsWith("analysis_pending") && !state.codeWarm) {
+      state.codeWarm = true;
+      api("/api/code-audit?limit=1").then(() => {
+        state.codeWarm = false;
+        return ensureOverview(true);
+      }).then(() => {
+        if (state.route === "overview") renderRoute();
+      }).catch(() => {
+        state.codeWarm = false;
+      });
+    }
     // The thread list is optional: a console without an Agent database must
     // still render the static overview.
     let recent = [];
@@ -553,12 +642,13 @@
 
       <div class="tiles">
         ${tile("folder", "teal", fmtNum(snap.total_files), "文件清单", `排除 ${fmtNum(snap.excluded_count)} 项`, { route: "source" })}
-        ${tile("route", "blue", fmtNum(analysis.endpoint_coverage.endpoints_found), "HTTP 入口", `${fmtNum(analysis.endpoint_coverage.controllers_found)} 个控制器`, { route: "endpoints" })}
+        ${tile("route", "blue", fmtNum(analysis.endpoint_coverage.endpoints_found + (analysis.application_entries || 0)), "HTTP 入口", `${fmtNum(analysis.endpoint_coverage.controllers_found)} 个控制器 · ${fmtNum(analysis.application_entries || 0)} 个应用入口`, { route: "endpoints" })}
         ${tile("bug", "rose", fmtNum(counts.total), "安全发现", `静态确认 ${fmtNum(counts.static_confirmed)}`, { route: "findings", status: "all" })}
         ${tile("alert", "amber", fmtNum(counts.inconclusive), "证据待定", `已反驳 ${fmtNum(counts.refuted)}`, { route: "findings", status: "inconclusive" })}
         ${tile("package", "violet", fmtNum(analysis.sca_coverage.dependencies_declared), "依赖声明", `${fmtNum(analysis.sca_coverage.poms_scanned)} 个 POM`, { route: "dependencies" })}
         ${tile("flag", "amber", fmtNum(coverage.sca_advisory_candidates), "公告命中", `未命中 ${fmtNum(coverage.sca_advisory_not_affected)}`, { route: "dependencies" })}
         ${tile("lock", "rose", fmtNum(overview.authz.unprotected), "无控制入口", `受保护 ${fmtNum(overview.authz.protected)} · 未知 ${fmtNum(overview.authz.unknown)}`, { route: "authz", decision: "unprotected" })}
+        ${tile("bug", "violet", overview.code && overview.code.available ? fmtNum(overview.code.findings) : "…", "多语言审计", overview.code && overview.code.available ? `${fmtNum(overview.code.languages)} 种语言 · ${fmtNum(overview.code.findings)} 条发现` : (overview.code && String(overview.code.reason || "").startsWith("analysis_pending") ? "正在后台运行，完成后本页自动同步" : (overview.code ? (overview.code.reason || "未运行") : "未运行")), { route: "code" })}
         ${tile("code", "blue", overview.model.enabled ? fmtNum(overview.model.types) : "—", "代码模型", overview.model.enabled ? `${fmtNum(overview.model.methods)} 个方法 · 调用 ${fmtNum(overview.model.calls_resolved)}/${fmtNum(overview.model.calls_total)}` : (overview.model.reason || "未生成"), { route: "model" })}
         ${tile("shield", "teal", snap.partial ? "部分" : "完整", "清单状态", "应用层只读快照", { route: "about" })}
         ${tile("clock", "blue", fmtNum(analysis.duration_ms) + "ms", "分析耗时", new Date(analysis.generated_at).toLocaleTimeString("zh-CN", { hour12: false }), { route: "about" })}
@@ -601,6 +691,7 @@
               ${kvRow("依赖可达性", valueLabel(coverage.dependency_reachability), "warn")}
               ${kvRow("运行时状态", valueLabel(coverage.runtime_status), "warn")}
               ${kvRow("入口文件扫描 / 拒绝", `${analysis.endpoint_coverage.java_files_scanned} / ${analysis.endpoint_coverage.java_files_rejected}`)}
+              ${kvRow("应用入口候选 / 语言", `${fmtNum(analysis.application_entries || 0)} / ${fmtNum(analysis.application_entry_languages || 0)}`, "warn")}
               ${kvRow("POM 扫描 / 拒绝", `${analysis.sca_coverage.poms_scanned} / ${analysis.sca_coverage.poms_rejected}`)}
             </div>
           </div>
@@ -739,6 +830,298 @@
     </div>`;
   }
 
+  // ── cases ───────────────────────────────────────────────────────────────
+
+  const caseStatusMeta = {
+    verified: { label: "已验证", cls: "ok" },
+    ready: { label: "补丁就绪", cls: "warn" },
+    in_progress: { label: "进行中", cls: "info" },
+    blocked: { label: "受阻", cls: "bad" },
+    failed: { label: "验证失败", cls: "bad" },
+    draft: { label: "草稿", cls: "muted" },
+    pending: { label: "未开始", cls: "muted" },
+    missing: { label: "缺失", cls: "bad" },
+  };
+  const caseStatusPill = (status) => {
+    const meta = caseStatusMeta[status] || { label: status || "未知", cls: "muted" };
+    return `<span class="status ${meta.cls}">${esc(meta.label)}</span>`;
+  };
+  const caseTime = (value) => {
+    const time = new Date(value);
+    return Number.isNaN(time.getTime()) ? "—" : time.toLocaleString("zh-CN", { hour12: false });
+  };
+  const caseStage = (stage) => {
+    const meta = caseStatusMeta[stage.status] || caseStatusMeta.pending;
+    return `<div class="case-stage ${esc(stage.status || "pending")}" title="${esc(stage.detail || stage.label || "")}">
+      <span class="case-stage-dot"></span>
+      <span class="case-stage-label">${esc(stage.label || stage.key)}</span>
+      <span class="case-stage-state">${esc(meta.label)}</span>
+    </div>`;
+  };
+  const caseStageStrip = (stages) => `<div class="case-stages">${(stages || []).map(caseStage).join("")}</div>`;
+
+  function caseRow(item) {
+    const stages = item.stages || [];
+    return `<a class="case-row" href="#/case?id=${esc(encodeURIComponent(item.id))}">
+      <div class="case-row-main">
+        <div class="case-row-title">
+          <strong>${esc(item.title || item.id)}</strong>
+          ${item.severity ? sevPill(item.severity) : ""}
+          ${caseStatusPill(item.status)}
+        </div>
+        <div class="case-row-meta">
+          <span class="mono">${esc(item.id)}</span>
+          ${item.repository ? `<span>·</span><span>${esc(item.repository)}</span>` : ""}
+          ${item.vulnerable_version ? `<span>·</span><span>${esc(item.vulnerable_version)}</span>` : ""}
+          <span>·</span><span>${fmtNum(item.finding_count)} Finding</span>
+        </div>
+        ${caseStageStrip(stages)}
+      </div>
+      <div class="case-row-side">
+        <span class="case-row-updated">${esc(caseTime(item.updated_at))}</span>
+        <svg class="icon"><use href="#i-chev-right"/></svg>
+      </div>
+    </a>`;
+  }
+
+  async function viewCases() {
+    const data = await api("/api/cases");
+    const store = state.cases;
+    store.items = data.cases || [];
+    store.available = Boolean(data.available);
+    store.root = data.root || "cases";
+    const count = $("#navCases");
+    if (count) {
+      count.textContent = store.items.length;
+      count.hidden = store.items.length === 0;
+    }
+    const statuses = [
+      ["all", "全部"],
+      ["verified", "已验证"],
+      ["ready", "补丁就绪"],
+      ["in_progress", "进行中"],
+      ["blocked", "受阻"],
+    ];
+    $("#view").innerHTML = `
+      <section class="card case-hero">
+        <div class="card-head">
+          <h3><svg class="icon"><use href="#i-flag"/></svg>证据驱动的 Case 工作台</h3>
+          <span class="card-sub">Finding → PoC → 补丁 → 验证 → 上游</span>
+        </div>
+        <div class="card-body case-hero-body">
+          <div class="case-hero-copy">
+            <p>只展示已落盘的证据与产物。阶段状态不是进度条：没有运行证明的 Case 会保持未开始，不能写成已验证。</p>
+            <div class="case-hero-stats">
+              <span><b>${fmtNum(store.items.length)}</b> Case</span>
+              <span><b>${fmtNum(store.items.filter((item) => item.status === "verified").length)}</b> 已验证</span>
+              <span><b>${fmtNum(store.items.reduce((sum, item) => sum + (item.finding_count || 0), 0))}</b> Finding</span>
+            </div>
+          </div>
+          <div class="case-hero-actions">
+            <button class="btn" type="button" id="caseRefresh"><svg class="icon"><use href="#i-refresh"/></svg>刷新</button>
+            <a class="btn" href="#/findings"><svg class="icon"><use href="#i-bug"/></svg>从 Finding 创建</a>
+          </div>
+        </div>
+      </section>
+      <section class="card section-gap">
+        <div class="toolbar">
+          <div class="seg" id="caseStatusSeg">
+            ${statuses.map(([value, label]) => `<button type="button" data-case-status="${value}" class="${store.status === value ? "active" : ""}">${label}</button>`).join("")}
+          </div>
+          <input class="input wide" id="caseSearch" data-search placeholder="搜索 Case、仓库、CVE 或 Finding…" value="${esc(store.q)}" />
+          <span class="spacer"></span>
+          <span class="toolbar-count" id="caseCount">—</span>
+        </div>
+        ${store.available ? `<div class="case-list" id="caseList"></div>` : `<div class="empty"><svg class="icon"><use href="#i-folder"/></svg><h4>没有发现 Case 目录</h4><p>控制台默认扫描 &lt;工作目录&gt;/cases。启动时传 <span class="mono">--cases &lt;dir&gt;</span>，或从安全发现抽屉创建 Case。</p></div>`}
+      </section>`;
+
+    const renderList = () => {
+      const query = store.q.trim().toLowerCase();
+      const filtered = store.items.filter((item) => {
+        if (store.status !== "all" && item.status !== store.status) return false;
+        if (!query) return true;
+        return [item.id, item.title, item.repository, item.vulnerable_version, item.fixed_version, item.severity].some((value) => String(value || "").toLowerCase().includes(query));
+      });
+      const list = $("#caseList");
+      if (list) list.innerHTML = filtered.length ? filtered.map(caseRow).join("") : emptyState("i-flag", "没有匹配的 Case", "换个状态筛选或搜索词再试。");
+      $("#caseCount").textContent = `${fmtNum(filtered.length)} / ${fmtNum(store.items.length)}`;
+    };
+
+    const statusSeg = $("#caseStatusSeg");
+    if (statusSeg) {
+      statusSeg.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-case-status]");
+        if (!button) return;
+        store.status = button.dataset.caseStatus;
+        $$("#caseStatusSeg button").forEach((item) => item.classList.toggle("active", item === button));
+        renderList();
+      });
+    }
+    const search = $("#caseSearch");
+    if (search) {
+      let timer = null;
+      search.addEventListener("input", (event) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          store.q = event.target.value;
+          renderList();
+        }, 220);
+      });
+    }
+    const refresh = $("#caseRefresh");
+    if (refresh) refresh.addEventListener("click", () => viewCases());
+    renderList();
+  }
+
+  async function viewCase(params) {
+    const id = params.get("id") || "";
+    if (!id) {
+      go("cases");
+      return;
+    }
+    const detail = await api("/api/case?id=" + encodeURIComponent(id));
+    state.caseDetail = detail;
+    const stages = detail.stages || [];
+    const findings = detail.findings || [];
+    const evidence = detail.evidence || [];
+    const patch = detail.patch;
+    const validation = detail.validation;
+    const upstream = detail.upstream;
+    $("#view").innerHTML = `
+      <section class="card case-detail-head">
+        <div class="card-head">
+          <div class="case-detail-title">
+            <span class="eyebrow">${esc(detail.repository || "CASE")}${detail.vulnerable_version ? " · " + esc(detail.vulnerable_version) : ""}</span>
+            <h2>${esc(detail.title || detail.id)}</h2>
+            <div class="case-detail-badges">
+              ${caseStatusPill(detail.status)}
+              ${detail.severity ? sevPill(detail.severity) : ""}
+              <span class="chip mono">${esc(detail.id)}</span>
+              <span class="status muted">${esc(detail.source || "directory")}</span>
+            </div>
+          </div>
+          <div class="row-actions">
+            <button class="btn sm" type="button" data-case-action="patch" title="读取已落盘的 patch.diff；不在 Web 请求内重新生成"><svg class="icon"><use href="#i-code"/></svg>生成补丁</button>
+            <button class="btn sm" type="button" data-case-action="verify" title="读取已落盘的 verify.log / patch_meta.json"><svg class="icon"><use href="#i-check"/></svg>验证补丁</button>
+            <button class="btn sm" type="button" data-case-action="export"><svg class="icon"><use href="#i-download"/></svg>导出 JSON</button>
+            <button class="btn sm primary" type="button" data-ask-repair="${esc(detail.id)}"><svg class="icon"><use href="#i-bug"/></svg>让 Agent 修复</button>
+            <button class="btn sm" type="button" id="caseDetailRefresh"><svg class="icon"><use href="#i-refresh"/></svg></button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="case-detail-meta">
+            ${kvRow("仓库", detail.repository || "—")}
+            ${kvRow("漏洞版本", detail.vulnerable_version || "—")}
+            ${kvRow("修复参考", detail.fixed_version || "—")}
+            ${kvRow("更新", caseTime(detail.updated_at))}
+            ${kvRow("Finding 数", fmtNum(detail.finding_count))}
+          </div>
+          ${caseStageStrip(stages)}
+        </div>
+      </section>
+      <div class="grid-2 section-gap">
+        <section class="card">
+          <div class="card-head"><h3><svg class="icon"><use href="#i-bug"/></svg>Findings</h3><span class="card-sub">${fmtNum(findings.length)} 个</span></div>
+          <div class="card-body case-block">
+            ${findings.length ? findings.map((finding) => `<div class="case-finding">
+              <div class="case-finding-head"><strong>${esc(finding.title || finding.id)}</strong>${finding.severity ? sevPill(finding.severity) : ""}</div>
+              <div class="case-finding-meta"><span class="mono">${esc(finding.id)}</span>${finding.cve ? `<span class="mono">${esc(finding.cve)}</span>` : ""}${finding.runtime_result ? `<span class="status ${finding.runtime_result === "VULNERABLE" ? "warn" : "info"}">runtime ${esc(finding.runtime_result)}</span>` : ""}</div>
+              ${(finding.source_evidence || []).map((source) => `<div class="case-source"><span class="mono">${esc(source.file)}${source.lines ? ":" + esc(source.lines) : ""}</span>${source.observation ? `<span>${esc(source.observation)}</span>` : ""}${source.sha256 ? `<span class="mono">sha ${esc(source.sha256.slice(0, 12))}</span>` : ""}</div>`).join("")}
+            </div>`).join("") : emptyState("i-info", "没有 Finding", "Case 目录里没有可解析的 finding 文档。")}
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h3><svg class="icon"><use href="#i-layer"/></svg>补丁与验证</h3><span class="card-sub">只读已落盘产物</span></div>
+          <div class="card-body">
+            ${patch ? `<div class="kv">
+              ${kvRow("补丁文件", patch.file)}
+              ${kvRow("大小 / 文件数", fmtBytes(patch.bytes) + " / " + fmtNum((patch.files || []).length))}
+              ${kvRow("SHA-256", shortHash(patch.sha256))}
+              ${kvRow("apply check", patch.apply_check || "—", patch.apply_check ? "good" : "warn")}
+              ${(patch.files || []).map((file) => `<div class="case-file mono">${esc(file)}</div>`).join("")}
+            </div>` : emptyState("i-code", "还没有补丁产物", "先生成 patch.diff，再让 Case 读取真实补丁。")}
+            ${validation ? `<div class="case-validation">
+              <div class="case-validation-head"><span>${esc(validation.result)}</span><span class="status ${String(validation.result || "").includes("VERIFIED") ? "ok" : "warn"}">${esc(validation.source || "recorded")}</span></div>
+              <div class="case-validation-meta">${esc(validation.log || "—")}${validation.verified_at ? " · " + esc(caseTime(validation.verified_at)) : ""}</div>
+              ${validation.checks ? `<div class="case-checks">${Object.entries(validation.checks).map(([key, value]) => `<span class="case-check ${value === true ? "ok" : value === false ? "bad" : ""}">${esc(key)}: ${esc(value === null || value === undefined ? "—" : value)}</span>`).join("")}</div>` : ""}
+            </div>` : `<div class="case-note warn">没有验证记录；不能把未执行写成已验证。</div>`}
+          </div>
+        </section>
+      </div>
+      <div class="grid-2 section-gap">
+        <section class="card">
+          <div class="card-head"><h3><svg class="icon"><use href="#i-hash"/></svg>证据产物</h3><span class="card-sub">${fmtNum(evidence.length)} 个</span></div>
+          <div class="card-body">
+            ${evidence.length ? `<div class="case-evidence-list">${evidence.map((item) => `<div class="case-evidence">
+              <div><strong>${esc(item.name)}</strong><span class="status ${item.result === "VULNERABLE" ? "warn" : "muted"}">${esc(item.result || "recorded")}</span></div>
+              <div class="case-evidence-meta">${fmtBytes(item.bytes)}${item.sha256 ? " · sha " + esc(item.sha256.slice(0, 12)) : ""}${item.detail ? " · " + esc(item.detail) : ""}</div>
+            </div>`).join("")}</div>` : emptyState("i-info", "没有证据产物", "evidence/ 目录没有可解析的 JSON。")}
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h3><svg class="icon"><use href="#i-package"/></svg>上游 Bundle</h3><span class="card-sub">${upstream && upstream.present ? "本地草稿" : "未准备"}</span></div>
+          <div class="card-body">
+            ${upstream && upstream.present ? `<div class="case-upstream">
+              <div class="case-upstream-state"><span class="status ${upstream.submitted ? "ok" : "warn"}">${upstream.submitted ? "已提交" : "DRAFT · 未提交"}</span></div>
+              ${(upstream.files || []).map((file) => `<div class="case-file mono">upstream/${esc(file)}</div>`).join("")}
+              <div class="case-note">上游提交需要明确批准；当前只准备本地材料。</div>
+            </div>` : emptyState("i-package", "还没有上游材料", "advisory、repro、test-plan 与 PR body 尚未落盘。")}
+          </div>
+        </section>
+      </div>
+      ${(detail.limitations || []).length ? `<section class="card section-gap"><div class="card-head"><h3><svg class="icon"><use href="#i-alert"/></svg>限制</h3><span class="card-sub">不能从状态推断安全</span></div><div class="card-body"><ul class="point-list">${detail.limitations.map((item) => `<li>${esc(item)}</li>`).join("")}</ul></div></section>` : ""}
+    `;
+
+    $$("[data-case-action]").forEach((button) => {
+      button.addEventListener("click", () => runCaseAction(button.dataset.caseAction, detail.id));
+    });
+    $$("[data-ask-repair]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.pendingAgentGoal = `请以 Case ${detail.id}（${detail.title || "未命名 Case"}）为唯一目标：先读取 finding 的源码证据确认可达性；如果本轮已获批准，调用 propose_patch(case_id="${detail.id}") 生成补丁，再用 verify_patch 验证；任何失败、未批准或 source_not_in_snapshot 都必须原样报告，不要把语法检查写成漏洞已修复。`;
+        state.pendingRepair = true;
+        go("agent");
+      });
+    });
+    const refresh = $("#caseDetailRefresh");
+    if (refresh) refresh.addEventListener("click", () => viewCase(new URLSearchParams({ id: detail.id })));
+  }
+
+  async function runCaseAction(action, id) {
+    try {
+      if (action === "patch") {
+        const payload = await api("/api/case/propose", { method: "POST", body: { id } });
+        toast(payload.message || "已读取补丁产物", "ok");
+        await viewCase(new URLSearchParams({ id }));
+        return;
+      }
+      if (action === "verify") {
+        const payload = await api("/api/case/verify", { method: "POST", body: { id } });
+        toast(payload.message || "已读取验证记录", "ok");
+        await viewCase(new URLSearchParams({ id }));
+        return;
+      }
+      if (action === "export") {
+        await downloadArtifact("/api/case/export?id=" + encodeURIComponent(id), `trident-case-${id}.json`);
+        toast("Case 已导出", "ok");
+      }
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  }
+
+  async function createCaseFromFinding(findingID) {
+    try {
+      const payload = await api("/api/cases", { method: "POST", body: { finding_id: findingID } });
+      closeDrawer();
+      if (payload.case && payload.case.id) {
+        toast(payload.created ? "Case 已创建" : "Case 已存在", "ok");
+        go("case", { id: payload.case.id });
+      }
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  }
+
   // ── findings ───────────────────────────────────────────────────────────
 
   async function viewFindings() {
@@ -828,7 +1211,7 @@
     const seq = ++findings.seq;
     const rows = $("#findingRows");
     if (!rows) return;
-    rows.innerHTML = Array.from({ length: 6 }, () => `<tr><td colspan="6"><div class="sk sk-row"></div></td></tr>`).join("");
+    rows.innerHTML = `<tr><td colspan="6" class="muted">正在合并统一证据与多语言代码审计；大项目首次可能需要数十秒…</td></tr>` + Array.from({ length: 6 }, () => `<tr><td colspan="6"><div class="sk sk-row"></div></td></tr>`).join("");
     const params = new URLSearchParams({ limit: findings.limit, offset: findings.offset });
     if (findings.status !== "all") params.set("status", findings.status);
     if (findings.category !== "all") params.set("category", findings.category);
@@ -854,7 +1237,7 @@
       });
       $("#findingCount").textContent = `${fmtNum(data.filtered)} / ${fmtNum(data.total)} 条 · 静态确认 ${data.counts.static_confirmed}`;
       if (!data.items.length) {
-        rows.innerHTML = `<tr><td colspan="6">${emptyState("i-bug", "没有匹配的发现", "调整状态、类别或搜索条件。未观察到路径不代表目标安全。")}</td></tr>`;
+        rows.innerHTML = `<tr><td colspan="6"><div class="empty"><svg class="icon"><use href="#i-bug"/></svg><h4>统一证据模型没有匹配的发现</h4><p>本页只覆盖 Java/Spring 数据流、依赖公告与访问控制。若快照含 PHP / .NET / Python / JS-TS / Go 源码，多语言规则发现在「代码审计」页单独呈现；0 条不代表安全。</p><a class="btn" href="#/code">打开代码审计页</a></div></td></tr>`;
       } else {
         rows.innerHTML = data.items.map(findingRow).join("");
       }
@@ -872,14 +1255,19 @@
   }
 
   function findingRow(finding) {
+    const isCode = String(finding.id || "").startsWith("code:");
     const where = finding.endpoint
       ? `<div class="id-cell"><strong class="mono">${esc(finding.endpoint.path)}</strong><span>${esc(finding.endpoint.symbol)}</span></div>`
-      : `<div class="id-cell"><strong class="mono">${esc(finding.component ? finding.component.dependency : finding.category)}</strong><span>${esc(finding.component ? finding.component.advisory_id : finding.title)}</span></div>`;
+      : isCode && finding.location
+        ? `<div class="id-cell"><strong class="mono">${esc(finding.location)}</strong><span>${esc(finding.kind || "")}</span></div>`
+        : `<div class="id-cell"><strong class="mono">${esc(finding.component ? finding.component.dependency : finding.category)}</strong><span>${esc(finding.component ? finding.component.advisory_id : finding.title)}</span></div>`;
     const location = finding.endpoint
       ? `${finding.endpoint.file}:${finding.endpoint.start_line}`
-      : finding.component
-        ? finding.component.declaration_pom
-        : "—";
+      : isCode && finding.location
+        ? finding.location
+        : finding.component
+          ? finding.component.declaration_pom
+          : "—";
     return `<tr class="clickable" tabindex="0" data-id="${esc(finding.id)}">
       <td>${statusPill(finding.status)}</td>
       <td><div class="id-cell"><strong>${esc(kindLabels[finding.kind] || finding.category)}</strong><span>${esc(finding.cwe)}</span></div></td>
@@ -912,6 +1300,7 @@
     try {
       const finding = await api("/api/finding?id=" + encodeURIComponent(id));
       if (state.drawerId !== id) return;
+      state.drawerFinding = finding;
       drawer.innerHTML = drawerContent(finding);
       $("[data-close-drawer]", drawer).addEventListener("click", closeDrawer);
     } catch (error) {
@@ -941,7 +1330,11 @@
             ${finding.source_analyses.map((item) => `<span class="chip mono">${esc(item)}</span>`).join("")}
           </div>
         </div>
-        <button class="icon-btn" type="button" data-close-drawer aria-label="关闭"><svg class="icon"><use href="#i-x"/></svg></button>
+        <div class="row-actions">
+          <button class="btn sm" type="button" data-create-case="${esc(finding.id)}"><svg class="icon"><use href="#i-flag"/></svg>创建 Case</button>
+          <button class="btn sm" type="button" data-ask-agent="${esc(finding.id)}"><svg class="icon"><use href="#i-bug"/></svg>问 Agent</button>
+          <button class="icon-btn" type="button" data-close-drawer aria-label="关闭"><svg class="icon"><use href="#i-x"/></svg></button>
+        </div>
       </div>
       <div class="drawer-body">
         ${finding.endpoint ? `<section class="drawer-section"><h4><svg class="icon"><use href="#i-route"/></svg>入口</h4>
@@ -1037,6 +1430,22 @@
           </div>
         </div>
       </section>
+      <section class="card section-gap" id="endpointEntrySection" hidden>
+        <div class="card-head">
+          <div>
+            <div class="eyebrow">ENTRY EVIDENCE</div>
+            <h3>统一入口证据</h3>
+          </div>
+          <span class="card-sub" id="endpointEntryCount">—</span>
+        </div>
+        <div class="table-wrap">
+          <table class="cols-unified">
+            <thead><tr><th>语言 / 来源</th><th>方法</th><th>路径 / 文件</th><th>证据类型</th><th>权限</th><th>置信度</th></tr></thead>
+            <tbody id="endpointEntryRows"></tbody>
+          </table>
+        </div>
+        <div class="card-body entry-note" id="endpointEntryNote"></div>
+      </section>
     `;
     let timer = null;
     $("#endpointSearch").addEventListener("input", (event) => {
@@ -1069,6 +1478,10 @@
       const row = event.target.closest("tr[data-file]");
       if (row) go("source", { path: row.dataset.file, line: row.dataset.line });
     });
+    $("#endpointEntryRows").addEventListener("click", (event) => {
+      const row = event.target.closest("tr[data-file]");
+      if (row) go("source", { path: row.dataset.file, line: row.dataset.line });
+    });
     await loadEndpoints();
   }
 
@@ -1090,9 +1503,32 @@
       endpoints.authzMap = data.authz || {};
       endpoints.authzCounts = data.authz_counts || null;
       const counts = data.authz_counts || {};
-      $("#endpointCount").textContent = `${fmtNum(data.total)} 个入口 · 控制器 ${data.coverage.controllers_found} · 无控制 ${fmtNum(counts.unprotected || 0)}`;
+      const entries = data.entries || [];
+      endpoints.entries = entries;
+      endpoints.entryCoverage = data.entry_coverage || [];
+      endpoints.entryPartial = Boolean(data.entry_partial);
+      endpoints.entryLimitations = data.entry_limitations || [];
+      const entrySection = $("#endpointEntrySection");
+      if (entrySection) {
+        entrySection.hidden = entries.length === 0;
+        const languageCount = new Set(entries.map((entry) => entry.language).filter(Boolean)).size;
+        const sourceCount = new Set(entries.map((entry) => entry.source).filter(Boolean)).size;
+        $("#endpointEntryCount").textContent = entries.length ? `${fmtNum(entries.length)} 条 · ${fmtNum(languageCount)} 语言 / ${fmtNum(sourceCount)} 来源` : "";
+        $("#endpointEntryRows").innerHTML = entries.map((entry) => endpointUnifiedRow(entry)).join("");
+        const limitations = endpoints.entryLimitations
+          .map((item) => endpointLimitationLabel(item))
+          .filter(Boolean)
+          .slice(0, 3);
+        $("#endpointEntryNote").textContent = entries.length
+          ? `Java 注解入口、codescan 路由声明、应用入口文件候选已统一为本视图。声明路由和文件候选都不是已部署 URL${endpoints.entryPartial ? "；证据不完整" : ""}${limitations.length ? "；" + limitations.join("；") : ""}。`
+          : "";
+      }
+      $("#endpointCount").textContent = `${fmtNum(data.total)} 个 Java 解析入口 · 统一证据 ${fmtNum(entries.length)} · 控制器 ${data.coverage.controllers_found} · 无控制 ${fmtNum(counts.unprotected || 0)}`;
       if (!data.items.length) {
-        rows.innerHTML = `<tr><td colspan="6">${emptyState("i-route", "没有匹配的入口", "调整检索条件。注解级清单不证明路由已部署。")}</td></tr>`;
+        const hint = entries.length
+          ? `未解析到 Java 注解级路由；统一证据中已有 ${fmtNum(entries.length)} 条入口线索（见下方）。Java 注解清单不覆盖 PHP/.NET 等语言，不能据此判断没有 HTTP 入口。`
+          : "调整检索条件。注解级清单只覆盖 Java；不能据此判断非 Java 项目没有 HTTP 入口。";
+        rows.innerHTML = `<tr><td colspan="6">${emptyState("i-route", "没有匹配的 Java 注解级入口", hint)}</td></tr>`;
       } else {
         rows.innerHTML = data.items.map((item) => endpointRow(item, data.authz ? data.authz[item.symbol] : null)).join("");
       }
@@ -1140,6 +1576,61 @@
     </tr>`;
   }
 
+  const endpointSourceLabels = {
+    java_audit: "Java 注解",
+    codescan: "代码路由",
+    application_entry: "入口文件",
+  };
+  const endpointKindLabels = {
+    annotation_route: "注解入口",
+    route_declaration: "声明路由",
+    application_entry: "文件候选",
+    request_script: "请求脚本候选",
+  };
+  const endpointLimitationLabels = {
+    code_audit_not_run: "代码路由分析尚未运行",
+    authz_not_run: "权限尚未评估",
+    java_audit_not_run: "Java 注解分析未运行",
+    entrypoint_not_run: "入口文件扫描未运行",
+    entry_candidate_not_deployed_route: "入口文件不是已部署 URL",
+    route_declaration_not_deployment: "声明路由不等于已部署路由",
+    entry_duplicate_suppressed: "重复路由证据已折叠",
+    entrypoint_inventory_truncated: "入口候选数量已截断",
+    php_request_script_candidate_not_route: "请求脚本不是已部署路由",
+    php_request_script_not_deployed: "请求脚本未验证部署",
+    php_request_script_content_bounded_1mib: "请求脚本仅扫描前 1 MiB",
+    lexical_annotation_inventory_not_ast: "Java 注解清单是词法级，不是完整 AST",
+  };
+
+  function endpointLimitationLabel(value) {
+    if (endpointLimitationLabels[value]) return endpointLimitationLabels[value];
+    for (const key of Object.keys(endpointLimitationLabels)) {
+      if (value.startsWith(key + ":")) return endpointLimitationLabels[key];
+    }
+    return "";
+  }
+
+  function endpointUnifiedRow(entry) {
+    const language = (typeof codeLanguageLabels !== "undefined" && codeLanguageLabels[entry.language]) || entry.language || "unknown";
+    const source = endpointSourceLabels[entry.source] || entry.source || "unknown";
+    const kind = endpointKindLabels[entry.kind] || entry.kind || "证据";
+    const methods = (entry.http_methods || []).map((method) => `<span class="chip mono">${esc(method)}</span>`).join(" ") || '<span class="status muted">—</span>';
+    const location = entry.path_status === "dynamic_unresolved" ? "动态路由 · 路径未解析" : (entry.path || entry.file || "");
+    const file = entry.file || entry.path || "";
+    const line = entry.start_line || 1;
+    const authz = entry.authz ? decisionPill(entry.authz.decision) : '<span class="status muted">未评估</span>';
+    const confidence = entry.confidence ? `<span class="status muted">${esc(entry.confidence)}</span>` : '<span class="status muted">—</span>';
+    const detail = [entry.path_status, entry.reason].filter(Boolean).join(" · ");
+    return `<tr class="clickable" tabindex="0" data-file="${esc(file)}" data-line="${esc(line)}" title="${esc(detail)}">
+      <td><span class="chip">${esc(language)}</span> <span class="status muted">${esc(source)}</span></td>
+      <td>${methods}</td>
+      <td class="file"><span class="mono">${esc(location)}</span><div class="status muted mono">${esc(file)}:${line}</div></td>
+      <td>${esc(kind)}</td>
+      <td>${authz}</td>
+      <td>${confidence}</td>
+    </tr>`;
+  }
+
   // ── dependencies ───────────────────────────────────────────────────────
 
   async function viewDependencies() {
@@ -1147,22 +1638,25 @@
     const report = data.report;
     const coverage = report.coverage;
     const project = report.project;
+    const ecosystems = project.ecosystems && project.ecosystems.length ? project.ecosystems.join(" + ") : (project.build_system || "unknown");
     const advisories = report.advisories || [];
     const matches = report.advisory_matches || [];
     const candidates = matches.filter((item) => item.finding_status === "candidate");
+    const manifests = report.manifests || [];
     $("#view").innerHTML = `
-      ${coverage.advisories_loaded === 0 ? `<div class="banner warn"><svg class="icon"><use href="#i-alert"/></svg><span>未加载公告目录。依赖声明仍会被解析，但不会产生候选漏洞匹配。使用 <code>trident web --advisories &lt;file&gt;</code> 或 <code>audit findings --advisories</code> 显式指定本地固定公告。</span></div>` : ""}
+      ${coverage.advisories_loaded === 0 ? `<div class="banner warn"><svg class="icon"><use href="#i-alert"/></svg><span>未加载公告目录。依赖声明仍会被解析，但不会产生候选漏洞匹配。到「设置 → 分析配置」填写公告目录 / 文件并保存即可立即生效，无需重启；也可在启动时用 <code>trident web --advisories &lt;file&gt;</code> 指定本地固定公告。</span></div>` : ""}
       <div class="tiles">
-        ${tile("package", "violet", fmtNum(coverage.dependencies_declared), "直接依赖声明", `${fmtNum(project.module_count)} 个模块`)}
-        ${tile("layer", "blue", fmtNum(project.pom_count), "POM 文件", `${project.build_system}`)}
+        ${tile("package", "violet", fmtNum(coverage.dependencies_declared), "直接依赖声明", `${fmtNum(project.module_count)} 个模块 · ${fmtNum(coverage.manifest_files_scanned)} 个清单`)}
+        ${tile("layer", "blue", fmtNum(project.pom_count), "构建文件", `${esc(ecosystems)}`)}
         ${tile("flag", "amber", fmtNum(candidates.length), "公告候选", `${fmtNum(advisories.length)} 条公告`)}
-        ${tile("alert", "teal", fmtNum(coverage.dependencies_unresolved), "未解析版本", `拒绝 POM ${coverage.poms_rejected}`)}
+        ${tile("alert", "teal", fmtNum(coverage.dependencies_unresolved), "未解析版本", `拒绝 POM ${fmtNum(coverage.poms_rejected)} · 清单 ${fmtNum(coverage.manifest_files_rejected)}`)}
       </div>
       <div class="grid-2">
         <section class="card">
-          <div class="card-head"><h3><svg class="icon"><use href="#i-layer"/></svg>模块</h3><span class="card-sub">${fmtNum(project.module_count)} modules</span></div>
+          <div class="card-head"><h3><svg class="icon"><use href="#i-layer"/></svg>模块 / 清单</h3><span class="card-sub">${fmtNum((report.modules || []).length)} modules · ${fmtNum(manifests.length)} manifests</span></div>
           <div class="card-body">
-            ${report.modules.length ? `<div class="module-grid">${report.modules.map((module) => `<div class="module"><div class="module-top"><strong>${esc(module.artifact_id || module.directory)}</strong><span class="chip mono">${esc(module.packaging || "jar")}</span></div><div class="module-meta">${esc(module.group_id)} · ${esc(module.version || "未解析")}<br>${esc(module.pom)}${module.aggregator ? " · aggregator" : ""}</div></div>`).join("")}</div>` : emptyState("i-package", "未发现 Maven 模块", "快照中没有可解析的 pom.xml。")}
+            ${(report.modules || []).length ? `<div class="module-grid">${report.modules.map((module) => `<div class="module"><div class="module-top"><strong>${esc(module.artifact_id || module.directory)}</strong><span class="chip mono">${esc(module.packaging || "jar")}</span></div><div class="module-meta">${esc(module.group_id)} · ${esc(module.version || "未解析")}<br>${esc(module.pom)}${module.aggregator ? " · aggregator" : ""}</div></div>`).join("")}</div>` : emptyState("i-package", "未发现 Maven 模块", "Maven 模块仅来自 pom.xml；其他生态见下方清单。")}
+            ${manifests.length ? `<div class="table-wrap section-gap"><table><thead><tr><th>清单</th><th>生态</th><th>类型</th><th>依赖</th><th>状态</th></tr></thead><tbody>${manifests.map((item) => `<tr><td class="mono">${esc(item.path)}</td><td><span class="chip">${esc(item.ecosystem)}</span></td><td>${esc(item.kind || "—")}</td><td>${fmtNum(item.dependencies || 0)}</td><td><span class="status ${item.status === "declared" || item.status === "version_source" ? "ok" : "warn"}">${esc(item.status)}</span></td></tr>`).join("")}</tbody></table></div>` : ""}
           </div>
         </section>
         <section class="card">
@@ -1171,7 +1665,7 @@
             ${matches.length ? matches.map((match) => `<div class="advisory ${match.finding_status === "candidate" ? "candidate" : ""}">
               <span class="status ${match.finding_status === "candidate" ? "warn" : "muted"}">${esc(match.finding_status)}</span>
               <span class="advisory-main"><strong>${esc(match.advisory_id)} · ${esc(match.dependency)} ${esc(match.declared_version || "—")}</strong><span>${esc(match.module)} · version ${esc(match.version_status)} · runtime ${esc(match.runtime_status)}</span></span>
-            </div>`).join("") : emptyState("i-check", "没有公告匹配", "未加载公告目录、没有精确版本命中，或快照中没有 Maven 依赖。")}
+            </div>`).join("") : emptyState("i-check", "没有公告匹配", "未加载公告目录、没有精确版本命中，或快照中没有可匹配的依赖。")}
           </div>
         </section>
       </div>
@@ -1179,23 +1673,24 @@
         <div class="card-head">
           <h3><svg class="icon"><use href="#i-package"/></svg>依赖声明</h3>
           <div class="card-head-actions">
-            <span class="card-sub">仅 POM 声明级 · CycloneDX 1.5</span>
+            <span class="card-sub">声明级 · 多生态 · CycloneDX 1.5</span>
             <button class="btn sm ghost" id="exportSarifBtn" type="button" title="与 trident audit sarif 相同的 SARIF 2.1.0"><svg class="icon"><use href="#i-download"/></svg>SARIF</button>
             <button class="btn sm ghost" id="exportSbomBtn" type="button"><svg class="icon"><use href="#i-download"/></svg>导出 SBOM</button>
           </div>
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>模块</th><th>依赖</th><th>版本</th><th>Scope</th><th>版本状态</th><th>声明 POM</th></tr></thead>
+            <thead><tr><th>模块</th><th>生态</th><th>依赖</th><th>版本</th><th>Scope</th><th>版本状态</th><th>声明文件</th></tr></thead>
             <tbody>
               ${report.dependencies.length ? report.dependencies.map((dependency) => `<tr>
                 <td class="mono">${esc(dependency.module)}</td>
-                <td class="strong mono">${esc(dependency.group_id)}:${esc(dependency.artifact_id)}</td>
+                <td><span class="chip">${esc(dependency.ecosystem || "maven")}</span></td>
+                <td class="strong mono">${esc(dependency.name || `${dependency.group_id}:${dependency.artifact_id}`)}</td>
                 <td class="mono">${esc(dependency.version || "—")}</td>
                 <td>${esc(dependency.scope || "—")}</td>
                 <td><span class="status ${dependency.version_status === "resolved" ? "ok" : "warn"}">${esc(dependency.version_status)}</span></td>
-                <td class="file">${esc(dependency.declaration_pom)}</td>
-              </tr>`).join("") : `<tr><td colspan="6">${emptyState("i-package", "没有依赖声明", "快照中没有解析到 Maven dependency。")}</td></tr>`}
+                <td class="file">${esc(dependency.manifest || dependency.declaration_pom)}</td>
+              </tr>`).join("") : `<tr><td colspan="7">${emptyState("i-package", "没有依赖声明", "快照中没有解析到 Maven、npm、Composer、NuGet、pip 或 Go 依赖。")}</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -1241,23 +1736,19 @@
     try {
       report = await api("/api/reachability");
     } catch (error) {
-      if (error.status === 412) {
-        $("#view").innerHTML = `<div class="card"><div class="empty"><svg class="icon"><use href="#i-info"/></svg><h4>可达性视图未启用</h4><p>${esc(error.message)}</p><code class="mono">trident web ... --package-map package-map.json</code></div></div>`;
-        return;
-      }
       throw error;
     }
     const cov = report.coverage || {};
     const rows = (report.dependencies || []).map((item) => `
-      <tr><td class="strong">${esc(item.module)}</td><td class="mono">${esc(item.dependency)}${item.version ? "@" + esc(item.version) : ""}</td>
+      <tr><td class="strong">${esc(item.module)}</td><td><span class="chip">${esc(item.ecosystem || "maven")}</span></td><td class="mono">${esc(item.dependency)}${item.version ? "@" + esc(item.version) : ""}</td>
       <td><span class="status ${item.reachability === "reachable" ? "ok" : item.reachability === "unreachable" ? "muted" : "warn"}">${esc(item.reachability)}</span></td>
-      <td class="wrap">${esc(item.reason || "")}${(item.paths || []).length ? ` · ${item.paths.length} 条路径` : ""}</td></tr>`).join("");
+      <td class="wrap">${esc(item.language || "")} ${esc(item.reason || "")}${(item.paths || []).length ? ` · ${item.paths.length} 条路径` : ""}</td></tr>`).join("");
     $("#view").innerHTML = `
-      <div class="hero"><div class="hero-copy"><span class="eyebrow">BOUNDED ENTRY CALL GRAPH</span>
+      <div class="hero"><div class="hero-copy"><span class="eyebrow">BOUNDED IMPORT / CALL GRAPH</span>
         <h2>依赖到入口有界可达性</h2>
-        <p>入口 ${fmtNum(cov.entrypoints || 0)} · 类 ${fmtNum(cov.classes_indexed || 0)} · reachable ${fmtNum(cov.reachable || 0)} / unreachable ${fmtNum(cov.unreachable || 0)} / unknown ${fmtNum(cov.unknown || 0)}。三态都不证明类加载或运行时利用。</p></div></div>
+        <p>Java 入口 ${fmtNum(cov.entrypoints || 0)} · 类 ${fmtNum(cov.classes_indexed || 0)} · 语言文件 ${fmtNum(cov.language_files_scanned || 0)} · reachable ${fmtNum(cov.reachable || 0)} / unreachable ${fmtNum(cov.unreachable || 0)} / unknown ${fmtNum(cov.unknown || 0)}。非 Java 匹配为文件级导入证据，三态都不证明类加载或运行时利用。</p></div></div>
       <div class="card section-gap"><div class="card-body tight"><div class="table-wrap"><table>
-        <thead><tr><th>模块</th><th>依赖</th><th>可达性</th><th>依据</th></tr></thead><tbody>${rows}</tbody>
+        <thead><tr><th>模块</th><th>生态</th><th>依赖</th><th>可达性</th><th>依据</th></tr></thead><tbody>${rows}</tbody>
       </table></div></div></div>
       <div class="card section-gap"><div class="card-head"><h3><svg class="icon"><use href="#i-info"/></svg>限制</h3></div><div class="card-body">${limitationList(report.limitations || [])}</div></div>`;
   }
@@ -1405,24 +1896,56 @@
     }
   }
 
-  async function viewAgent() {
-    const [chat, threadsPayload] = await Promise.all([
+  function profileOverrideKey(hash) {
+    return `trident.profile.${hash || "none"}`;
+  }
+
+  function chatProfileOverride(hash) {
+    try { return localStorage.getItem(profileOverrideKey(hash)) || ""; } catch (_) { return ""; }
+  }
+
+  function setChatProfileOverride(hash, id) {
+    try {
+      if (id) localStorage.setItem(profileOverrideKey(hash), id);
+      else localStorage.removeItem(profileOverrideKey(hash));
+    } catch (_) {}
+  }
+
+  async function viewAgent(params) {
+    const showAll = Boolean(state.agent && state.agent.showAll);
+    const scope = showAll ? "?hash=all" : "";
+    const requestedConversation = Number(params?.get("conversation") || 0);
+    const explicitRun = Number(params?.get("run") || 0);
+    const requestedRun = explicitRun || (requestedConversation ? 0 : (state.agent && state.agent.openId) || 0);
+    const [chat, conversationsPayload] = await Promise.all([
       api("/api/agent/chat/state").catch((error) => ({ enabled: false, reason: error.message })),
-      api("/api/agent/threads").catch((error) => ({ threads: [], active_run: 0, error: error.message })),
+      api("/api/agent/conversations" + scope).catch((error) => ({ conversations: [], active_run: 0, active_task: 0, error: error.message, status: error.status })),
     ]);
-    const threads = threadsPayload.threads || [];
-    const openId = state.agent && state.agent.openId && threads.some((item) => item.id === state.agent.openId)
-      ? state.agent.openId
-      : (threadsPayload.active_run || (threads[0] && threads[0].id) || 0);
+    const conversations = conversationsPayload.conversations || [];
+    let conversationId = requestedConversation;
+    if (!conversationId && state.agent && state.agent.conversationId && conversations.some((item) => item.id === state.agent.conversationId)) {
+      conversationId = state.agent.conversationId;
+    }
+    if (!conversationId && !requestedRun && conversations.length) conversationId = conversations[0].id;
     const query = (state.agent && state.agent.query) || "";
-    state.agent = { chat, threads, openId, steps: [], run: null, busy: Boolean(threadsPayload.active_run), timer: null, lastSeq: 0, query };
+    state.agent = {
+      chat, conversations, conversationId, conversation: null, runs: [], tasks: [],
+      openId: requestedRun, steps: [], run: null, busy: Boolean(conversationsPayload.active_run),
+      timer: null, lastSeq: 0, query, showAll, showHistory: false,
+      threadError: conversationsPayload.error || "", threadErrorStatus: conversationsPayload.status || 0,
+    };
 
     $("#view").innerHTML = `
-      <div class="chat-shell">
-        <aside class="chat-rail">
+      <div class="chat-shell" id="chatShell">
+        <button type="button" class="chat-rail-backdrop" data-rail-close aria-label="关闭会话列表"></button>
+        <aside class="chat-rail" id="chatRail">
           <div class="chat-rail-head">
-            <h3>会话</h3>
-            <button class="btn sm primary" type="button" id="newThread"><svg class="icon"><use href="#i-plus"/></svg>新建</button>
+            <div class="chat-rail-title"><span class="chat-rail-kicker">WORKSPACE</span><h3>会话</h3></div>
+            <div class="row-actions">
+              <button class="btn sm" type="button" id="allThreads">${showAll ? "仅当前项目" : "全部项目"}</button>
+              <button class="btn sm primary" type="button" id="newThread"><svg class="icon"><use href="#i-plus"/></svg>新建</button>
+              <button class="chat-rail-close" type="button" data-rail-close aria-label="关闭会话列表"><svg class="icon"><use href="#i-x"/></svg></button>
+            </div>
           </div>
           <div class="chat-rail-filter">
             <svg class="icon"><use href="#i-search"/></svg>
@@ -1431,11 +1954,12 @@
           <div class="chat-threads" id="chatThreads"></div>
           <div class="chat-rail-foot">
             <span class="chip mono">${esc(shortHash(chat.project_hash || state.config?.project?.hash || ""))}</span>
-            <span class="form-hint">仅显示当前项目的会话</span>
+            <span class="form-hint">${showAll ? "显示全部项目的会话" : "会话按项目快照隔离；编排的 planner/worker Run 不再单独占一条会话"}</span>
           </div>
         </aside>
         <section class="chat-main">
           <div class="chat-head" id="chatHead"></div>
+          <div id="chatContext"></div>
           <div class="chat-stream" id="chatStream"></div>
           <form class="composer" id="composer">
             ${chat.enabled ? `<div class="goal-presets">${[
@@ -1444,40 +1968,117 @@
               ["路径遍历", "检查文件读取类入口的路径拼接与规范化，列出可被外部输入影响的调用点并给出行号证据。"],
               ["依赖风险", "结合依赖声明与公告目录，检查是否存在命中已知漏洞的依赖，给出声明 POM 与公告编号。"],
             ].map(([label, text]) => `<button type="button" class="chip chip-btn" data-preset="${esc(text)}">${esc(label)}</button>`).join("")}</div>` : ""}
-            <textarea id="chatGoal" rows="3" placeholder="${chat.enabled ? "描述这次分析目标，例如：审计 SQL 注入与未授权访问风险" : esc(chat.reason || "对话未启用")}" ${chat.enabled ? "" : "disabled"}></textarea>
+            <textarea id="chatGoal" rows="2" placeholder="${chat.enabled ? "描述这次分析目标，例如：审计 SQL 注入与未授权访问风险" : esc(chat.reason || "对话未启用")}" ${chat.enabled ? "" : "disabled"}></textarea>
             <div class="composer-bar">
-              <label class="profile-pick">模型
-                <select id="chatProfile" ${chat.enabled ? "" : "disabled"}>
-                  ${(chat.profiles || []).map((profile) => `<option value="${esc(profile.id)}"${profile.default ? " selected" : ""}>${esc(profile.label || profile.model)}${profile.key_present ? "" : "（缺密钥）"}</option>`).join("")}
-                </select>
-              </label>
-              <label class="check"><input type="checkbox" id="chatEgress" ${chat.enabled ? "" : "disabled"}>批准把当前项目快照与本条目标发送给所选模型端点</label>
-              <span class="spacer"></span>
-              <span class="composer-status" id="composerStatus"></span>
-              <button class="btn primary" type="submit" id="chatSend" ${chat.enabled ? "" : "disabled"}>发送<svg class="icon"><use href="#i-chev-right"/></svg></button>
+              <div class="composer-controls">
+                <label class="profile-pick">运行方式
+                  <select id="chatMode" ${chat.enabled ? "" : "disabled"}>
+                    <option value="chat" selected>单次对话</option>
+                    <option value="orchestrate">编排任务（小预算）</option>
+                  </select>
+                </label>
+                <label class="profile-pick">模型
+                  <select id="chatProfile" ${chat.enabled ? "" : "disabled"}>
+                    <option value=""${chatProfileOverride(state.config?.project?.hash) ? "" : " selected"}>跟随默认${chat.resolved && chat.resolved.main ? `（${esc(chat.resolved.main.entry_name)} · ${esc(chat.resolved.main.model)}）` : ""}</option>
+                    ${(chat.profiles || []).map((profile) => `<option value="${esc(profile.id)}"${chatProfileOverride(state.config?.project?.hash) === profile.id ? " selected" : ""}>${esc(profile.label || profile.model)}${profile.key_present ? "" : "（缺密钥）"}</option>`).join("")}
+                  </select>
+                </label>
+                <label class="check"><input type="checkbox" id="chatEgress" ${chat.enabled ? "" : "disabled"}>批准外发快照与目标</label>
+                <label class="check" title="仅在本次 Run 暴露 Case 写工具；不会修改 pinned snapshot 或 Case 原目录"><input type="checkbox" id="chatRepair" ${chat.enabled && chat.repair_available ? "" : "disabled"} ${chat.repair_available ? "" : "title=\"当前控制台没有可写 workspace\""}>批准写入 Case 工作副本并隔离验证</label>
+                <span class="form-hint">修复工具由服务端按本次批准暴露；未批准时模型看不到写工具。</span>
+              </div>
+              <div class="composer-submit">
+                <span class="composer-status" id="composerStatus"></span>
+                <button class="btn primary" type="submit" id="chatSend" ${chat.enabled ? "" : "disabled"}>发送<svg class="icon"><use href="#i-chev-right"/></svg></button>
+              </div>
             </div>
           </form>
         </section>
       </div>`;
 
-    renderThreadList();
+    renderConversationList();
+    const chatShell = $("#chatShell");
+    const closeRail = () => chatShell && chatShell.classList.remove("rail-open");
+    if (chatShell) {
+      chatShell.addEventListener("click", (event) => {
+        if (event.target.closest("[data-rail-toggle]")) {
+          chatShell.classList.toggle("rail-open");
+          return;
+        }
+        if (event.target.closest("[data-rail-close]")) closeRail();
+      });
+    }
+    const profileSelect = $("#chatProfile");
+    if (profileSelect) {
+      profileSelect.addEventListener("change", () => {
+        const hash = state.config?.project?.hash || "";
+        setChatProfileOverride(hash, profileSelect.value);
+        if (!profileSelect.value) {
+          toast("已回到默认主模型", "ok");
+          return;
+        }
+        const picked = (chat.profiles || []).find((profile) => profile.id === profileSelect.value);
+        toast(`本次会话覆盖为 ${picked ? picked.label || picked.model : profileSelect.value}；不写回模型库`, "ok");
+      });
+    }
+    const modeSelect = $("#chatMode");
+    if (modeSelect) {
+      modeSelect.addEventListener("change", () => {
+        const button = $("#chatSend");
+        if (button) button.textContent = modeSelect.value === "orchestrate" ? "启动任务" : "发送";
+        const status = $("#composerStatus");
+        if (status && chat.enabled && chat.key_present) {
+          status.textContent = modeSelect.value === "orchestrate" ? "将创建编排任务：3 轮 / 4 意图 / 1 执行者" : "";
+          status.className = "composer-status";
+        }
+      });
+    }
+    $("#allThreads").addEventListener("click", () => {
+      state.agent.showAll = !state.agent.showAll;
+      viewAgent();
+    });
     $("#newThread").addEventListener("click", () => {
+      closeRail();
+      state.agent.conversationId = 0;
+      state.agent.conversation = null;
+      state.agent.runs = [];
+      state.agent.tasks = [];
       state.agent.openId = 0;
       state.agent.steps = [];
       state.agent.run = null;
-      renderThreadList();
+      renderConversationList();
+      renderChatContext();
       renderThread();
       $("#chatGoal").focus();
     });
     $("#chatThreads").addEventListener("click", (event) => {
-      const row = event.target.closest("[data-thread]");
+      const row = event.target.closest("[data-conversation]");
       if (!row) return;
-      openThread(Number(row.dataset.thread));
+      closeRail();
+      openConversation(Number(row.dataset.conversation));
     });
     $("#chatSearch").addEventListener("input", (event) => {
       state.agent.query = event.target.value;
-      renderThreadList();
+      renderConversationList();
     });
+    if (state.pendingAgentGoal) {
+      const goal = $("#chatGoal");
+      if (goal) {
+        goal.value = state.pendingAgentGoal;
+        goal.focus();
+      }
+      state.pendingAgentGoal = "";
+    }
+    if (state.pendingRepair) {
+      const repair = $("#chatRepair");
+      if (repair && !repair.disabled) {
+        repair.checked = true;
+        toast("已预选修复批准；仍需勾选外发并发送本次 Run", "ok");
+      } else {
+        toast("当前控制台没有可写 workspace，修复写工具不可用", "bad");
+      }
+      state.pendingRepair = false;
+    }
     $("#composer").addEventListener("submit", (event) => {
       event.preventDefault();
       sendChat();
@@ -1500,11 +2101,120 @@
       $("#composerStatus").textContent = chat.reason || "";
       $("#composerStatus").className = "composer-status warn-text";
     } else if (!chat.key_present) {
-      $("#composerStatus").textContent = "服务端未找到模型密钥";
+      $("#composerStatus").textContent = "主模型未配置密钥：到「设置 → 模型」填写 API Key，或设置环境变量后重启";
       $("#composerStatus").className = "composer-status warn-text";
     }
-    if (openId) await openThread(openId);
-    else renderThread();
+    if (requestedRun) await openThread(requestedRun, true);
+    else if (conversationId) await openConversation(conversationId);
+    else { renderChatContext(); renderThread(); }
+  }
+
+  async function openConversation(conversationId) {
+    if (!conversationId || !state.agent) return;
+    stopPolling();
+    state.agent.conversationId = conversationId;
+    state.agent.showHistory = false;
+    renderConversationList();
+    $("#chatStream").innerHTML = `<div class="chat-loading">${skeletonView()}</div>`;
+    try {
+      const payload = await api(`/api/agent/conversations/detail?id=${conversationId}`);
+      state.agent.conversation = payload.conversation || null;
+      state.agent.runs = payload.runs || [];
+      state.agent.tasks = payload.tasks || [];
+      state.agent.openId = state.agent.runs.length ? state.agent.runs[state.agent.runs.length - 1].id : 0;
+      renderConversationList();
+      renderChatContext();
+      if (state.agent.openId) await openThread(state.agent.openId);
+      else { state.agent.run = null; renderThread(); }
+    } catch (error) {
+      $("#chatStream").innerHTML = emptyState("i-alert", "无法加载会话", error.message);
+    }
+  }
+
+  function renderConversationList() {
+    const host = $("#chatThreads");
+    if (!host || !state.agent) return;
+    const all = state.agent.conversations || [];
+    const query = String(state.agent.query || "").trim().toLowerCase();
+    const items = query
+      ? all.filter((conversation) => String(conversation.title || "").toLowerCase().includes(query))
+      : all;
+    if (!all.length) {
+      const error = state.agent.threadError || "";
+      if (state.agent.threadErrorStatus === 412) {
+        host.innerHTML = `<div class="chat-empty"><strong>无法读取会话库</strong><br>${esc(error)}<br><br>到「设置 → Agent 与编排」填写会话库连接串并保存即可立即接入，<strong>无需重启</strong>。</div>`;
+      } else if (error) {
+        host.innerHTML = `<div class="chat-empty">会话加载失败：${esc(error)}</div>`;
+      } else {
+        host.innerHTML = `<div class="chat-empty">当前项目还没有会话。输入目标开始第一轮，或切换为编排任务。</div>`;
+      }
+      return;
+    }
+    if (!items.length) {
+      host.innerHTML = `<div class="chat-empty">没有匹配的会话。</div>`;
+      return;
+    }
+    host.innerHTML = items.map((conversation) => {
+      const title = conversation.title || "(无标题)";
+      const last = conversation.last_run_state || conversation.last_task_state || "";
+      return `<button class="chat-thread${conversation.id === state.agent.conversationId ? " active" : ""}" type="button" data-conversation="${conversation.id}" title="${esc(title)}">
+        <span class="chat-thread-title">${esc(title.length > 60 ? `${title.slice(0, 60)}…` : title)}</span>
+        <span class="chat-thread-meta">
+          <span class="chip">${conversation.task_count && conversation.run_count ? "对话 + 任务" : conversation.mode === "orchestrate" ? "编排" : "对话"}</span>
+          ${last ? runStatePill(last) : `<span class="chip">未开始</span>`}
+          <span class="mono">#${conversation.id}</span>
+          <span>${conversation.run_count || 0} 轮 / ${conversation.task_count || 0} 任务</span>
+          <span class="chat-thread-time">${esc((conversation.updated_at || "").slice(5, 16).replace("T", " "))}</span>
+        </span>
+      </button>`;
+    }).join("");
+  }
+
+  function taskStatePill(taskState) {
+    const labels = { created: "已创建", running: "运行中", completed: "已完成", cancelled: "已停止", failed: "失败" };
+    const cls = taskState === "running" ? "ok" : taskState === "failed" ? "bad" : taskState === "cancelled" ? "warn" : "muted";
+    return `<span class="status ${cls}"><span class="dot ${cls === "ok" ? "ok" : cls === "bad" ? "bad" : cls === "warn" ? "warn" : ""}"></span>${esc(labels[taskState] || taskState || "未知")}</span>`;
+  }
+
+  function renderChatContext() {
+    const host = $("#chatContext");
+    if (!host || !state.agent) return;
+    const conversation = state.agent.conversation;
+    if (!conversation) {
+      host.innerHTML = state.agent.openId ? `<div class="chat-context chat-context-standalone"><span class="chip">独立 Run #${state.agent.openId}</span><span class="form-hint">该 Run 不在当前会话内；可从任务或仪表盘深链打开。</span></div>` : "";
+      return;
+    }
+    const runs = state.agent.runs || [];
+    const tasks = state.agent.tasks || [];
+    const expanded = Boolean(state.agent.showHistory);
+    const total = runs.length + tasks.length;
+    host.innerHTML = `<div class="chat-context">
+      <div class="chat-context-head">
+        <div><span class="chip">会话 #${conversation.id}</span><strong>${esc(conversation.title || "(无标题)")}</strong><span class="chip">${tasks.length && runs.length ? "对话 + 任务" : conversation.mode === "orchestrate" ? "编排" : "对话"}</span></div>
+        <div class="chat-context-actions">
+          <span class="form-hint">${runs.length} 轮对话 / ${tasks.length} 个任务</span>
+          ${total > 1 ? `<button class="btn sm ghost" type="button" id="chatHistoryToggle">${expanded ? "收起历史" : "历史"}</button>` : ""}
+        </div>
+      </div>
+      <div class="chat-turns"${expanded || total <= 1 ? "" : " hidden"}>
+        ${runs.map((run, index) => `<button type="button" class="chat-turn${run.id === state.agent.openId ? " active" : ""}" data-conv-run="${run.id}" title="${esc(run.goal || "")}">
+          <span class="mono">#${run.id}</span><span>${esc((run.goal || "无目标").slice(0, 48))}</span>${runStatePill(run.state)}
+        </button>`).join("")}
+        ${tasks.map((task) => `<a class="chat-task-card" href="#/tasks?task=${task.id}" title="${esc(task.goal || "")}">
+          <span class="chip">编排任务</span><strong>${esc(task.title || `任务 #${task.id}`)}</strong>
+          <span>${task.planner_rounds || 0}/${task.max_planner_rounds || 0} 轮 · ${task.intents_spawned || 0}/${task.max_intents || 0} 意图</span>
+          ${taskStatePill(task.state)}
+        </a>`).join("")}
+      </div>
+    </div>`;
+    host.querySelectorAll("[data-conv-run]").forEach((button) => {
+      button.addEventListener("click", () => openThread(Number(button.dataset.convRun)));
+    });
+    const toggle = host.querySelector("#chatHistoryToggle");
+    if (toggle) toggle.addEventListener("click", () => {
+      state.agent.showHistory = !expanded;
+      renderChatContext();
+    });
   }
 
   function startThreadRename(run) {
@@ -1523,7 +2233,7 @@
       if (done) return;
       done = true;
       saveThreadAlias(run, input.value);
-      renderThreadList();
+      renderConversationList();
       renderThread();
     };
     input.addEventListener("keydown", (event) => {
@@ -1538,46 +2248,17 @@
     input.addEventListener("blur", commit);
   }
 
-  function renderThreadList() {
-    const host = $("#chatThreads");
-    if (!host) return;
-    const all = state.agent.threads || [];
-    const query = String(state.agent.query || "").trim().toLowerCase();
-    const items = query
-      ? all.filter((thread) => `${threadAlias(thread)} ${thread.goal || ""}`.toLowerCase().includes(query))
-      : all;
-    if (!all.length) {
-      host.innerHTML = `<div class="chat-empty">当前项目还没有会话。写下目标并发送，第一轮分析就会出现在这里。</div>`;
-      return;
-    }
-    if (!items.length) {
-      host.innerHTML = `<div class="chat-empty">没有匹配的会话。</div>`;
-      return;
-    }
-    host.innerHTML = items.map((thread) => {
-      const alias = threadAlias(thread);
-      const title = alias || (thread.goal || "(无目标)");
-      return `<button class="chat-thread${thread.id === state.agent.openId ? " active" : ""}" type="button" data-thread="${thread.id}" title="${esc(alias ? `目标：${thread.goal}` : title)}">
-        <span class="chat-thread-title">${esc(title.length > 60 ? `${title.slice(0, 60)}…` : title)}</span>
-        <span class="chat-thread-meta">
-          ${runStatePill(thread.state)}
-          <span class="mono">#${thread.id}</span>
-          <span>${thread.model_calls}M/${thread.tool_calls}T</span>
-          <span class="chat-thread-time">${esc((thread.updated_at || "").slice(5, 16).replace("T", " "))}</span>
-        </span>
-      </button>`;
-    }).join("");
-  }
-
-  async function openThread(runID) {
+  async function openThread(runID, standalone = false) {
     stopPolling();
     state.agent.openId = runID;
-    renderThreadList();
+    renderConversationList();
+    renderChatContext();
     $("#chatStream").innerHTML = `<div class="chat-loading">${skeletonView()}</div>`;
     try {
       const payload = await api("/api/agent/steps?run_id=" + runID + "&limit=1000");
       state.agent.steps = payload.steps || [];
       state.agent.run = payload.run || null;
+      state.agent.usage = payload.usage || null;
       state.agent.lastSeq = state.agent.steps.length ? state.agent.steps[state.agent.steps.length - 1].seq : 0;
       renderThread();
       if (state.agent.run && !terminalStates.includes(state.agent.run.state)) startPolling();
@@ -1598,16 +2279,18 @@
         if (steps.length !== state.agent.steps.length) {
           state.agent.steps = steps;
           state.agent.run = payload.run || state.agent.run;
+          state.agent.usage = payload.usage || state.agent.usage;
           state.agent.lastSeq = steps.length ? steps[steps.length - 1].seq : 0;
           renderThread();
-          renderThreadList();
+          renderConversationList();
         } else if (payload.run) {
           state.agent.run = payload.run;
         }
         if (state.agent.run && terminalStates.includes(state.agent.run.state)) {
           stopPolling();
           renderThread();
-          await refreshThreads();
+          await refreshConversations();
+          await refreshConversationDetail();
         }
       } catch (error) {
         stopPolling();
@@ -1648,41 +2331,109 @@
       $("#chatEgress").focus();
       return;
     }
+    const mode = ($("#chatMode") && $("#chatMode").value) || "chat";
+    const repairApproved = mode === "chat" && Boolean($("#chatRepair") && $("#chatRepair").checked);
+    if (mode === "orchestrate" && $("#chatRepair") && $("#chatRepair").checked) {
+      toast("编排任务暂不暴露 Case 修复写工具；请用「单次对话」并保持修复批准勾选", "bad");
+      return;
+    }
     const button = $("#chatSend");
     button.disabled = true;
     button.textContent = "启动中…";
     try {
+      if (mode === "orchestrate") {
+        const result = await api("/api/agent/orchestration", {
+          method: "POST",
+          body: {
+            title: (goal.split(/\r?\n/)[0] || "编排任务").slice(0, 120),
+            goal,
+            approve_egress: true,
+            profile_id: ($("#chatProfile") && $("#chatProfile").value) || "",
+            conversation_id: state.agent.conversationId || 0,
+            // Chat-created tasks use a tight budget; the full task page remains
+            // available for larger runs.
+            max_planner_rounds: 3,
+            max_intents: 4,
+            max_workers: 1,
+            deadline_minutes: 20,
+            max_model_calls: 8,
+            max_tool_calls: 12,
+            max_tokens: 150000,
+          },
+        });
+        $("#chatGoal").value = "";
+        state.agent.conversationId = result.conversation_id;
+        await refreshConversations();
+        await openConversation(result.conversation_id);
+        toast(`编排任务 #${result.task_id} 已启动，已挂到当前会话`, "ok");
+        return;
+      }
       const result = await api("/api/agent/chat", {
         method: "POST",
         body: {
           goal,
           approve_egress: true,
-          // Limits come from the selected profile; the page never overrides them.
+          approve_repair: repairApproved,
           profile_id: ($("#chatProfile") && $("#chatProfile").value) || "",
+          conversation_id: state.agent.conversationId || 0,
         },
       });
       $("#chatGoal").value = "";
       state.agent.busy = true;
-      await refreshThreads();
-      await openThread(result.run_id);
+      if (result.conversation_id) {
+        state.agent.conversationId = result.conversation_id;
+        await refreshConversations();
+        await openConversation(result.conversation_id);
+      } else {
+        await refreshConversations();
+        await openThread(result.run_id);
+      }
       toast(`Run #${result.run_id} 已启动`, "ok");
     } catch (error) {
       toast(error.message, "bad");
     } finally {
-      button.textContent = "发送";
+      button.textContent = (($("#chatMode") && $("#chatMode").value) || "chat") === "orchestrate" ? "启动任务" : "发送";
       button.disabled = false;
       updateComposerState();
     }
   }
 
-  async function refreshThreads() {
+  async function refreshConversations() {
     try {
-      const payload = await api("/api/agent/threads");
-      state.agent.threads = payload.threads || [];
-      renderThreadList();
+      const scope = state.agent.showAll ? "?hash=all" : "";
+      const payload = await api("/api/agent/conversations" + scope);
+      state.agent.conversations = payload.conversations || [];
+      renderConversationList();
     } catch (error) {
-      /* the thread list is not critical for sending */
+      /* the conversation rail is not critical for sending */
     }
+  }
+
+  async function refreshConversationDetail() {
+    if (!state.agent.conversationId) return;
+    try {
+      const payload = await api(`/api/agent/conversations/detail?id=${state.agent.conversationId}`);
+      state.agent.conversation = payload.conversation || state.agent.conversation;
+      state.agent.runs = payload.runs || state.agent.runs;
+      state.agent.tasks = payload.tasks || state.agent.tasks;
+      renderChatContext();
+    } catch (error) {
+      /* keep the current turn visible if the detail refresh fails */
+    }
+  }
+
+  function chatUsageChip() {
+    const usage = state.agent && state.agent.usage;
+    if (!usage) return "";
+    if (usage.estimated_cost_usd != null) {
+      const amount = Number(usage.estimated_cost_usd);
+      const text = amount >= 0.01 ? amount.toFixed(3) : amount.toFixed(6);
+      return `<span class="chip mono" title="${esc(usage.note || "按当前条目单价估算")}">≈ $${text}</span>`;
+    }
+    if (usage.usage_known) {
+      return `<span class="chip mono" title="${esc(usage.note || "")}">输入 ${fmtNum(usage.input_tokens)} / 输出 ${fmtNum(usage.output_tokens)}</span>`;
+    }
+    return `<span class="chip" title="${esc(usage.note || "provider 未报告用量")}">成本未定</span>`;
   }
 
   function renderThread() {
@@ -1690,36 +2441,54 @@
     const head = $("#chatHead");
     const stream = $("#chatStream");
     if (!head || !stream) return;
+    renderChatContext();
     if (!run) {
-      head.innerHTML = `<div class="chat-head-main"><h2>新的分析会话</h2><span class="form-hint">写入目标并批准外发后，Agent 会用只读工具读取当前项目快照。</span></div>`;
+      head.innerHTML = `<div class="chat-head-main">
+        <span class="chat-kicker">AGENT WORKSPACE</span>
+        <h2>新的分析会话</h2>
+        <p class="chat-subline">写入目标并批准外发后，Agent 会用只读工具读取当前项目快照。</p>
+      </div>
+      <div class="chat-actions">
+        <button class="btn sm ghost rail-toggle" type="button" data-rail-toggle><svg class="icon"><use href="#i-menu"/></svg>会话</button>
+      </div>`;
       stream.innerHTML = `<div class="chat-intro">${emptyState("i-server", "还没有开始", "描述一个分析目标即可。Agent 只能读取快照，不会执行项目代码。")}</div>`;
       return;
     }
     const alias = threadAlias(run);
     head.innerHTML = `
       <div class="chat-head-main">
+        <span class="chat-kicker">AGENT SESSION <span class="mono">· Run #${run.id}</span></span>
+        <h2 title="${esc(run.goal)}">${esc(alias || (run.goal || "").slice(0, 120))}</h2>
         <div class="chat-head-line">
           ${runStatePill(run.state)}
-          <span class="mono chat-run-id">#${run.id}</span>
-          <span class="chip">${run.model_calls} 模型 / ${run.tool_calls} 工具</span>
-          <span class="chip">${fmtNum(run.tokens_used)} tokens</span>
+          <span class="chat-stat">${run.model_calls} 模型调用</span>
+          <span class="chat-stat">${run.tool_calls} 工具调用</span>
+          <span class="chat-stat">${fmtNum(run.tokens_used)} tokens</span>
+          ${chatUsageChip()}
+          ${alias ? `<p class="chat-goal-raw">原始目标：${esc(run.goal)}</p>` : ""}
         </div>
-        <h2 title="${esc(run.goal)}">${esc(alias || (run.goal || "").slice(0, 120))}</h2>
-        ${alias ? `<p class="chat-goal-raw">目标：${esc(run.goal)}</p>` : ""}
       </div>
       <div class="chat-actions">
+        <button class="btn sm ghost rail-toggle" type="button" data-rail-toggle><svg class="icon"><use href="#i-menu"/></svg>会话</button>
         <button class="btn sm ghost" type="button" data-chat-action="rename" title="别名只保存在本机浏览器">重命名</button>
-        <button class="btn sm ghost" type="button" data-copy="${esc(run.goal || "")}">复制目标</button>
-        <button class="btn sm ghost" type="button" data-chat-action="rerun" title="用同一目标开一轮新会话">以此目标新建</button>
+        <button class="btn sm ghost" type="button" data-copy="${esc(run.goal || "")}" title="复制原始目标"><svg class="icon"><use href="#i-copy"/></svg>复制目标</button>
+        <button class="btn sm ghost" type="button" data-chat-action="rerun" title="用同一目标开一轮新会话"><svg class="icon"><use href="#i-plus"/></svg>以此目标新建</button>
       </div>`;
     $$("[data-chat-action]", head).forEach((button) => {
       button.addEventListener("click", () => {
         if (button.dataset.chatAction === "rename") startThreadRename(run);
         if (button.dataset.chatAction === "rerun") {
+          const shell = $("#chatShell");
+          if (shell) shell.classList.remove("rail-open");
+          state.agent.conversationId = 0;
+          state.agent.conversation = null;
+          state.agent.runs = [];
+          state.agent.tasks = [];
           state.agent.openId = 0;
           state.agent.steps = [];
           state.agent.run = null;
-          renderThreadList();
+          renderConversationList();
+          renderChatContext();
           renderThread();
           const goal = $("#chatGoal");
           if (goal) {
@@ -1729,17 +2498,19 @@
         }
       });
     });
-    const blocks = buildBlocks(state.agent.steps);
+    const blocks = buildBlocks(state.agent.steps, run.goal);
     stream.innerHTML = blocks.map(renderBlock).join("") || emptyState("i-clock", "等待第一个事件", "Run 刚创建，step 正在写入。");
     stream.scrollTop = stream.scrollHeight;
   }
 
-  // buildBlocks turns the append-only step log into readable messages: one
-  // assistant bubble per model turn, with its tool calls folded into a summary.
-  function buildBlocks(steps) {
+  // buildBlocks turns the append-only step log into readable messages: the
+  // user goal, one assistant message per model turn, tool calls folded into
+  // a process summary, and a final/state block.
+  function buildBlocks(steps, goal) {
     const blocks = [];
     let tools = null;
     let pending = new Map();
+    if (goal) blocks.push({ type: "user", text: goal });
     steps.forEach((step) => {
       const payload = step.payload || {};
       switch (step.kind) {
@@ -1777,7 +2548,8 @@
         case "run.failed":
         case "run.paused":
         case "run.budget_exhausted":
-        case "run.cancelled": {
+        case "run.cancelled":
+        case "run.unknown": {
           const reason = payload.reason || payload.message || step.kind;
           blocks.push({ type: "state", kind: step.kind, reason: String(reason), at: step.created_at });
           break;
@@ -1803,6 +2575,9 @@
     if (block.type === "meta") {
       return `<div class="chat-meta">${esc(block.text)}</div>`;
     }
+    if (block.type === "user") {
+      return `<div class="msg msg-user"><div class="msg-body"><span class="msg-label">你</span>${renderText(block.text)}</div></div>`;
+    }
     if (block.type === "assistant") {
       // Models sometimes emit a JSON fragment as "content"; folding it keeps
       // the readable answer separate from raw structured output.
@@ -1810,7 +2585,7 @@
         const raw = String(block.text).trim();
         return `<details class="tool-block json-block"><summary><svg class="icon"><use href="#i-code"/></svg>模型结构化输出 · ${fmtNum(raw.length)} 字节</summary><pre class="json-pre">${esc(raw.slice(0, 4000))}${raw.length > 4000 ? "\n…" : ""}</pre></details>`;
       }
-      return `<div class="msg msg-assistant"><div class="msg-body">${renderText(block.text)}</div></div>`;
+      return `<div class="msg msg-assistant"><div class="msg-body"><span class="msg-label">AGENT</span>${renderText(block.text)}</div></div>`;
     }
     if (block.type === "tools") {
       const run = state.agent.run || {};
@@ -1844,11 +2619,20 @@
       </div>`;
     }
     if (block.type === "state") {
-      const checkpoint = /checkpoint/i.test(block.reason);
-      const hint = checkpoint
-        ? "会话上下文超过 48 KiB 检查点上限：拆成更小的目标再开一轮，或在「设置 → 模型」里提高该配置的默认上限后重试。"
-        : "";
-      return `<div class="state-card"><b>${esc(block.kind)}</b><p>${esc(block.reason)}</p>${hint ? `<p class="state-hint">${esc(hint)}</p>` : ""}</div>`;
+      const legacyCheckpoint = /checkpoint limit/i.test(block.reason || "");
+      const note = legacyCheckpoint
+        ? "这是旧版检查点限制产生的历史停止记录；该限制已删除，可重新发起。"
+        : block.kind === "run.unknown"
+          ? "控制台在工具执行期间停止；该 Run 的结果无法确认，可重新发起一轮。"
+          : "";
+      const labels = {
+        "run.failed": "运行失败",
+        "run.paused": "已暂停",
+        "run.budget_exhausted": "预算耗尽",
+        "run.cancelled": "已取消",
+        "run.unknown": "状态不明",
+      };
+      return `<div class="state-card"><b>${esc(labels[block.kind] || block.kind)}</b><p>${esc(block.reason)}</p>${note ? `<p class="state-hint">${esc(note)}</p>` : ""}</div>`;
     }
     return "";
   }
@@ -1902,86 +2686,59 @@
 
   // ── model settings ─────────────────────────────────────────────────────
 
-  async function viewSettingsModel() {
-    const [library, chat] = await Promise.all([
-      api("/api/agent/models").catch((error) => ({ profiles: [], default: "", error: error.message })),
-      api("/api/agent/chat/state").catch((error) => ({ enabled: false, reason: error.message })),
-    ]);
-    state.modelSettings = { library, chat, probes: (state.modelSettings && state.modelSettings.probes) || {} };
-    $("#view").innerHTML = `
-      <section class="card">
-        <div class="card-head model-head">
-          <div class="model-head-main">
-            <span class="model-icon"><svg class="icon"><use href="#i-server"/></svg></span>
-            <div>
-              <h3>模型</h3>
-              <p class="form-hint">模型库描述端点和模型；密钥只从服务端环境变量读取，配置文件里只记录变量名。</p>
-            </div>
-          </div>
-        </div>
-        <div class="tabs" id="modelTabs">
-          <button type="button" data-tab="library" class="active">模型库 <em>${(library.profiles || []).length}</em></button>
-          <button type="button" data-tab="budget">运行上限</button>
-        </div>
-        <div class="card-body" id="modelTabBody"></div>
-      </section>`;
-    const renderTab = (tab) => {
-      $$("#modelTabs button").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
-      $("#modelTabBody").innerHTML = tab === "budget" ? modelBudgetPanel(library) : modelLibraryPanel(library, chat);
-      if (tab === "library") wireModelLibrary();
-    };
-    $("#modelTabs").addEventListener("click", (event) => {
-      const button = event.target.closest("[data-tab]");
-      if (button) renderTab(button.dataset.tab);
-    });
-    renderTab("library");
+  // ── model settings (v2: channel catalog, capabilities, role slots) ─────
+
+  const ModelAPIs = [
+    ["openai-completions", "OpenAI Chat Completions（当前运行时唯一支持）"],
+  ];
+  const ModelRoleMeta = {
+    main: { label: "主模型", short: "会话默认", owner: "手动 Run", hint: "控制台对话的默认端点；编排未单配时也回退到它" },
+    planner: { label: "规划者", short: "编排规划", owner: "规划轮", hint: "编排引擎的规划轮：只出意图与目标判定，调用少、上下文长" },
+    worker: { label: "执行者", short: "编排执行", owner: "执行轮", hint: "编排引擎的执行会话：并发领意图读码，工具多、输出短" },
+  };
+  const ModelProbeLabels = {
+    key_missing: "缺密钥", auth: "认证失败", not_found: "路径错误", upstream: "上游不可用",
+    network: "连接失败", protocol: "协议不匹配", empty: "无模型",
+  };
+
+  function modelCaps(profile) {
+    const caps = profile.capabilities || {};
+    const labels = [];
+    if (caps.context_window) labels.push(`${Math.round(caps.context_window / 1000)}k 上下文`);
+    if (caps.max_output) labels.push(`输出 ${Math.round(caps.max_output / 1000)}k`);
+    if (caps.reasoning) labels.push("思考");
+    if (caps.vision) labels.push("图片");
+    return labels;
   }
 
-  function modelLibraryPanel(library, chat) {
-    const profiles = library.profiles || [];
-    const probes = state.modelSettings.probes || {};
-    const rows = profiles.map((profile) => {
-      const isDefault = profile.id === library.default;
-      const probe = probes[profile.id];
-      const available = probe ? (probe.error ? `<span class="status bad">${esc(probe.error.slice(0, 40))}</span>` : `<span class="status ok">${fmtNum((probe.models || []).length)} 个可用</span>`) : '<span class="status muted">未测试</span>';
-      return `<tr class="${isDefault ? "active-row" : ""}">
-        <td><div class="id-cell"><strong>${esc(profile.label || profile.id)}</strong><span class="mono">${esc(profile.model)}</span></div></td>
-        <td class="mono file" title="${esc(profile.endpoint)}">${esc(profile.endpoint)}</td>
-        <td>${profile.key_present
-          ? '<span class="status ok"><span class="dot ok"></span>密钥已配置</span>'
-          : `<span class="status bad" title="设置环境变量 ${esc(profile.key_env)}"><span class="dot bad"></span>缺少 ${esc(profile.key_env)}</span>`}</td>
-        <td>${available}</td>
-        <td>${isDefault ? '<span class="status info">默认</span>' : '<span class="status muted">备用</span>'}</td>
-        <td class="right">
-          <div class="row-actions">
-            <button class="btn sm" type="button" data-probe="${esc(profile.id)}">测试</button>
-            ${isDefault ? "" : `<button class="btn sm" type="button" data-default="${esc(profile.id)}">设为默认</button>`}
-            <button class="btn sm ghost" type="button" data-edit="${esc(profile.id)}">编辑</button>
-            ${profiles.length > 1 ? `<button class="btn sm ghost" type="button" data-remove="${esc(profile.id)}">删除</button>` : ""}
-          </div>
-        </td>
-      </tr>`;
+  function modelPrice(profile) {
+    const cost = profile.cost;
+    if (!cost) return "";
+    const trim = (value) => Number(value || 0).toFixed(4).replace(/\.?0+$/, "");
+    return `输入 $${trim(cost.input)} · 输出 $${trim(cost.output)} / 百万 token`;
+  }
+
+  function modelRoleChips(profile) {
+    const roles = profile.roles || [];
+    if (!roles.length) return '<span class="status muted">未使用</span>';
+    return roles.map((role) => {
+      const meta = ModelRoleMeta[role] || { label: role };
+      return `<span class="chip${role === "main" ? " role-main" : ""}">${esc(meta.label)}</span>`;
     }).join("");
-    return `
-      <div class="model-summary">
-        <span>${fmtNum(profiles.length)} 个配置</span>
-        <span class="foot-sep"></span>
-        <span>默认 <b class="mono">${esc(profileLabel(library.default))}</b></span>
-        <span class="foot-sep"></span>
-        <span>${chat.enabled ? '<span class="status ok"><span class="dot ok"></span>对话可用</span>' : `<span class="status bad"><span class="dot bad"></span>${esc(chat.reason || "对话未启用")}</span>`}</span>
-      </div>
-      <div class="toolbar mt-14">
-        <span class="form-hint">密钥只存在环境变量里：例如 <code>TRIDENT_MODEL_API_KEY</code>、<code>TRIDENT_MODEL_API_KEY_BACKUP</code>。</span>
-        <span class="spacer"></span>
-        <button class="btn primary" type="button" id="newProfile"><svg class="icon"><use href="#i-plus"/></svg>新建配置</button>
-      </div>
-      <div class="table-wrap mt-14">
-        <table class="grid-fixed cols-models">
-          <thead><tr><th>配置</th><th>端点</th><th>密钥</th><th>端点探测</th><th>角色</th><th class="right">操作</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="6">${emptyState("i-server", "模型库是空的", "新建一个配置：填端点、模型和保存密钥的环境变量名。")}</td></tr>`}</tbody>
-        </table>
-      </div>
-      <div id="profileForm"></div>`;
+  }
+
+  function modelProbe(profileID) {
+    return state.modelSettings.probes[profileID];
+  }
+
+  function modelProbePill(profileID) {
+    const probe = modelProbe(profileID);
+    if (probe === "testing") return '<span class="status warn">测试中…</span>';
+    if (probe === undefined) return '<span class="status muted">未测试</span>';
+    if (probe === null) return '<span class="status bad">无响应</span>';
+    if (probe.ok) return `<span class="status ok" title="${esc((probe.models || []).slice(0, 12).join(", "))}">${fmtNum(probe.latency_ms || 0)}ms</span>`;
+    const label = ModelProbeLabels[probe.status] || "失败";
+    return `<span class="status bad" title="${esc(probe.error || "")}">${esc(label)}</span>`;
   }
 
   function profileLabel(id) {
@@ -1990,125 +2747,578 @@
     return found ? (found.label || found.model) : (id || "—");
   }
 
-  function modelBudgetPanel(library) {
+  async function viewSettingsModel() {
+    const [library, chat] = await Promise.all([
+      api("/api/agent/models").catch((error) => ({ profiles: [], default: "", error: error.message })),
+      api("/api/agent/chat/state").catch((error) => ({ enabled: false, reason: error.message })),
+    ]);
+    const previous = state.modelSettings || {};
+    const tab = previous.tab === "roles" ? "roles" : "library";
+    state.modelSettings = {
+      library, chat,
+      probes: previous.probes || {},
+      tab,
+      query: "",
+      editing: null,
+      rolePicker: null,
+    };
+    $("#view").innerHTML = `
+      <section class="card">
+        <div class="card-head model-head">
+          <div class="model-head-main">
+            <span class="model-icon"><svg class="icon"><use href="#i-server"/></svg></span>
+            <div>
+              <h3>模型</h3>
+              <p class="form-hint">渠道目录 → 模型条目 → 角色槽位。密钥可以写在启动环境变量，也可以直接在条目里填写本机密钥（立即生效）；两者都不会回显。</p>
+            </div>
+          </div>
+          <span class="model-summary" id="modelSummary"></span>
+        </div>
+        <div class="tabs" id="modelTabs">
+          <button type="button" data-tab="library">模型库 <em>${(library.profiles || []).length}</em></button>
+          <button type="button" data-tab="roles">角色分配</button>
+        </div>
+        <div class="card-body" id="modelTabBody"></div>
+      </section>
+      <div id="modelDrawer"></div>`;
+    $("#modelTabs").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-tab]");
+      if (!button) return;
+      state.modelSettings.tab = button.dataset.tab;
+      renderModelTab();
+    });
+    renderModelTab();
+  }
+
+  function renderModelTab() {
+    const settings = state.modelSettings;
+    const library = settings.library || {};
     const profiles = library.profiles || [];
+    const body = $("#modelTabBody");
+    if (!body) return;
+    $$("#modelTabs button").forEach((button) => button.classList.toggle("active", button.dataset.tab === settings.tab));
+    const summary = $("#modelSummary");
+    if (summary) {
+      const unused = profiles.filter((profile) => !(profile.roles || []).length).length;
+      const resolved = Object.keys(library.resolved || {}).length;
+      summary.innerHTML = `${fmtNum(profiles.length)} 个模型 · ${fmtNum(unused)} 个未使用 · ${resolved}/3 角色已解析`;
+    }
+    if (settings.tab === "roles") {
+      body.innerHTML = modelRolesPanel(library);
+      wireModelRoles();
+      return;
+    }
+    body.innerHTML = modelLibraryPanel(library);
+    wireModelLibrary();
+  }
+
+  function filteredProfiles() {
+    const profiles = (state.modelSettings.library.profiles || []);
+    const query = String(state.modelSettings.query || "").trim().toLowerCase();
+    if (!query) return profiles;
+    return profiles.filter((profile) => [profile.id, profile.label, profile.model, profile.endpoint]
+      .some((field) => String(field || "").toLowerCase().includes(query)));
+  }
+
+  function modelRowsMarkup() {
+    const rows = filteredProfiles().map((profile) => {
+      const caps = modelCaps(profile);
+      return `<tr data-row="${esc(profile.id)}">
+        <td>
+          <div class="id-cell"><strong>${esc(profile.label || profile.id)}</strong><span class="mono">${esc(profile.model)}</span></div>
+          <span class="model-sub mono" title="${esc(profile.endpoint)}">${esc(profile.endpoint.replace(/^https?:\/\//, ""))} · ${esc(profile.api || "openai-completions")}</span>
+          ${profile.cost ? `<span class="model-price">${esc(modelPrice(profile))}</span>` : '<span class="model-price">价格未声明</span>'}
+        </td>
+        <td>${modelProbePill(profile.id)}<div class="mt-6">${profile.key_present
+          ? `<span class="chip">${profile.key_source === "stored" ? "密钥本机" : "密钥环境"}</span>`
+          : '<span class="status bad">缺密钥</span>'}</div></td>
+        <td><div class="model-caps">${caps.length ? caps.map((cap) => `<span class="chip">${esc(cap)}</span>`).join("") : '<span class="status muted">未声明</span>'}</div></td>
+        <td><div class="model-caps">${modelRoleChips(profile)}</div></td>
+        <td class="right"><div class="row-actions">
+          <button class="btn sm" type="button" data-probe="${esc(profile.id)}">测试</button>
+          <button class="btn sm ghost" type="button" data-copy="${esc(profile.id)}">复制</button>
+          <button class="btn sm ghost" type="button" data-edit="${esc(profile.id)}">编辑</button>
+          <button class="btn sm ghost" type="button" data-remove="${esc(profile.id)}">删除</button>
+        </div></td>
+      </tr>`;
+    }).join("");
+    if (rows) return rows;
+    return `<tr><td colspan="5">${emptyState("i-server", "没有匹配的模型", "换个关键词，或点右上角「新建模型」。")}</td></tr>`;
+  }
+
+  function modelLibraryPanel(library) {
+    const profiles = library.profiles || [];
+    const chat = state.modelSettings.chat || {};
     return `
-      <div class="table-wrap">
-        <p class="form-hint mb-12">对话不再逐轮设置预算：每次 Run 直接使用所选配置的默认上限，可按配置分别调整。</p>
-        <table class="grid-fixed cols-budget">
-          <thead><tr><th>配置</th><th class="right">模型调用</th><th class="right">工具调用</th><th class="right">Token</th></tr></thead>
-          <tbody>${profiles.map((profile) => `<tr>
-            <td>${esc(profile.label || profile.id)}${profile.id === library.default ? ' <span class="status info">默认</span>' : ""}</td>
-            <td class="num">${fmtNum(profile.defaults.model_calls)}</td>
-            <td class="num">${fmtNum(profile.defaults.tool_calls)}</td>
-            <td class="num">${fmtNum(profile.defaults.tokens)}</td>
-          </tr>`).join("") || `<tr><td colspan="4">${emptyState("i-server", "没有配置", "先在模型库添加一个配置。")}</td></tr>`}</tbody>
-        </table>
+      <div class="model-summary">
+        <span>密钥来源：本机保存（优先）或环境变量；都不回显</span>
+        <span class="foot-sep"></span>
+        <span>${chat.enabled ? '<span class="status ok"><span class="dot ok"></span>对话可用</span>' : `<span class="status bad"><span class="dot bad"></span>${esc(chat.reason || "对话未启用")}</span>`}</span>
       </div>
-      <div class="kv mt-14">
-        ${kvRow("硬上限（配置值只能更低）", `${ChatLimits.modelCalls} / ${ChatLimits.toolCalls} / ${fmtNum(ChatLimits.tokens)}`)}
-        ${kvRow("并发", "同一控制台一次一个 Run", "warn")}
-        ${kvRow("检查点上限", "48 KiB；超限即停止，需拆分目标", "warn")}
+      <div class="toolbar mt-14">
+        <input class="input" id="modelSearch" placeholder="搜索名称、模型 ID、端点" value="${esc(state.modelSettings.query || "")}" spellcheck="false" autocomplete="off">
+        <button class="btn sm" type="button" id="testAllModels" ${profiles.length ? "" : "disabled"}>全部测试</button>
+        <span class="spacer"></span>
+        <button class="btn primary" type="button" id="newProfile"><svg class="icon"><use href="#i-plus"/></svg>新建模型</button>
+      </div>
+      <div class="table-wrap mt-14">
+        <table class="grid-fixed cols-models-v2">
+          <thead><tr><th>模型</th><th>状态</th><th>能力</th><th>角色</th><th class="right">操作</th></tr></thead>
+          <tbody id="modelRows">${modelRowsMarkup()}</tbody>
+        </table>
       </div>`;
   }
 
-  const ChatLimits = { modelCalls: 32, toolCalls: 64, tokens: 400000 };
+  function refreshModelRows() {
+    const tbody = $("#modelRows");
+    if (!tbody) return;
+    tbody.innerHTML = modelRowsMarkup();
+    wireModelRows();
+  }
 
   function wireModelLibrary() {
     const newButton = $("#newProfile");
-    if (newButton) newButton.addEventListener("click", () => openProfileForm(null));
-    $$("[data-probe]").forEach((button) => {
+    if (newButton) newButton.addEventListener("click", () => openModelDrawer(null));
+    const search = $("#modelSearch");
+    if (search) {
+      search.addEventListener("input", () => {
+        state.modelSettings.query = search.value;
+        refreshModelRows();
+      });
+    }
+    const testAll = $("#testAllModels");
+    if (testAll) {
+      testAll.addEventListener("click", async () => {
+        testAll.disabled = true;
+        const ids = (state.modelSettings.library.profiles || []).map((profile) => profile.id);
+        for (const id of ids) await probeModel(id);
+        testAll.disabled = false;
+        toast(ids.length ? `已完成 ${ids.length} 个条目的连接测试` : "模型库是空的", "ok");
+      });
+    }
+    wireModelRows();
+  }
+
+  function wireModelRows() {
+    $$("#modelRows [data-probe]").forEach((button) => {
+      button.addEventListener("click", () => probeModel(button.dataset.probe));
+    });
+    $$("#modelRows [data-edit]").forEach((button) => {
+      const profile = (state.modelSettings.library.profiles || []).find((item) => item.id === button.dataset.edit);
+      if (profile) button.addEventListener("click", () => openModelDrawer(profile));
+    });
+    $$("#modelRows [data-copy]").forEach((button) => {
+      const profile = (state.modelSettings.library.profiles || []).find((item) => item.id === button.dataset.copy);
+      if (profile) button.addEventListener("click", () => openModelDrawer(profile, true));
+    });
+    $$("#modelRows [data-remove]").forEach((button) => {
+      button.addEventListener("click", () => removeModel(button.dataset.remove));
+    });
+  }
+
+  async function probeModel(id) {
+    state.modelSettings.probes[id] = "testing";
+    refreshModelRows();
+    try {
+      const result = await api("/api/agent/models/probe", { method: "POST", body: { id } });
+      state.modelSettings.probes[id] = result;
+      if (result.ok) toast(`可用：返回 ${(result.models || []).length} 个模型（${result.latency_ms}ms）`, "ok");
+      else toast(result.error || "连接失败", "bad");
+    } catch (error) {
+      state.modelSettings.probes[id] = { ok: false, status: "network", error: error.message };
+      toast(error.message, "bad");
+    }
+    refreshModelRows();
+  }
+
+  async function removeModel(id) {
+    if (!window.confirm(`删除模型条目「${profileLabel(id)}」？被角色引用的条目会被拒绝，已保存的本机密钥会一并删除，环境变量不受影响。`)) return;
+    try {
+      await api("/api/agent/models/remove", { method: "POST", body: { id } });
+      toast("已删除", "ok");
+      await viewSettingsModel();
+    } catch (error) {
+      toast(error.message, "bad");
+    }
+  }
+
+  function modelRolesPanel(library) {
+    const resolved = library.resolved || {};
+    const profiles = library.profiles || [];
+    const rows = ["main", "planner", "worker"].map((role) => {
+      const meta = ModelRoleMeta[role];
+      const entry = resolved[role];
+      const profile = entry ? profiles.find((item) => item.id === entry.entry_id) : null;
+      const caps = profile ? modelCaps(profile) : [];
+      return `<div class="role-row">
+        <div>
+          <h4>${esc(meta.label)}</h4>
+          <div class="role-owner">${esc(meta.short)} · ${esc(meta.owner)}</div>
+        </div>
+        <div>
+          ${entry ? `<div class="role-model"><strong>${esc(entry.entry_name || entry.entry_id)}</strong> <span class="mono">· ${esc(entry.model)}</span>${entry.followed_main ? ' <span class="chip">跟随主模型</span>' : ""}</div>
+            <span class="model-sub mono">${esc(String(entry.endpoint || "").replace(/^https?:\/\//, ""))} · ${esc(entry.api || "")}</span>
+            <div class="model-caps mt-6">${caps.length ? caps.map((cap) => `<span class="chip">${esc(cap)}</span>`).join("") : '<span class="status muted">能力未声明</span>'}</div>`
+          : `<div class="role-empty">未绑定：主模型未配置时，依赖它的角色也无法解析</div>`}
+        </div>
+        <div class="role-actions">
+          <button class="btn sm" type="button" data-role="${role}">更换</button>
+          ${entry ? `<button class="btn sm ghost" type="button" data-role-probe="${esc(entry.entry_id)}">测试</button>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+    return `
+      <div class="model-summary"><span>为每个真实存在的消费方选择模型；规划者/执行者可以「跟随主模型」，主模型不能跟随自己</span></div>
+      <div class="mt-14">${rows}</div>
+      <p class="model-hint">TRIDENT 只有三类模型消费方：对话主 Agent、编排规划轮、编排执行会话。没有 AI 守门、LLM 复核或监督会话，因此不设这些角色。</p>`;
+  }
+
+  function wireModelRoles() {
+    $$("#modelTabBody [data-role]").forEach((button) => {
+      button.addEventListener("click", () => openRolePicker(button.dataset.role));
+    });
+    $$("#modelTabBody [data-role-probe]").forEach((button) => {
       button.addEventListener("click", async () => {
-        const id = button.dataset.probe;
         button.disabled = true;
         button.textContent = "测试中…";
         try {
-          const result = await api("/api/agent/models/probe", { method: "POST", body: { id } });
-          state.modelSettings.probes[id] = result;
-          toast(result.error ? result.error : `端点可用，返回 ${result.models.length} 个模型`, result.error ? "bad" : "ok");
-          await viewSettingsModel();
-        } catch (error) {
-          toast(error.message, "bad");
-          button.disabled = false;
-          button.textContent = "测试";
-        }
-      });
-    });
-    $$("[data-default]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        try {
-          await api("/api/agent/models/default", { method: "POST", body: { id: button.dataset.default } });
-          toast("已设为默认模型", "ok");
-          await viewSettingsModel();
+          const result = await api("/api/agent/models/probe", { method: "POST", body: { id: button.dataset.roleProbe } });
+          toast(result.ok ? `可用：${(result.models || []).length} 个模型（${result.latency_ms}ms）` : (result.error || "连接失败"), result.ok ? "ok" : "bad");
         } catch (error) {
           toast(error.message, "bad");
         }
-      });
-    });
-    $$("[data-edit]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const profile = (state.modelSettings.library.profiles || []).find((item) => item.id === button.dataset.edit);
-        if (profile) openProfileForm(profile);
-      });
-    });
-    $$("[data-remove]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const id = button.dataset.remove;
-        if (!window.confirm(`删除配置「${profileLabel(id)}」？密钥本身在环境变量里，不受影响。`)) return;
-        try {
-          await api("/api/agent/models/remove", { method: "POST", body: { id } });
-          toast("已删除", "ok");
-          await viewSettingsModel();
-        } catch (error) {
-          toast(error.message, "bad");
-        }
+        button.disabled = false;
+        button.textContent = "测试";
       });
     });
   }
 
-  function openProfileForm(profile) {
-    const editing = Boolean(profile);
-    const value = profile || { id: "", label: "", endpoint: "", model: "", key_env: "TRIDENT_MODEL_API_KEY", defaults: { model_calls: 12, tool_calls: 24, tokens: 131072 } };
-    $("#profileForm").innerHTML = `
-      <section class="profile-form">
-        <div class="profile-form-head">
-          <h4>${editing ? "编辑配置" : "新建配置"}</h4>
-          <button class="icon-btn" type="button" id="closeProfileForm"><svg class="icon"><use href="#i-x"/></svg></button>
+  function openRolePicker(role) {
+    state.modelSettings.rolePicker = role;
+    renderRolePicker();
+  }
+
+  function renderRolePicker() {
+    const role = state.modelSettings.rolePicker;
+    const host = $("#modelDrawer");
+    if (!host || !role) return;
+    const meta = ModelRoleMeta[role];
+    const library = state.modelSettings.library || {};
+    const profiles = library.profiles || [];
+    const current = (library.roles || {})[role] || "";
+    const resolved = (library.resolved || {})[role] || null;
+    const options = [];
+    if (role !== "main") {
+      options.push(`<label class="role-picker-option ${current === "follow-main" ? "is-on" : ""}">
+        <input type="radio" name="roleTarget" value="follow-main" ${current === "follow-main" ? "checked" : ""}>
+        <span class="role-picker-option-body">
+          <span class="role-picker-title">跟随主模型</span>
+          <span class="model-sub">${resolved ? `解析为 ${esc(resolved.entry_name)} · ${esc(resolved.model)}` : "主模型尚未配置"}</span>
+        </span>
+      </label>`);
+    }
+    profiles.forEach((profile) => {
+      options.push(`<label class="role-picker-option ${current === profile.id ? "is-on" : ""}">
+        <input type="radio" name="roleTarget" value="${esc(profile.id)}" ${current === profile.id ? "checked" : ""}>
+        <span class="role-picker-option-body">
+          <span class="role-picker-title">${esc(profile.label || profile.id)} · <span class="mono">${esc(profile.model)}</span></span>
+          <span class="model-sub mono">${esc(profile.endpoint.replace(/^https?:\/\//, ""))}</span>
+          <span class="model-caps mt-6">
+            ${modelCaps(profile).map((cap) => `<span class="chip">${esc(cap)}</span>`).join("")}
+            ${modelRoleChips(profile)}
+            ${modelProbePill(profile.id)}
+          </span>
+        </span>
+      </label>`);
+    });
+    host.innerHTML = `<div class="drawer-layer" role="dialog" aria-modal="true" aria-label="更换${esc(meta.label)}">
+      <div class="drawer-backdrop" data-close-role></div>
+      <aside class="drawer narrow">
+        <div class="drawer-head">
+          <div class="drawer-head-main">
+            <span class="eyebrow">ROLE ASSIGNMENT</span>
+            <h2>更换${esc(meta.label)}</h2>
+            <p class="model-hint">${esc(meta.hint)} · 同一模型可被多个角色复用</p>
+            <div class="drawer-badges"><span class="chip">当前：${resolved ? `${esc(resolved.entry_name)} · ${esc(resolved.model)}` : "未绑定"}</span></div>
+          </div>
+          <button class="icon-btn" type="button" data-close-role><svg class="icon"><use href="#i-x"/></svg></button>
         </div>
-        <div class="form-grid">
-          <label class="field"><span>显示名称</span><input class="input" id="pfLabel" value="${esc(value.label)}" placeholder="例如 DeepSeek 主模型"></label>
-          <label class="field"><span>端点（https）</span><input class="input" id="pfEndpoint" value="${esc(value.endpoint)}" placeholder="https://api.deepseek.com/v1"></label>
-          <label class="field"><span>模型 ID</span><input class="input" id="pfModel" value="${esc(value.model)}" placeholder="deepseek-v4-pro"></label>
-          <label class="field"><span>密钥环境变量</span><input class="input" id="pfKeyEnv" value="${esc(value.key_env)}" placeholder="TRIDENT_MODEL_API_KEY"></label>
-          <label class="field"><span>模型调用上限</span><input class="input" id="pfModels" type="number" min="1" max="32" value="${value.defaults.model_calls}"></label>
-          <label class="field"><span>工具调用上限</span><input class="input" id="pfTools" type="number" min="1" max="64" value="${value.defaults.tool_calls}"></label>
-          <label class="field"><span>Token 上限</span><input class="input" id="pfTokens" type="number" min="4096" max="400000" step="1024" value="${value.defaults.tokens}"></label>
+        <div class="drawer-body">
+          ${options.join("")}
+          <p class="role-picker-note">更多模型在「模型库」中添加；这里只改分配，不改条目本身。</p>
         </div>
-        <div class="form-row">
-          <button class="btn primary" type="button" id="saveProfile">${editing ? "保存" : "创建"}</button>
-          <span class="form-hint">配置里不会写入密钥；只记录从哪个环境变量读取。</span>
+        <div class="drawer-foot">
+          <button class="btn primary" type="button" id="applyRole">应用</button>
+          <button class="btn" type="button" data-close-role>取消</button>
         </div>
-      </section>`;
-    $("#closeProfileForm").addEventListener("click", () => { $("#profileForm").innerHTML = ""; });
-    $("#saveProfile").addEventListener("click", async () => {
+      </aside>
+    </div>`;
+    $$("[data-close-role]").forEach((element) => element.addEventListener("click", closeModelDrawer));
+    $$("#modelDrawer input[name=roleTarget]").forEach((input) => {
+      input.addEventListener("change", () => {
+        $$("#modelDrawer .role-picker-option").forEach((option) => option.classList.toggle("is-on", Boolean(option.querySelector("input:checked"))));
+      });
+    });
+    $("#applyRole").addEventListener("click", async () => {
+      const picked = $("#modelDrawer input[name=roleTarget]:checked");
+      if (!picked) { toast("先选择一个目标", "bad"); return; }
+      const button = $("#applyRole");
+      button.disabled = true;
+      button.textContent = "应用中…";
+      try {
+        await api("/api/agent/models/roles", { method: "POST", body: { role, target: picked.value } });
+        closeModelDrawer();
+        toast("角色分配已更新", "ok");
+        await viewSettingsModel();
+      } catch (error) {
+        toast(error.message, "bad");
+        button.disabled = false;
+        button.textContent = "应用";
+      }
+    });
+  }
+
+  function closeModelDrawer() {
+    const host = $("#modelDrawer");
+    if (host) host.innerHTML = "";
+    state.modelSettings.editing = null;
+    state.modelSettings.rolePicker = null;
+  }
+
+  function openModelDrawer(profile, duplicate = false) {
+    const editing = Boolean(profile) && !duplicate;
+    const base = profile || {
+      id: "", label: "", endpoint: "", model: "", key_env: "TRIDENT_MODEL_API_KEY",
+      api: "openai-completions", capabilities: {}, cost: null,
+      defaults: { model_calls: 12, tool_calls: 24, tokens: 131072 },
+    };
+    const draft = JSON.parse(JSON.stringify(base));
+    if (duplicate) {
+      draft.id = `${base.id}-copy`;
+      draft.label = `${base.label || base.id} 副本`;
+    }
+    state.modelSettings.editing = editing ? draft.id : "";
+    state.modelSettings.draft = draft;
+    renderModelDrawer(editing);
+  }
+
+  function renderModelDrawer(editing) {
+    const draft = state.modelSettings.draft;
+    const host = $("#modelDrawer");
+    if (!host || !draft) return;
+    const caps = draft.capabilities || {};
+    const cost = draft.cost || {};
+    const defaults = draft.defaults || { model_calls: 12, tool_calls: 24, tokens: 131072 };
+    host.innerHTML = `<div class="drawer-layer" role="dialog" aria-modal="true" aria-label="模型条目">
+      <div class="drawer-backdrop" data-close-form></div>
+      <aside class="drawer">
+        <div class="drawer-head">
+          <div class="drawer-head-main">
+            <span class="eyebrow">${editing ? "EDIT MODEL" : "NEW MODEL"}</span>
+            <h2>${editing ? esc(draft.label || draft.id) : "新建模型条目"}</h2>
+            <div class="drawer-badges">
+              <span class="chip mono" id="mfApiBadge">${esc(draft.api || "openai-completions")}</span>
+              ${draft.model ? `<span class="chip mono">${esc(draft.model)}</span>` : ""}
+              <span class="status muted">未保存</span>
+            </div>
+          </div>
+          <button class="icon-btn" type="button" data-close-form><svg class="icon"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="drawer-body">
+          <section class="model-form-section">
+            <h4><svg class="icon"><use href="#i-route"/></svg>连接配置</h4>
+            <div class="form-grid">
+              <label class="field"><span>渠道</span><select class="input" id="mfChannel"><option value="">自定义渠道（自己填 Base URL 与协议）</option></select></label>
+              <label class="field"><span>显示名称</span><input class="input" id="mfLabel" value="${esc(draft.label || "")}" placeholder="默认使用模型 ID"></label>
+            </div>
+            <p class="model-hint">渠道决定端点与协议；目录之外的中转选「自定义渠道」。密钥只作用于这个端点。</p>
+            <div class="form-grid">
+              <label class="field"><span>基础 URL</span><input class="input" id="mfEndpoint" value="${esc(draft.endpoint || "")}" placeholder="https://api.deepseek.com"></label>
+              <label class="field"><span>协议</span><select class="input" id="mfAPI">${ModelAPIs.map(([value, label]) => `<option value="${value}" ${value === (draft.api || "openai-completions") ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+            </div>
+            <p class="model-hint">控制台只实现 OpenAI Chat Completions 适配器；Anthropic/Google 等端点请先经兼容网关转换。</p>
+            <div class="form-grid">
+              <label class="field"><span>模型 ID</span><input class="input" id="mfModel" value="${esc(draft.model || "")}" placeholder="deepseek-chat / glm-4.6 / qwen3-coder-plus"></label>
+              <label class="field"><span>目录预设</span><select class="input" id="mfPreset"><option value="">先选渠道，再选预设</option></select></label>
+            </div>
+            <div class="row-actions left">
+              <button class="btn sm" type="button" id="mfLookup">按模型 ID 查目录</button>
+              <span class="form-hint">匹配时只补能力与价格，不改端点。</span>
+            </div>
+            <div class="form-grid">
+              <label class="field"><span>密钥环境变量（填变量名，不是密钥本身）</span><input class="input" id="mfKeyEnv" value="${esc(draft.key_env || "TRIDENT_MODEL_API_KEY")}" placeholder="例如 TRIDENT_MODEL_API_KEY"></label>
+            </div>
+            <p class="model-hint">环境变量名大小写须与系统一致（Windows 不区分，Linux/macOS 区分）；设置后需重启控制台进程才会生效。下面的 API Key 直填会立即生效，无需重启。</p>
+            <div class="form-grid">
+              <label class="field"><span>API Key（只存本机，不回显）</span><input class="input" id="mfKey" type="password" autocomplete="new-password" placeholder="粘贴 Key；保存后立即生效"></label>
+            </div>
+            <div class="row-actions left">
+              <button class="btn sm" type="button" id="mfKeySave" ${editing ? "" : "disabled"}>保存密钥</button>
+              <button class="btn sm ghost" type="button" id="mfKeyClear" ${editing && draft.key_source === "stored" ? "" : "disabled"}>清除本机密钥</button>
+              <span class="model-hint" id="mfKeyStatus">${editing ? "" : "创建时会一并保存这里填写的密钥"}</span>
+            </div>
+          </section>
+
+          <section class="model-form-section">
+            <h4><svg class="icon"><use href="#i-sliders"/></svg>模型能力<span class="form-hint">声明式，不做探测</span></h4>
+            <div class="form-grid">
+              <label class="field"><span>上下文窗口（tokens）</span><input class="input" id="mfContext" type="number" min="0" max="10000000" step="1000" value="${caps.context_window || 0}"></label>
+              <label class="field"><span>最大输出（tokens）</span><input class="input" id="mfMaxOut" type="number" min="0" max="1000000" step="1000" value="${caps.max_output || 0}"></label>
+            </div>
+            <label class="check line"><input type="checkbox" id="mfReasoning" ${caps.reasoning ? "checked" : ""}>支持思考 / 推理</label>
+            <label class="check line"><input type="checkbox" id="mfVision" ${caps.vision ? "checked" : ""}>支持图片输入</label>
+            <p class="model-hint">0 表示未声明；未声明的能力不会在表格里显示标签。</p>
+          </section>
+
+          <section class="model-form-section">
+            <h4><svg class="icon"><use href="#i-grid"/></svg>价格与缓存<span class="form-hint">美元 / 百万 token</span></h4>
+            <div class="form-grid">
+              <label class="field"><span>输入</span><input class="input" id="mfCostIn" type="number" min="0" step="0.0001" value="${cost.input ?? ""}" placeholder="0"></label>
+              <label class="field"><span>输出</span><input class="input" id="mfCostOut" type="number" min="0" step="0.0001" value="${cost.output ?? ""}" placeholder="0"></label>
+            </div>
+            <div class="form-grid">
+              <label class="field"><span>缓存读</span><input class="input" id="mfCacheRead" type="number" min="0" step="0.0001" value="${cost.cache_read ?? ""}" placeholder="0"></label>
+              <label class="field"><span>缓存写</span><input class="input" id="mfCacheWrite" type="number" min="0" step="0.0001" value="${cost.cache_write ?? ""}" placeholder="0"></label>
+            </div>
+            <p class="model-hint">四项留空表示未声明；只用于成本估算，不影响请求。缓存分项未参与 Run 成本计算。</p>
+          </section>
+
+          <div class="model-inline-status" id="mfStatus"></div>
+        </div>
+        <div class="drawer-foot">
+          ${editing ? '<button class="btn sm ghost" type="button" id="mfDelete">删除</button>' : ""}
+          <button class="btn sm" type="button" id="mfTest" ${editing ? "" : "disabled"}>测试连接</button>
+          <span class="spacer"></span>
+          <button class="btn" type="button" data-close-form>取消</button>
+          <button class="btn primary" type="button" id="mfSave">${editing ? "保存" : "创建"}</button>
+        </div>
+      </aside>
+    </div>`;
+
+    $$("[data-close-form]").forEach((element) => element.addEventListener("click", closeModelDrawer));
+    const channelSelect = $("#mfChannel");
+    api("/api/agent/model-channels").then((payload) => {
+      const options = (payload.channels || []).map((channel) => `<option value="${esc(channel.provider)}">${esc(channel.name)} · ${esc(channel.base_url.replace(/^https?:\/\//, ""))} · ${channel.model_count} 个模型</option>`).join("");
+      channelSelect.insertAdjacentHTML("beforeend", options);
+      const current = (payload.channels || []).find((channel) => draft.endpoint && draft.endpoint.replace(/\/$/, "") === channel.base_url.replace(/\/$/, ""));
+      if (current) channelSelect.value = current.provider;
+      if (current) loadChannelModels(current.provider);
+    }).catch(() => {});
+
+    channelSelect.addEventListener("change", async () => {
+      const provider = channelSelect.value;
+      if (!provider) return;
+      await loadChannelModels(provider, true);
+    });
+
+    $("#mfPreset").addEventListener("change", () => {
+      const selected = state.modelSettings.presets || [];
+      const preset = selected.find((item) => item.model_id === $("#mfPreset").value);
+      if (!preset) return;
+      $("#mfModel").value = preset.model_id;
+      $("#mfAPI").value = preset.api;
+      $("#mfContext").value = preset.capabilities.context_window || 0;
+      $("#mfMaxOut").value = preset.capabilities.max_output || 0;
+      $("#mfReasoning").checked = Boolean(preset.capabilities.reasoning);
+      $("#mfVision").checked = Boolean(preset.capabilities.vision);
+      if (preset.cost) {
+        $("#mfCostIn").value = preset.cost.input ?? "";
+        $("#mfCostOut").value = preset.cost.output ?? "";
+        $("#mfCacheRead").value = preset.cost.cache_read ?? "";
+        $("#mfCacheWrite").value = preset.cost.cache_write ?? "";
+      }
+      if (!$("#mfLabel").value.trim()) $("#mfLabel").value = preset.name || preset.model_id;
+    });
+
+    $("#mfAPI").addEventListener("change", () => { $("#mfApiBadge").textContent = $("#mfAPI").value; });
+
+    $("#mfLookup").addEventListener("click", async () => {
+      const modelID = $("#mfModel").value.trim();
+      if (!modelID) { toast("先填写模型 ID，再查内置目录", "bad"); return; }
+      try {
+        const payload = await api(`/api/agent/model-catalog/lookup?model_id=${encodeURIComponent(modelID)}&base_url=${encodeURIComponent($("#mfEndpoint").value.trim())}`);
+        const match = (payload.matches || [])[0];
+        if (!match) { toast("内置目录里没有该模型：能力与价格需要手动填写", "bad"); return; }
+        $("#mfAPI").value = match.api;
+        $("#mfApiBadge").textContent = match.api;
+        $("#mfContext").value = match.capabilities.context_window || 0;
+        $("#mfMaxOut").value = match.capabilities.max_output || 0;
+        $("#mfReasoning").checked = Boolean(match.capabilities.reasoning);
+        $("#mfVision").checked = Boolean(match.capabilities.vision);
+        if (match.cost) {
+          $("#mfCostIn").value = match.cost.input ?? "";
+          $("#mfCostOut").value = match.cost.output ?? "";
+          $("#mfCacheRead").value = match.cost.cache_read ?? "";
+          $("#mfCacheWrite").value = match.cost.cache_write ?? "";
+        }
+        toast(`已按「${match.provider_name}」目录填充能力与价格`, "ok");
+      } catch (error) {
+        toast(error.message, "bad");
+      }
+    });
+
+    $("#mfTest").addEventListener("click", async () => {
+      if (!editing) return;
+      const status = $("#mfStatus");
+      status.innerHTML = '<span class="status warn">测试中…</span>';
+      try {
+        const result = await api("/api/agent/models/probe", { method: "POST", body: { id: draft.id } });
+        state.modelSettings.probes[draft.id] = result;
+        status.innerHTML = result.ok
+          ? `<span class="status ok">可用</span><span>${fmtNum(result.latency_ms)}ms · 返回 ${(result.models || []).length} 个模型</span>`
+          : `<span class="status bad">${esc(ModelProbeLabels[result.status] || "失败")}</span><span>${esc(result.error || "")}</span>`;
+      } catch (error) {
+        status.innerHTML = `<span class="status bad">失败</span><span>${esc(error.message)}</span>`;
+      }
+    });
+
+    if (editing) {
+      $("#mfDelete").addEventListener("click", async () => {
+        await removeModel(draft.id);
+      });
+    }
+
+    $("#mfSave").addEventListener("click", async () => {
+      const numberOrZero = (selector) => Number($(selector).value || 0);
+      const costFields = ["#mfCostIn", "#mfCostOut", "#mfCacheRead", "#mfCacheWrite"];
+      const hasCost = costFields.some((selector) => String($(selector).value).trim() !== "");
       const payload = {
-        id: editing ? profile.id : "",
-        label: $("#pfLabel").value.trim(),
-        endpoint: $("#pfEndpoint").value.trim(),
-        model: $("#pfModel").value.trim(),
-        key_env: $("#pfKeyEnv").value.trim(),
+        id: draft.id || "",
+        label: $("#mfLabel").value.trim(),
+        endpoint: $("#mfEndpoint").value.trim(),
+        model: $("#mfModel").value.trim(),
+        key_env: $("#mfKeyEnv").value.trim(),
+        api: $("#mfAPI").value,
+        capabilities: {
+          context_window: numberOrZero("#mfContext"),
+          max_output: numberOrZero("#mfMaxOut"),
+          reasoning: $("#mfReasoning").checked,
+          vision: $("#mfVision").checked,
+        },
+        cost: hasCost ? {
+          input: numberOrZero("#mfCostIn"), output: numberOrZero("#mfCostOut"),
+          cache_read: numberOrZero("#mfCacheRead"), cache_write: numberOrZero("#mfCacheWrite"),
+        } : null,
         defaults: {
-          model_calls: Number($("#pfModels").value || 12),
-          tool_calls: Number($("#pfTools").value || 24),
-          tokens: Number($("#pfTokens").value || 131072),
+          model_calls: Number($("#mfModels").value || 12),
+          tool_calls: Number($("#mfTools").value || 24),
+          tokens: Number($("#mfTokens").value || 131072),
         },
       };
-      const button = $("#saveProfile");
+      const button = $("#mfSave");
       button.disabled = true;
       button.textContent = "保存中…";
+      const pendingKey = ($("#mfKey") && $("#mfKey").value.trim()) || "";
       try {
-        await api("/api/agent/models", { method: "POST", body: payload });
-        toast(editing ? "已保存" : "已创建", "ok");
+        const saved = await api("/api/agent/models", { method: "POST", body: payload });
+        if (pendingKey) {
+          const targetID = (saved && saved.profile && saved.profile.id) || payload.id;
+          await api("/api/agent/models/key", { method: "POST", body: { id: targetID, key: pendingKey } });
+          toast(editing ? "已保存，密钥已更新" : "已创建并保存密钥", "ok");
+        } else {
+          toast(editing ? "已保存" : "已创建", "ok");
+        }
+        closeModelDrawer();
         await viewSettingsModel();
       } catch (error) {
         toast(error.message, "bad");
@@ -2116,7 +3326,78 @@
         button.textContent = editing ? "保存" : "创建";
       }
     });
-    $("#pfLabel").focus();
+
+    const keyStatus = () => {
+      if (!editing) return "创建时会一并保存这里填写的密钥";
+      if (draft.key_present && draft.key_source === "stored") return "来源：本机保存（优先于环境变量）";
+      if (draft.key_present) return `来源：环境变量 ${draft.key_env}`;
+      return `未配置：填写后会立即生效，或设置环境变量 ${draft.key_env}`;
+    };
+    const syncKeyChip = () => {
+      const record = (state.modelSettings.library.profiles || []).find((item) => item.id === draft.id);
+      if (!record) return;
+      record.key_present = draft.key_present;
+      record.key_source = draft.key_source;
+      refreshModelRows();
+    };
+    const statusHost = $("#mfKeyStatus");
+    if (statusHost) statusHost.textContent = keyStatus();
+
+    $("#mfKeySave").addEventListener("click", async () => {
+      if (!editing) return;
+      const input = $("#mfKey");
+      const key = (input.value || "").trim();
+      if (!key) { toast("先粘贴 API Key；要清除已保存的密钥请用「清除本机密钥」", "bad"); return; }
+      const button = $("#mfKeySave");
+      button.disabled = true;
+      try {
+        const result = await api("/api/agent/models/key", { method: "POST", body: { id: draft.id, key } });
+        draft.key_present = result.key_present;
+        draft.key_source = result.key_source;
+        input.value = "";
+        if (statusHost) statusHost.textContent = keyStatus();
+        $("#mfKeyClear").disabled = draft.key_source !== "stored";
+        syncKeyChip();
+        toast("密钥已保存到本机，立即生效", "ok");
+      } catch (error) {
+        toast(error.message, "bad");
+      }
+      button.disabled = false;
+    });
+
+    $("#mfKeyClear").addEventListener("click", async () => {
+      if (!editing) return;
+      try {
+        const result = await api("/api/agent/models/key", { method: "POST", body: { id: draft.id, key: "" } });
+        draft.key_present = result.key_present;
+        draft.key_source = result.key_source;
+        if (statusHost) statusHost.textContent = keyStatus();
+        $("#mfKeyClear").disabled = true;
+        syncKeyChip();
+        toast(result.key_source === "env" ? "已清除本机密钥，回退到环境变量" : "已清除本机密钥", "ok");
+      } catch (error) {
+        toast(error.message, "bad");
+      }
+    });
+
+    async function loadChannelModels(provider, fillEndpoint = false) {
+      const preset = $("#mfPreset");
+      preset.innerHTML = '<option value="">加载中…</option>';
+      try {
+        const payload = await api(`/api/agent/model-channels/${encodeURIComponent(provider)}/models`);
+        state.modelSettings.presets = payload.models || [];
+        if (fillEndpoint) {
+          $("#mfEndpoint").value = payload.base_url || "";
+          $("#mfAPI").value = payload.api || "openai-completions";
+          $("#mfApiBadge").textContent = payload.api || "openai-completions";
+        }
+        preset.innerHTML = '<option value="">选择模型预设</option>' + state.modelSettings.presets
+          .map((model) => `<option value="${esc(model.model_id)}">${esc(model.name)} · ${esc(model.model_id)}${model.capabilities.context_window ? ` · ${Math.round(model.capabilities.context_window / 1000)}k` : ""}</option>`)
+          .join("");
+      } catch (error) {
+        preset.innerHTML = '<option value="">目录加载失败</option>';
+      }
+    }
   }
 
   // ── source workspace ───────────────────────────────────────────────────
@@ -2456,7 +3737,7 @@
           <div class="card-body">
             <ul class="about-list">
               <li><svg class="icon"><use href="#i-check"/></svg><span>只读已 pin 的快照；不导入源码、不写原目录、不执行 Java/Maven。</span></li>
-              <li><svg class="icon"><use href="#i-check"/></svg><span>不调用任何模型、不访问网络目标；没有 Agent 控制或审批 API。</span></li>
+              <li><svg class="icon"><use href="#i-check"/></svg><span>Agent 聊天与编排需显式启用；每轮模型外发都要单独批准，密钥只在本机保存。</span></li>
               <li><svg class="icon"><use href="#i-check"/></svg><span>静态 finding 与 runtime_status 分离：所有结论保持 not_run。</span></li>
               <li><svg class="icon"><use href="#i-check"/></svg><span>缺少证据只表示 inconclusive；absence_is_not_safety。</span></li>
               <li><svg class="icon"><use href="#i-check"/></svg><span>仅监听 loopback；访问令牌 + SameSite=Strict Cookie + CSP + nosniff。</span></li>
@@ -2465,26 +3746,65 @@
         </section>
       </div>
       <section class="card section-gap">
-        <div class="card-head"><h3><svg class="icon"><use href="#i-server"/></svg>只读 API</h3><span class="card-sub">需要 console header 与令牌</span></div>
+        <div class="card-head"><h3><svg class="icon"><use href="#i-server"/></svg>控制台 API</h3><span class="card-sub">浏览器实际调用；最后三行为运维/探活端点</span></div>
         <div class="card-body">
+          ${apiRow("POST", "/api/session", "用访问令牌换取会话 Cookie")}
+          ${apiRow("GET", "/api/health", "进程与快照状态")}
           ${apiRow("GET", "/api/overview", "快照、覆盖与类别统计")}
           ${apiRow("GET", "/api/findings", "筛选与分页的发现摘要")}
           ${apiRow("GET", "/api/finding?id=", "单一发现完整证据")}
+          ${apiRow("GET", "/api/cases", "Case 目录与五段状态链（无需项目）")}
+          ${apiRow("POST", "/api/cases", "从 Finding 创建 Case，或读取已有 Case")}
+          ${apiRow("GET", "/api/case?id=", "Case 详情：Finding、证据、补丁、验证、上游")}
+          ${apiRow("POST", "/api/case/propose", "读取已落盘补丁产物；不重新生成")}
+          ${apiRow("POST", "/api/case/verify", "读取已落盘验证记录；不把未执行写成已验证")}
+          ${apiRow("GET", "/api/case/export?id=", "导出 Case、补丁与上游文件 JSON")}
           ${apiRow("GET", "/api/endpoints", "Spring MVC 注解入口")}
           ${apiRow("GET", "/api/dependencies", "Maven 声明与公告匹配")}
-          ${apiRow("GET", "/api/files · /api/file", "清单与逐行源码读取")}
+          ${apiRow("GET", "/api/files", "快照文件清单")}
+          ${apiRow("GET", "/api/file?path=", "逐行源码读取")}
           ${apiRow("GET", "/api/search", "快照内字面量检索")}
           ${apiRow("GET", "/api/report", "下载统一证据 JSON")}
           ${apiRow("GET", "/api/sbom", "下载 CycloneDX 1.5 JSON")}
           ${apiRow("GET", "/api/tree", "声明级依赖树")}
-          ${apiRow("GET", "/api/reachability", "有界可达性（需 --package-map）")}
+          ${apiRow("GET", "/api/reachability", "有界可达性（设置页配置 Package map 后启用）")}
           ${apiRow("GET", "/api/sarif", "下载 SARIF 2.1.0")}
-          ${apiRow("GET", "/api/runtime-report", "运行时关联报告（需 --runtime-report）")}
-          ${apiRow("GET", "/api/agent/runs", "Agent Run 列表（需 --agent-dsn，只读观察）")}
-          ${apiRow("GET", "/api/agent/steps", "Run step 时间线（只读观察）")}
-          ${apiRow("GET", "/api/metrics", "只读运维计数器")}
-          ${apiRow("GET", "/metrics", "Prometheus 文本格式抓取端点")}
+          ${apiRow("GET", "/api/runtime-report", "运行时关联报告（设置页配置报告路径后启用）")}
+          ${apiRow("GET", "/api/authz", "权限与越权控制清单")}
+          ${apiRow("GET", "/api/code-audit", "多语言代码审计视图")}
+          ${apiRow("GET", "/api/symbols", "符号浏览：语言/类型/关键词/分页")}
+          ${apiRow("GET", "/api/model", "Java 语义模型类型索引")}
+          ${apiRow("GET", "/api/model/type?fqn=", "单类型调用边")}
+          ${apiRow("GET", "/api/agent/threads", "概览页最近 Agent Run")}
+          ${apiRow("GET", "/api/agent/conversations", "项目会话列表")}
+          ${apiRow("GET", "/api/agent/conversations/detail?id=", "单个会话与 Run 历史")}
+          ${apiRow("GET", "/api/agent/chat/state", "聊天能力、模型与预算状态")}
+          ${apiRow("GET/POST", "/api/agent/models", "模型库读取与档案写入")}
+          ${apiRow("POST", "/api/agent/models/remove", "删除模型档案")}
+          ${apiRow("POST", "/api/agent/models/probe", "探测模型端点")}
+          ${apiRow("POST", "/api/agent/models/roles", "分配 main/planner/worker 角色")}
+          ${apiRow("POST", "/api/agent/models/key", "保存或清除本机模型密钥")}
+          ${apiRow("GET", "/api/agent/model-channels", "模型通道目录")}
+          ${apiRow("GET", "/api/agent/model-channels/{provider}/models", "通道模型列表")}
+          ${apiRow("GET", "/api/agent/model-catalog/lookup?model_id=", "模型能力与价格查询")}
+          ${apiRow("GET/POST", "/api/agent/runtime", "Agent 运行时与数据库配置")}
+          ${apiRow("GET/POST", "/api/agent/runtime/quick", "一键启用本机运行时")}
+          ${apiRow("POST", "/api/agent/chat", "创建并执行一个 Agent Run；可选 approve_repair 暴露 Case 写工具")}
+          ${apiRow("GET", "/api/agent/steps?run_id=", "Run step 时间线")}
+          ${apiRow("GET/POST", "/api/agent/orchestration", "编排任务列表与创建")}
+          ${apiRow("GET", "/api/agent/orchestration/detail?id=", "编排任务详情")}
+          ${apiRow("POST", "/api/agent/orchestration/steer", "向编排任务追加指令")}
+          ${apiRow("POST", "/api/agent/orchestration/stop?id=", "停止编排任务")}
+          ${apiRow("GET/POST", "/api/config", "运行时配置读取与更新")}
+          ${apiRow("GET/POST", "/api/projects", "项目列表与导入")}
+          ${apiRow("POST", "/api/projects/select", "切换已导入项目")}
+          ${apiRow("POST", "/api/projects/forget", "从列表移除项目")}
+          ${apiRow("GET", "/api/fs", "目录选择器")}
+          ${apiRow("POST", "/api/analysis/rerun", "清空缓存并重新分析")}
           ${apiRow("GET", "/export/report", "下载确定性 HTML 审阅报告")}
+          ${apiRow("GET", "/api/metrics", "运维：只读指标 JSON（非界面调用）")}
+          ${apiRow("GET", "/metrics", "运维：Prometheus 文本抓取（非界面调用）")}
+          ${apiRow("GET", "/healthz", "运维：未认证探活（非界面调用）")}
         </div>
       </section>
       <section class="card section-gap">
@@ -2535,6 +3855,10 @@
       $("#app").hidden = false;
       input.value = "";
       const config = await ensureConfig(true);
+      // Refresh the topbar switcher now: this path bypasses boot(), and
+      // without it the label keeps its initial "未选择项目" placeholder until
+      // the menu is opened once.
+      await refreshProjectSwitcher();
       if (!config.project.hash) {
         // A fresh workspace has no project yet: land on the picker instead of
         // firing analysis requests that can only return 409.
@@ -2621,6 +3945,386 @@
     return `<span class="status ${meta.cls}"><span class="dot ${meta.cls === "bad" ? "bad" : meta.cls === "ok" ? "ok" : "warn"}"></span>${esc(meta.label)}</span>`;
   }
 
+  // ── multi-language code audit ──────────────────────────────────────────
+  const codeLanguageOptions = [
+    ["all", "全部语言"], ["php", "PHP"], ["csharp", ".NET / C#"], ["python", "Python"],
+    ["javascript", "JavaScript"], ["typescript", "TypeScript"], ["java", "Java"], ["go", "Go"],
+  ];
+  const codeCategoryOptions = [
+    ["all", "全部类别"], ["sql", "SQL 注入"], ["command", "命令注入"], ["code_exec", "代码执行"],
+    ["deserialization", "反序列化"], ["path", "路径穿越"], ["ssrf", "SSRF"], ["xss", "XSS"],
+    ["xxe", "XXE"], ["template", "模板注入"], ["upload", "文件上传"], ["ldap", "LDAP 注入"],
+  ];
+  const codeLanguageLabels = Object.fromEntries(codeLanguageOptions);
+  const codeCategoryLabels = Object.fromEntries(codeCategoryOptions);
+
+  function codeSeverityPill(value) {
+    const meta = { high: ["高", "bad"], medium: ["中", "warn"], low: ["低", "muted"] }[value] || [value || "未知", "warn"];
+    return `<span class="status ${meta[1]}"><span class="dot ${meta[1]}"></span>${esc(meta[0])}</span>`;
+  }
+
+  function codeRow(item) {
+    const source = item.source ? esc(item.source.symbol) : "—";
+    const sink = item.sink ? esc(item.sink.symbol) : "—";
+    const line = item.sink ? item.sink.line : item.start_line;
+    const flow = (item.flow || []).map((step) => `<li><span class="mono">L${step.line}</span> ${esc(step.kind)} · ${esc(step.detail)}</li>`).join("");
+    return `<tr>
+      <td><div class="id-cell"><strong>${esc(item.title || item.rule_id)}</strong><span class="mono">${esc(item.rule_id)} · ${esc(item.cwe)}</span></div></td>
+      <td><span class="chip">${esc(codeLanguageLabels[item.language] || item.language)}</span></td>
+      <td>${codeSeverityPill(item.severity)}</td>
+      <td><button class="btn btn-sm" type="button" data-code-src="${esc(item.file)}" data-code-line="${line}" title="在源码浏览中打开">${esc(item.file)}:L${line}</button></td>
+      <td><details class="flow-details"><summary>${source} → ${sink}</summary><ul class="flow-list">${flow || "<li>无传播步骤</li>"}</ul></details></td>
+    </tr>`;
+  }
+
+  const codeSymbolKindLabels = {
+    function: "函数", method: "方法", class: "类", interface: "接口", struct: "结构",
+    enum: "枚举", record: "记录", trait: "Trait", type: "类型",
+  };
+
+  const codeRejectReasonLabels = {
+    file_too_large: "超过 2 MiB 上限",
+    lex_rejected: "token / 词法上限",
+    statement_limit: "statement 上限",
+    file_limit: "文件数量上限",
+  };
+
+  const codeScopeLabels = {
+    project: "项目源码",
+    vendor: "第三方依赖",
+    generated: "生成/压缩产物",
+  };
+
+  const codeSymbolKindOptions = [
+    ["all", "全部类型"], ["function", "函数"], ["method", "方法"], ["class", "类"],
+    ["interface", "接口"], ["struct", "结构"], ["enum", "枚举"], ["record", "记录"],
+    ["trait", "Trait"], ["type", "类型"],
+  ];
+
+  function symbolLink(symbol, label) {
+    return `<button type="button" class="chip mono symbol-link" data-symbol-file="${esc(symbol.file)}" data-symbol-line="${symbol.line}" title="打开 ${esc(symbol.file)}:L${symbol.line}">${esc(label)}</button>`;
+  }
+
+  function renderSymbolEvidence(host, data) {
+    if (!host) return;
+    const coverage = data.coverage || {};
+    const symbols = data.symbols || [];
+    const calls = data.calls || [];
+    const unresolved = data.unresolved || [];
+    const languages = (data.symbol_languages || data.languages || []).filter((item) =>
+      item.status === "scanned" || item.symbols || item.calls || item.unresolved);
+    const totalSymbols = typeof coverage.symbols_found === "number"
+      ? coverage.symbols_found : languages.reduce((sum, item) => sum + (item.symbols || 0), 0);
+    const totalCalls = typeof coverage.calls_found === "number"
+      ? coverage.calls_found : languages.reduce((sum, item) => sum + (item.calls || 0), 0);
+    const totalUnresolved = typeof coverage.unresolved_found === "number"
+      ? coverage.unresolved_found : languages.reduce((sum, item) => sum + (item.unresolved || 0), 0);
+    const pending = data.symbol_reason || "";
+    if (!host.dataset.symbolBound) {
+      host.dataset.symbolBound = "1";
+      host.addEventListener("click", (event) => {
+        const target = event.target.closest("[data-symbol-file]");
+        if (!target) return;
+        go("source", { path: target.dataset.symbolFile, line: Number(target.dataset.symbolLine) || 1 });
+      });
+    }
+    if (!languages.length && !symbols.length && !calls.length) {
+      host.innerHTML = emptyState("i-layer", pending ? "符号索引未运行" : "暂无符号证据",
+        pending || "当前快照没有可索引的声明；这不等于没有入口或没有风险。") +
+        (pending ? `<div class="card-actions"><button class="btn btn-sm" type="button" data-run-code>打开代码审计页</button></div>` : "");
+      return;
+    }
+    const partialChip = data.symbol_partial ? `<span class="chip warn">符号索引截断</span>` : "";
+    const summary = `<div class="symbol-note"><span class="chip"><svg class="icon icon-xs"><use href="#i-layer"/></svg>符号 ${fmtNum(totalSymbols)}</span><span class="chip">调用 ${fmtNum(totalCalls)}</span><span class="chip">未解析 ${fmtNum(totalUnresolved)}</span>${partialChip}<span class="muted">列表最多 ${fmtNum(200)} 条，统计为全量；same_file 仅表示同文件同名声明</span></div>`;
+    const groups = languages.map((item) => {
+      const languageSymbols = symbols.filter((symbol) => symbol.language === item.language);
+      const languageCalls = calls.filter((call) => call.language === item.language);
+      const languageUnresolved = unresolved.filter((call) => call.language === item.language);
+      const kinds = languageSymbols.reduce((acc, symbol) => {
+        const label = codeSymbolKindLabels[symbol.kind] || symbol.kind || "其他";
+        acc[label] = (acc[label] || 0) + 1;
+        return acc;
+      }, {});
+      const samples = languageSymbols.slice(0, 8).map((symbol) =>
+        symbolLink(symbol, `${codeSymbolKindLabels[symbol.kind] || symbol.kind} · ${symbol.qualified_name || symbol.name}`)).join("");
+      const sampleCount = Math.min(languageSymbols.length, 8);
+      const unresolvedSamples = languageUnresolved.slice(0, 2).map((call) =>
+        `<span class="mono">${esc(call.expr)} <span class="muted">L${call.line}</span></span>`).join(" · ");
+      return `<div class="symbol-group">
+        <div class="kv"><span>${esc(codeLanguageLabels[item.language] || item.language)}</span><b>符号 ${fmtNum(item.symbols || 0)} · 调用 ${fmtNum(item.calls || 0)} · 未解析 ${fmtNum(item.unresolved || 0)}</b></div>
+        ${Object.keys(kinds).length ? `<div class="chip-row">${Object.entries(kinds).map(([label, count]) => `<span class="chip">${esc(label)} ${fmtNum(count)}</span>`).join("")}</div>` : ""}
+        ${samples ? `<div class="symbol-chips">${samples}${(item.symbols || 0) > sampleCount ? `<span class="muted">… 样本已截断</span>` : ""}</div>` : ""}
+        ${unresolvedSamples ? `<div class="symbol-unresolved">未解析示例：${unresolvedSamples}</div>` : ""}
+      </div>`;
+    }).join("");
+    host.innerHTML = `${summary}${groups}`;
+  }
+
+  function symbolRow(item) {
+    const kind = codeSymbolKindLabels[item.kind] || item.kind || "其他";
+    const params = (item.parameters || []).map((parameter) => parameter.name).filter(Boolean).join(", ") || "—";
+    return `<tr>
+      <td><span class="chip">${esc(kind)}</span></td>
+      <td><div class="id-cell"><strong class="mono">${esc(item.name)}</strong><span>${esc(item.qualified_name || item.container || "")}</span></div></td>
+      <td><button class="btn btn-sm" type="button" data-symbol-file="${esc(item.file)}" data-symbol-line="${item.line}" title="打开 ${esc(item.file)}:L${item.line}">${esc(item.file)}:L${item.line}</button></td>
+      <td class="file">${esc(params)}</td>
+    </tr>`;
+  }
+
+  async function loadSymbols() {
+    const browser = state.symbols;
+    const seq = ++browser.seq;
+    const rows = $("#symbolRows");
+    if (!rows) return;
+    rows.innerHTML = `<tr><td colspan="4" class="muted">正在加载符号索引…</td></tr>`;
+    const params = new URLSearchParams({ limit: String(browser.limit), offset: String(browser.offset) });
+    if (browser.language !== "all") params.set("language", browser.language);
+    if (browser.kind !== "all") params.set("kind", browser.kind);
+    if (browser.q) params.set("q", browser.q);
+    let data;
+    try {
+      data = await api("/api/symbols?" + params.toString());
+    } catch (error) {
+      if (seq === browser.seq) rows.innerHTML = `<tr><td colspan="4">${esc(error.message)}</td></tr>`;
+      return;
+    }
+    if (seq !== browser.seq || state.route !== "code") return;
+    browser.total = data.total || 0;
+    browser.items = data.items || [];
+    if (!data.available) {
+      rows.innerHTML = `<tr><td colspan="4">${emptyState("i-layer", "符号索引未运行", data.reason || "当前快照没有可用的代码审计结果。")}</td></tr>`;
+      $("#symbolCount").textContent = "未运行";
+      $("#symbolRange").textContent = "—";
+      $("#symbolPrev").disabled = true;
+      $("#symbolNext").disabled = true;
+      return;
+    }
+    rows.innerHTML = browser.items.length ? browser.items.map(symbolRow).join("") :
+      `<tr><td colspan="4" class="muted">当前筛选下没有符号；无符号不等于没有入口或没有风险</td></tr>`;
+    const kinds = (data.kinds || []).map((item) => `${codeSymbolKindLabels[item.key] || item.key} ${fmtNum(item.value)}`).join(" · ");
+    $("#symbolCount").textContent = `符号 ${fmtNum(data.total)} · 返回 ${fmtNum(browser.items.length)}${data.symbol_partial ? " · 符号层截断" : ""}`;
+    $("#symbolRange").textContent = data.total ? `${fmtNum(data.offset + 1)}–${fmtNum(Math.min(data.offset + browser.limit, data.total))} / ${fmtNum(data.total)}` : "0 / 0";
+    if (kinds) $("#symbolCount").title = kinds;
+    $("#symbolPrev").disabled = data.offset === 0;
+    $("#symbolNext").disabled = data.offset + browser.limit >= data.total;
+  }
+
+  function renderModelOverview(host, data) {
+    if (!host) return;
+    const languages = (data.symbol_languages || []).filter((item) =>
+      item.status === "scanned" || item.files_scanned || item.symbols || item.calls || item.unresolved);
+    const pending = data.symbol_reason || "";
+    if (!languages.length) {
+      host.innerHTML = emptyState("i-layer", pending ? "代码审计未运行" : "暂无语言模型",
+        pending || "当前快照没有可用的多语言代码审计结果。") +
+        (pending ? `<div class="card-actions"><button class="btn btn-sm" type="button" data-run-code>运行代码审计</button></div>` : "");
+      return;
+    }
+    const rows = languages.map((item) => {
+      const rejected = item.files_rejected ? ` · 拒绝 ${fmtNum(item.files_rejected)}` : "";
+      return `<div class="kv"><span>${esc(codeLanguageLabels[item.language] || item.language)}</span><b>文件 ${fmtNum(item.files_scanned)}${rejected} · 符号 ${fmtNum(item.symbols || 0)} · 调用 ${fmtNum(item.calls || 0)} · 未解析 ${fmtNum(item.unresolved || 0)}</b></div>`;
+    }).join("");
+    const partial = data.symbol_partial ? `<span class="chip warn">符号索引截断</span>` : "";
+    host.innerHTML = `<div class="symbol-note"><span class="chip">已缓存代码审计</span>${partial}<span class="muted">Java AST 只覆盖 Java；其他语言以下面的符号索引为准</span></div>${rows}<div class="card-actions"><button class="btn btn-sm" type="button" data-open-symbols>打开符号浏览</button></div>`;
+  }
+
+  async function viewCode() {
+    const code = state.code;
+    $("#view").innerHTML = `
+      <section class="card">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-code"/></svg>多语言代码审计</h3><span class="card-sub" id="codeRuleset">首次分析大项目可能需要数十秒…</span></div>
+        <div class="card-body" id="codeKpis"></div>
+      </section>
+      <section class="card section-gap">
+        <div class="toolbar">
+          <select class="input" id="codeLang">${codeLanguageOptions.map(([value, label]) => `<option value="${value}"${code.language === value ? " selected" : ""}>${label}</option>`).join("")}</select>
+          <select class="input" id="codeCat">${codeCategoryOptions.map(([value, label]) => `<option value="${value}"${code.category === value ? " selected" : ""}>${label}</option>`).join("")}</select>
+          <div class="seg" id="codeSeverity">${[["all", "全部"], ["high", "高"], ["medium", "中"], ["low", "低"]].map(([value, label]) => `<button type="button" data-severity="${value}" class="${code.severity === value ? "active" : ""}">${label}</button>`).join("")}</div>
+          <input class="input wide" id="codeSearch" data-search placeholder="搜索规则、文件、CWE 或符号…" value="${esc(code.q)}" />
+          <span class="spacer"></span>
+          <span class="toolbar-count" id="codeCount">—</span>
+        </div>
+        <div class="table-wrap">
+          <table class="grid-fixed cols-code">
+            <thead><tr><th>规则 / 类别</th><th>语言</th><th>严重度</th><th>位置</th><th>证据路径</th></tr></thead>
+            <tbody id="codeRows"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <span id="codeRange">—</span>
+          <div class="pager-actions">
+            <button class="btn" type="button" id="codePrev"><svg class="icon"><use href="#i-chev-left"/></svg>上一页</button>
+            <button class="btn" type="button" id="codeNext">下一页<svg class="icon"><use href="#i-chev-right"/></svg></button>
+          </div>
+        </div>
+      </section>
+      <div class="grid-2 section-gap">
+        <section class="card">
+          <div class="card-head"><h3><svg class="icon"><use href="#i-code"/></svg>语言覆盖</h3><span class="card-sub">声明级覆盖，不等于安全</span></div>
+          <div class="card-body" id="codeLanguages"></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h3><svg class="icon"><use href="#i-route"/></svg>声明入口</h3><span class="card-sub">源码中观察到的路由声明</span></div>
+          <div class="card-body" id="codeRoutes"></div>
+        </section>
+      </div>
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-alert"/></svg>文件拒绝</h3><span class="card-sub">文件级缺口；不代表这些文件没有风险</span></div>
+        <div class="card-body" id="codeRejected"></div>
+      </section>
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-layer"/></svg>符号索引</h3><span class="card-sub">同文件简单名匹配；其余为未解析，不伪造调用图</span></div>
+        <div class="card-body" id="codeSymbols"></div>
+      </section>
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-search"/></svg>符号浏览</h3><span class="card-sub">按语言/类型检索；点击文件行进入源码</span></div>
+        <div class="toolbar">
+          <select class="input" id="symbolLang">${codeLanguageOptions.map(([value, label]) => `<option value="${value}"${state.symbols.language === value ? " selected" : ""}>${label}</option>`).join("")}</select>
+          <select class="input" id="symbolKind">${codeSymbolKindOptions.map(([value, label]) => `<option value="${value}"${state.symbols.kind === value ? " selected" : ""}>${label}</option>`).join("")}</select>
+          <input class="input wide" id="symbolSearch" data-search placeholder="搜索符号名、文件名或容器…" value="${esc(state.symbols.q)}" />
+          <span class="spacer"></span>
+          <span class="toolbar-count" id="symbolCount">—</span>
+        </div>
+        <div class="table-wrap">
+          <table class="grid-fixed cols-symbol">
+            <thead><tr><th>类型</th><th>符号</th><th>文件</th><th>参数</th></tr></thead>
+            <tbody id="symbolRows"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <span id="symbolRange">—</span>
+          <div class="pager-actions">
+            <button class="btn" type="button" id="symbolPrev"><svg class="icon"><use href="#i-chev-left"/></svg>上一页</button>
+            <button class="btn" type="button" id="symbolNext">下一页<svg class="icon"><use href="#i-chev-right"/></svg></button>
+          </div>
+        </div>
+      </section>
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-info"/></svg>限制与边界</h3><span class="card-sub">runtime_status 恒为 not_run</span></div>
+        <div class="card-body" id="codeLimits"></div>
+      </section>
+    `;
+    $("#codeLang").addEventListener("change", (event) => { code.language = event.target.value; code.offset = 0; loadCode(); });
+    $("#codeCat").addEventListener("change", (event) => { code.category = event.target.value; code.offset = 0; loadCode(); });
+    $("#codeSeverity").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-severity]");
+      if (!button) return;
+      code.severity = button.dataset.severity;
+      code.offset = 0;
+      $$("#codeSeverity button").forEach((item) => item.classList.toggle("active", item === button));
+      loadCode();
+    });
+    $("#codeSearch").addEventListener("input", (event) => {
+      clearTimeout(code.searchTimer);
+      const value = event.target.value;
+      code.searchTimer = setTimeout(() => { code.q = value.trim(); code.offset = 0; loadCode(); }, 220);
+    });
+    $("#codePrev").addEventListener("click", () => { code.offset = Math.max(0, code.offset - code.limit); loadCode(); });
+    $("#codeNext").addEventListener("click", () => { if (code.offset + code.limit < code.total) { code.offset += code.limit; loadCode(); } });
+    $("#codeRows").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-code-src]");
+      if (button) go("source", { path: button.dataset.codeSrc, line: Number(button.dataset.codeLine) || 1 });
+    });
+    $("#symbolLang").addEventListener("change", (event) => {
+      state.symbols.language = event.target.value;
+      state.symbols.offset = 0;
+      loadSymbols();
+    });
+    $("#symbolKind").addEventListener("change", (event) => {
+      state.symbols.kind = event.target.value;
+      state.symbols.offset = 0;
+      loadSymbols();
+    });
+    let symbolTimer = null;
+    $("#symbolSearch").addEventListener("input", (event) => {
+      clearTimeout(symbolTimer);
+      const value = event.target.value;
+      symbolTimer = setTimeout(() => {
+        state.symbols.q = value.trim();
+        state.symbols.offset = 0;
+        loadSymbols();
+      }, 240);
+    });
+    $("#symbolPrev").addEventListener("click", () => {
+      state.symbols.offset = Math.max(0, state.symbols.offset - state.symbols.limit);
+      loadSymbols();
+    });
+    $("#symbolNext").addEventListener("click", () => {
+      if (state.symbols.offset + state.symbols.limit < state.symbols.total) {
+        state.symbols.offset += state.symbols.limit;
+        loadSymbols();
+      }
+    });
+    $("#symbolRows").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-symbol-file]");
+      if (button) go("source", { path: button.dataset.symbolFile, line: Number(button.dataset.symbolLine) || 1 });
+    });
+    await loadCode();
+    await loadSymbols();
+  }
+
+  async function loadCode() {
+    const code = state.code;
+    const seq = ++code.seq;
+    const params = new URLSearchParams({ limit: String(code.limit), offset: String(code.offset) });
+    if (code.language !== "all") params.set("language", code.language);
+    if (code.category !== "all") params.set("category", code.category);
+    if (code.severity !== "all") params.set("severity", code.severity);
+    if (code.q) params.set("q", code.q);
+    const rows = $("#codeRows");
+    if (!rows) return;
+    rows.innerHTML = `<tr><td colspan="5" class="muted">正在运行多语言规则分析；大型项目首次可能需要数十秒，结果会被缓存…</td></tr>`;
+    let data;
+    try {
+      data = await api("/api/code-audit?" + params.toString());
+    } catch (error) {
+      rows.innerHTML = `<tr><td colspan="5">${esc(error.message)}</td></tr>`;
+      return;
+    }
+    if (seq !== code.seq || state.route !== "code") return;
+    code.total = data.total || 0;
+    code.limitations = data.limitations || [];
+    code.items = data.items || [];
+    rows.innerHTML = code.items.length ? code.items.map(codeRow).join("") :
+      `<tr><td colspan="5" class="muted">当前筛选下没有发现；无发现不等于安全</td></tr>`;
+    const coverage = data.coverage || {};
+    const partialAxes = [
+      data.file_partial ? "文件" : "",
+      data.symbol_partial ? "符号" : "",
+      data.finding_partial ? "发现" : "",
+    ].filter(Boolean);
+    $("#codeCount").textContent = `发现 ${fmtNum(code.total)} · 规则 ${fmtNum(coverage.rules_active)} · 文件 ${fmtNum(coverage.files_scanned)}`;
+    $("#codeRuleset").textContent = data.available ? `规则集 ${data.ruleset_version}` : `未运行：${data.reason || "未知原因"}`;
+    $("#codeKpis").innerHTML = `
+      <span class="chip"><svg class="icon icon-xs"><use href="#i-bug"/></svg>发现 ${fmtNum(code.total)}</span>
+      <span class="chip"><svg class="icon icon-xs"><use href="#i-code"/></svg>语言 ${fmtNum((data.languages || []).filter((item) => item.status === "scanned").length)}</span>
+      <span class="chip"><svg class="icon icon-xs"><use href="#i-shield"/></svg>规则 ${fmtNum(coverage.rules_active)}</span>
+      <span class="chip"><svg class="icon icon-xs"><use href="#i-route"/></svg>入口 ${fmtNum(coverage.routes_found)}</span>
+      <span class="chip"><svg class="icon icon-xs"><use href="#i-layer"/></svg>符号 ${fmtNum(coverage.symbols_found)} · 调用 ${fmtNum(coverage.calls_found)} · 已解析 ${fmtNum(coverage.calls_resolved)} · 未解析 ${fmtNum(coverage.unresolved_found)}</span>
+      <span class="chip"><svg class="icon icon-xs"><use href="#i-code"/></svg>变量 ${fmtNum(coverage.variables_found)} · 字符串常量 ${fmtNum(coverage.string_constants_found)}</span>
+      <span class="chip"><svg class="icon icon-xs"><use href="#i-flag"/></svg>状态 ${data.partial ? "部分覆盖" : "完整清单"}${partialAxes.length ? " · " + partialAxes.join("/") : ""}</span>
+      <span class="chip"><svg class="icon icon-xs"><use href="#i-clock"/></svg>运行时 ${esc(data.runtime_status || "not_run")}</span>
+    `;
+    $("#codeLanguages").innerHTML = (data.languages || []).map((item) => `<div class="kv"><span>${esc(codeLanguageLabels[item.language] || item.language)}</span><b>${esc(item.status)} · 文件 ${fmtNum(item.files_scanned)} · 发现 ${fmtNum(item.findings)} · 入口 ${fmtNum(item.routes)} · 调用已解析 ${fmtNum(item.calls_resolved || 0)} · 变量 ${fmtNum(item.variables || 0)} · 字符串 ${fmtNum(item.string_constants || 0)}</b></div>`).join("") || emptyState("i-code", "无语言覆盖", "快照中没有受支持语言的源码文件");
+    $("#codeRoutes").innerHTML = (data.routes || []).slice(0, 24).map((route) => {
+      const dynamic = route.path_status === "dynamic_unresolved";
+      const convention = route.path_status === "convention_candidate";
+      const label = dynamic ? `<span class="chip warn">动态未解析</span> ` : convention ? `<span class="chip warn">框架约定候选</span> ` : "";
+      const source = route.source ? `<span class="chip">${esc(route.source)}</span>` : "";
+      return `<div class="kv"><span class="mono">${label}${esc((route.http_methods || []).join("/") || "ANY")} ${esc(dynamic ? "路径由变量/数据库决定" : route.path)}${route.target ? ` → ${esc(route.target)}` : ""}</span><b>${source}${esc(codeLanguageLabels[route.language] || route.language)} · ${esc(route.file)}:L${route.line}</b></div>`;
+    }).join("") || emptyState("i-route", "无声明入口", "未观察到路由声明；这不等于没有 HTTP 入口");
+    const rejected = data.rejected_files || [];
+    const rejectedScopes = (data.rejected_scopes || []).map((item) => `<span class="chip">${esc(codeScopeLabels[item.key] || item.key)} ${fmtNum(item.value)}</span>`).join("");
+    $("#codeRejected").innerHTML = !data.available
+      ? emptyState("i-alert", "代码审计未运行", data.reason || "当前快照没有可用的代码审计结果。")
+      : (rejectedScopes ? `<div class="symbol-note">${rejectedScopes}<span class="muted">分类只用于判断缺口来源；不改变 file_partial</span></div>` : "") + (rejected.length ? rejected.map((item) =>
+        `<div class="kv"><span class="mono">${esc(item.file)}</span><b>${esc(codeScopeLabels[item.scope] || item.scope || "项目源码")} · ${esc(codeLanguageLabels[item.language] || item.language)} · ${esc(codeRejectReasonLabels[item.reason] || item.reason || "未知原因")}</b></div>`).join("") :
+        emptyState("i-alert", "没有文件级拒绝", "当前报告没有 file_too_large、lex_rejected 或 statement_limit；这不代表快照覆盖完整。"));
+    renderSymbolEvidence($("#codeSymbols"), data);
+    $("#codeLimits").innerHTML = limitationList(data.limitations);
+    $("#codeRange").textContent = code.total ? `${fmtNum(code.offset + 1)}–${fmtNum(Math.min(code.offset + code.limit, code.total))} / ${fmtNum(code.total)}` : "0 / 0";
+  }
+
   async function viewAuthz() {
     const authz = state.authz;
     $("#view").innerHTML = `
@@ -2657,6 +4361,10 @@
           <div class="card-body" id="authzControls"></div>
         </section>
       </div>
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-shield"/></svg>多语言控制适配</h3><span class="card-sub">PHP 请求脚本 / C# / Python / JS / Go · 文件级词法</span></div>
+        <div class="card-body" id="authzLanguageAdapters"></div>
+      </section>
       <section class="card section-gap">
         <div class="card-head"><h3><svg class="icon"><use href="#i-info"/></svg>限制与边界</h3><span class="card-sub">无控制不等于可未授权访问</span></div>
         <div class="card-body" id="authzLimits">${limitationList(authz.limitations)}</div>
@@ -2734,6 +4442,7 @@
       $("#authzNext").disabled = data.offset + authz.limit >= data.total;
       renderAuthzChains(data.chains || []);
       renderAuthzControls(data.controls || []);
+      renderAuthzLanguageAdapters(data.language_adapters || []);
       const limits = $("#authzLimits");
       if (limits) limits.innerHTML = limitationList(data.limitations);
     } catch (error) {
@@ -2762,12 +4471,35 @@
     host.innerHTML = `<ul class="limits">${controls.slice(0, 40).map((control) => `<li class="limit-row"><svg class="icon"><use href="#i-shield"/></svg><span><b>${esc(controlKindLabel(control.kind))}</b> <span class="limit-text">${esc((control.paths || []).join(" ") || requirementLabel(control.requirement))} · ${esc(control.file)}:${control.line}</span></span></li>`).join("")}</ul>`;
   }
 
+  function renderAuthzLanguageAdapters(adapters) {
+    const host = $("#authzLanguageAdapters");
+    if (!host) return;
+    if (!adapters.length) {
+      host.innerHTML = emptyState("i-shield", "没有非 Java 控制证据", "快照中未发现可识别的 PHP / C# / Python / JS / Go 鉴权标记；这不等于这些语言没有访问控制。");
+      return;
+    }
+    const languages = Array.from(new Set(adapters.map((item) => item.language).filter(Boolean)));
+    host.innerHTML = `<div class="kv">${languages.map((language) => {
+      const items = adapters.filter((item) => item.language === language);
+      const protectedCount = items.filter((item) => item.decision === "protected").length;
+      const unprotectedCount = items.filter((item) => item.decision === "unprotected").length;
+      const unknownCount = items.filter((item) => item.decision === "unknown").length;
+      const publicCount = items.filter((item) => item.decision === "public").length;
+      return `<div class="kv-row"><span class="kv-key">${esc(language)}</span><span class="kv-val">受保护 ${fmtNum(protectedCount)} · 无控制 ${fmtNum(unprotectedCount)} · 未知 ${fmtNum(unknownCount)} · 公开 ${fmtNum(publicCount)} · 证据 ${fmtNum(items.length)}</span></div>`;
+    }).join("")}</div><ul class="limits section-gap">${adapters.slice(0, 60).map((item) => `<li class="limit-row"><svg class="icon"><use href="#i-${item.decision === "protected" ? "lock" : "alert"}"/></svg><span><b>${esc(item.framework || item.language)}</b> <span class="limit-text">${esc(item.scope === "request_script" ? "请求脚本" : "文件级")} · ${esc(item.decision)} · ${esc(item.control || "none")} · ${esc(item.file)}:${item.line}${item.control_line ? ` · 控制:${item.control_line}` : ""}</span></span></li>`).join("")}</ul>`;
+  }
+
   // ── java semantic model ────────────────────────────────────────────────
 
   async function viewModel() {
     const model = state.model;
     $("#view").innerHTML = `
       <section class="card">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-layer"/></svg>代码模型概览</h3><span class="card-sub">按语言看文件与符号覆盖；Java AST 只是 Java 视图</span></div>
+        <div class="card-body" id="modelOverview"></div>
+      </section>
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-code"/></svg>Java AST 类型索引</h3><span class="card-sub">受限子集解析，不等于完整语义模型</span></div>
         <div class="toolbar">
           <input class="input wide" id="modelSearch" data-search placeholder="搜索类型全限定名或文件…" value="${esc(model.q)}" />
           <span class="spacer"></span>
@@ -2786,6 +4518,10 @@
             <button class="btn" type="button" id="modelNext">下一页<svg class="icon"><use href="#i-chev-right"/></svg></button>
           </div>
         </div>
+      </section>
+      <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-layer"/></svg>多语言符号索引</h3><span class="card-sub">来自 codescan；同文件简单名匹配，其余未解析</span></div>
+        <div class="card-body" id="modelSymbols"></div>
       </section>
     `;
     let timer = null;
@@ -2819,6 +4555,13 @@
         openModelType(row.dataset.fqn);
       }
     });
+    $("#modelSymbols").addEventListener("click", (event) => {
+      if (event.target.closest("[data-run-code]")) go("code");
+    });
+    $("#modelOverview").addEventListener("click", (event) => {
+      if (event.target.closest("[data-run-code]")) go("code");
+      if (event.target.closest("[data-open-symbols]")) go("code");
+    });
     await loadModel();
   }
 
@@ -2845,6 +4588,8 @@
     try {
       const data = await api("/api/model?" + params.toString());
       if (seq !== model.seq) return;
+      renderModelOverview($("#modelOverview"), data);
+      renderSymbolEvidence($("#modelSymbols"), data);
       if (!data.enabled) {
         $("#modelCount").textContent = "未启用";
         $("#modelRange").textContent = "—";
@@ -2905,10 +4650,17 @@
   // ── settings ───────────────────────────────────────────────────────────
 
   async function viewSettings() {
-    const config = await api("/api/config");
+    const [config, runtime, quick] = await Promise.all([
+      api("/api/config"),
+      api("/api/agent/runtime").catch(() => null),
+      api("/api/agent/runtime/quick").catch(() => null),
+    ]);
     state.config = config;
+    state.agentRuntime = runtime;
     const paths = config.paths;
     const features = config.features;
+    const rt = runtime || { enabled: false, ready: false, reason: "", dsn_stored: false, token_stored: false, dsn_target: "", model_ready: false, active_run: 0, active_task: 0 };
+    const q = quick || { enabled: false, ready: false, can_enable: false, dsn_found: false, dsn_ok: false, principal_found: false, principal_role: "", model_ready: false, dsn_target: "", reason: "快速启用状态不可用" };
     $("#view").innerHTML = `
       <section class="card">
         <div class="card-head"><h3><svg class="icon"><use href="#i-folder"/></svg>当前项目</h3><span class="card-sub">${config.mode === "workspace" ? "工作区模式" : "固定快照模式"}</span></div>
@@ -2923,7 +4675,7 @@
           <div class="form-row mt-14">
             <button class="btn primary" type="button" id="gotoProjects"><svg class="icon"><use href="#i-folder"/></svg>选择 / 导入项目</button>
             <span class="form-hint">在「项目」页浏览目录、切换已导入项目。</span>
-          </div>` : `<p class="form-hint warn-text">当前以固定快照启动，无法切换项目。使用 <code>trident web --workspace &lt;dir&gt;</code> 重新启动后即可在界面选择项目。</p>`}
+          </div>` : `<p class="form-hint warn-text">当前为固定快照模式，项目与路径配置只读。改用 <code>trident web --workspace &lt;dir&gt;</code> 启动一次后，即可在「设置」页随时切换项目、修改分析路径与 Agent 运行时配置，之后无需再重启。</p>`}
         </div>
       </section>
 
@@ -2946,6 +4698,51 @@
       </section>
 
       <section class="card section-gap">
+        <div class="card-head"><h3><svg class="icon"><use href="#i-server"/></svg>Agent 与编排</h3><span class="card-sub">保存后立即生效，无需重启</span></div>
+        <div class="card-body">
+          <div class="rt-quick">
+            <p class="rt-lead">${q.enabled ? "Agent 已启用，可以直接发起对话或编排任务。" : "自动识别本机已保存的会话库与主体令牌，点一次即可启用；不用手填连接串和 64 位令牌。"}</p>
+            <div class="rt-checks">
+              <span class="status ${q.dsn_ok ? "ok" : "warn"}">会话库${q.dsn_ok ? "已连接" : "不可用"}</span>
+              <span class="status ${q.principal_found ? "ok" : "warn"}">主体令牌${q.principal_found ? "可用 · " + esc(q.principal_role) : "未找到"}</span>
+              <span class="status ${q.model_ready ? "ok" : "warn"}">主模型密钥${q.model_ready ? "可用" : "缺失"}</span>
+            </div>
+            ${!q.model_ready ? `<p class="form-hint">启用后还需配置主模型与 API Key：<a href="#/settings/model">前往「设置 → 模型」</a></p>` : ""}
+            ${!q.enabled && !q.can_enable && q.reason ? `<p class="form-hint warn-text">${esc(q.reason)}</p>` : ""}
+            <div class="row-actions left">
+              ${q.enabled
+                ? `<button class="btn" type="button" id="quickDisable" ${features.workspace_editable && rt.active_run === 0 && rt.active_task === 0 ? "" : "disabled"}>停用 Agent 与编排</button>`
+                : `<button class="btn primary" type="button" id="quickEnable" ${features.workspace_editable && q.can_enable ? "" : "disabled"}>一键启用</button>`}
+              ${!q.enabled && !q.can_enable ? `<span class="form-hint">可展开下方「高级设置」手动填写</span>` : ""}
+            </div>
+            ${rt.enabled && !rt.ready ? `<p class="form-hint warn-text">${esc(rt.reason || "已启用但未就绪")}</p>` : ""}
+          </div>
+          <details class="rt-advanced">
+            <summary>高级设置 · 手动填写连接串与令牌</summary>
+            <div class="kv mt-14">
+              ${kvRow("状态", rt.ready ? "已就绪" : rt.enabled ? "已启用但未就绪" : "未启用", rt.ready ? "good" : "warn")}
+              ${kvRow("会话库", q.dsn_target || (rt.dsn_stored ? rt.dsn_target : "未配置"), q.dsn_ok || rt.dsn_stored ? "good" : "warn")}
+              ${kvRow("主体令牌", rt.token_stored ? "已保存" : "未配置", rt.token_stored ? "good" : "warn")}
+              ${kvRow("主模型密钥", rt.model_ready ? "可用" : "缺失", rt.model_ready ? "good" : "warn")}
+              ${kvRow("运行中", `Run ${rt.active_run} · 编排 ${rt.active_task}`)}
+            </div>
+            ${rt.reason ? `<p class="form-hint warn-text">${esc(rt.reason)}</p>` : ""}
+            <label class="check line"><input type="checkbox" id="rtEnabled" ${rt.enabled ? "checked" : ""} ${features.workspace_editable ? "" : "disabled"}>启用 Agent 对话与编排</label>
+            <div class="form-grid">
+              <label class="field"><span>Agent 会话库连接串</span><input class="input mono" id="rtDSN" placeholder="${rt.dsn_stored ? "已保存；输入新连接串可替换" : "postgres://用户:密码@127.0.0.1:55432/trident_test?sslmode=disable"}" autocomplete="off" spellcheck="false"></label>
+              <label class="field"><span>主体令牌（具备创建 Run 权限）</span><input class="input" id="rtToken" type="password" autocomplete="new-password" placeholder="${rt.token_stored ? "已保存；留空不改" : "粘贴主体令牌"}"></label>
+            </div>
+            <p class="model-hint">连接串与令牌只保存在本机工作区（0600），前端只看到「已保存」，永不回显；保存前会真实连接并校验令牌。有 Run 或编排任务运行时拒绝修改。</p>
+            <div class="row-actions left">
+              <button class="btn primary" type="button" id="saveAgentRuntime" ${features.workspace_editable ? "" : "disabled"}>保存运行时配置</button>
+              <button class="btn sm ghost" type="button" id="clearAgentToken" ${rt.token_stored ? "" : "disabled"}>清除令牌</button>
+              <button class="btn sm ghost" type="button" id="clearAgentDSN" ${rt.dsn_stored ? "" : "disabled"}>清除连接</button>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section class="card section-gap">
         <div class="card-head"><h3><svg class="icon"><use href="#i-download"/></svg>导出</h3><span class="card-sub">确定性输出</span></div>
         <div class="card-body">
           <div class="form-row">
@@ -2958,13 +4755,14 @@
       </section>
 
       <section class="card section-gap">
-        <div class="card-head"><h3><svg class="icon"><use href="#i-info"/></svg>能力状态</h3><span class="card-sub">由本次启动参数决定</span></div>
+        <div class="card-head"><h3><svg class="icon"><use href="#i-info"/></svg>能力状态</h3><span class="card-sub">随运行时配置变化</span></div>
         <div class="card-body">
           <div class="kv">
             ${kvRow("项目导入", features.project_import ? "可用" : "不可用", features.project_import ? "good" : "warn")}
             ${kvRow("路径配置", features.workspace_editable ? "可用" : "不可用", features.workspace_editable ? "good" : "warn")}
             ${kvRow("代码模型", features.java_model ? "已生成" : "未生成", features.java_model ? "good" : "warn")}
-            ${kvRow("Agent 观测", features.agent_store ? "已连接只读库" : "未配置 --agent-dsn", features.agent_store ? "good" : "warn")}
+            ${kvRow("Agent 观测", features.agent_store ? "已连接只读库" : "未配置会话库", features.agent_store ? "good" : "warn")}
+            ${kvRow("Agent 编排", features.agent_chat_ready ? "已就绪" : features.agent_chat_enabled ? "已启用未就绪" : "未启用", features.agent_chat_ready ? "good" : "warn")}
             ${kvRow("分析状态", config.analysis.ready ? `完成 · ${fmtNum(config.analysis.duration_ms)} ms` : (config.analysis.error || "尚未运行"))}
           </div>
           ${config.java_model_reason ? `<p class="form-hint warn-text">${esc(config.java_model_reason)}</p>` : ""}
@@ -2975,6 +4773,63 @@
     $("#settingsSarif").addEventListener("click", exportSARIF);
     $("#settingsEvidence").addEventListener("click", exportReport);
     $("#settingsReport").addEventListener("click", exportHtmlReport);
+    const saveAgentRuntime = async (body, okText) => {
+      try {
+        await api("/api/agent/runtime", { method: "POST", body });
+        toast(okText, "ok");
+        await viewSettings();
+      } catch (error) {
+        toast(error.message, "bad");
+        // Keep the persisted switch state visible; the typed credentials stay so
+        // the user can correct them without re-entering everything.
+        if (state.agentRuntime) $("#rtEnabled").checked = state.agentRuntime.enabled;
+      }
+    };
+    const quickEnableBtn = $("#quickEnable");
+    if (quickEnableBtn) {
+      quickEnableBtn.addEventListener("click", async () => {
+        quickEnableBtn.disabled = true;
+        quickEnableBtn.textContent = "启用中…";
+        try {
+          await api("/api/agent/runtime/quick", { method: "POST" });
+          toast("Agent 与编排已启用，立即生效", "ok");
+          await viewSettings();
+        } catch (error) {
+          toast(error.message, "bad");
+          quickEnableBtn.disabled = false;
+          quickEnableBtn.textContent = "一键启用";
+        }
+      });
+    }
+    const quickDisableBtn = $("#quickDisable");
+    if (quickDisableBtn) {
+      quickDisableBtn.addEventListener("click", () => {
+        if (!window.confirm("停用 Agent 对话与编排？已保存的会话库与令牌保留，可随时重新启用。")) return;
+        void saveAgentRuntime({ enabled: false }, "已停用 Agent 与编排");
+      });
+    }
+    const saveRuntimeBtn = $("#saveAgentRuntime");
+    if (saveRuntimeBtn) {
+      saveRuntimeBtn.addEventListener("click", () => saveAgentRuntime({
+        enabled: $("#rtEnabled").checked,
+        dsn: $("#rtDSN").value.trim(),
+        token: $("#rtToken").value.trim(),
+      }, "运行时配置已保存，立即生效"));
+    }
+    const clearTokenBtn = $("#clearAgentToken");
+    if (clearTokenBtn) {
+      clearTokenBtn.addEventListener("click", () => {
+        if (!window.confirm("清除已保存的主体令牌？对话与编排会同时停用，可随时重新填写。")) return;
+        void saveAgentRuntime({ clear_token: true }, "令牌已清除，对话与编排已停用");
+      });
+    }
+    const clearDSNBtn = $("#clearAgentDSN");
+    if (clearDSNBtn) {
+      clearDSNBtn.addEventListener("click", () => {
+        if (!window.confirm("清除已保存的会话库连接？只影响本机保存，数据库本身不变。")) return;
+        void saveAgentRuntime({ clear_dsn: true }, "已清除保存的会话库连接");
+      });
+    }
     if (features.workspace_editable) {
       $("#saveConfigBtn").addEventListener("click", saveConsoleConfig);
       $("#rerunBtn").addEventListener("click", rerunAnalysis);
@@ -3116,7 +4971,7 @@
               <button class="btn sm primary" type="button" id="pickDir">选择当前目录</button>
               <span class="form-hint">只会列出目录，不读取文件内容，不跟随符号链接。</span>
             </div>
-          </div>` : `<p class="form-hint warn-text">当前以固定快照启动，无法导入项目。使用 <code>trident web --workspace .trident</code> 启动后即可在界面选择项目。</p>`}
+          </div>` : `<p class="form-hint warn-text">当前为固定快照模式，无法导入项目。改用 <code>trident web --workspace .trident</code> 启动一次后即可在界面选择项目，并在「设置」页随时修改配置（无需再重启）。</p>`}
         </div>
       </section>
 
@@ -3244,21 +5099,27 @@
       return;
     }
     const button = $("#importBtn");
+    const restore = () => {
+      button.disabled = false;
+      button.innerHTML = `<svg class="icon"><use href="#i-download"/></svg>导入并分析`;
+    };
     button.disabled = true;
     button.textContent = "导入中…";
     try {
       const result = await api("/api/projects", { method: "POST", body: { source } });
       state.browse.pick = source;
+      // Report success immediately. The first overview analysis used to be
+      // awaited here, which left the button spinning for the whole (possibly
+      // 30+ second) analysis of a large project even though import succeeded.
+      restore();
+      toast(`已导入 ${result.project.files} 个文件 · ${shortHash(result.project.hash)}；分析在打开页面时进行`, "ok");
       resetAnalysisState();
       await ensureConfig(true);
       await refreshProjectSwitcher();
-      await ensureOverview(true);
-      toast(`已导入 ${result.project.files} 个文件 · ${shortHash(result.project.hash)}`, "ok");
       go("overview");
     } catch (error) {
       toast(error.message, "bad");
-      button.disabled = false;
-      button.innerHTML = `<svg class="icon"><use href="#i-download"/></svg>导入并分析`;
+      restore();
     }
   }
 
@@ -3293,16 +5154,23 @@
       const config = await ensureConfig(true);
       await refreshProjectSwitcher();
       if (!config.project.hash) {
-        if (location.hash !== "#/projects") location.hash = "#/projects";
+        const route = parseHash().name;
+        if (route !== "projects" && route !== "cases" && route !== "case") {
+          location.hash = "#/projects";
+        }
         await renderRoute();
         return;
       }
       await refreshProjectSwitcher();
-      await ensureOverview();
       if (!location.hash) {
         location.hash = "#/overview";
-      } else {
-        await renderRoute();
+      }
+      // Render the requested route first. On a non-overview route, warm the
+      // overview in the background so topbar metadata does not block the page
+      // the user asked for.
+      await renderRoute();
+      if (parseHash().name !== "overview") {
+        ensureOverview().catch(() => {});
       }
     } catch (error) {
       if (error.status === 401) showLogin("");
@@ -3311,4 +5179,285 @@
   }
 
   boot();
+
+// ---------------------------------------------------------------------------
+// #/tasks — multi-agent orchestration (planner/worker exploration graph)
+// ---------------------------------------------------------------------------
+
+  async function viewOrchTasks(routeParams) {
+    const deepTask = Number(routeParams?.get("task") || 0);
+    state.orch = { detailId: deepTask || (state.orch && state.orch.detailId) || 0, showForm: Boolean(state.orch && state.orch.showForm), timer: null };
+    const orchState = {
+      created: ["已创建", "muted"], running: ["运行中", "ok"], completed: ["已完成", "ok"],
+      cancelled: ["已停止", "warn"], failed: ["失败", "bad"],
+    };
+    const statePill = (value) => {
+      const [label, cls] = orchState[value] || [value || "未知", "muted"];
+      const dot = cls === "ok" ? "ok" : cls === "bad" ? "bad" : cls === "warn" ? "warn" : "";
+      return `<span class="status ${cls}">${dot ? `<span class="dot ${dot}"></span>` : ""}${esc(label)}</span>`;
+    };
+    const nodeStateLabel = { open: "待处理", running: "执行中", done: "完成", met: "已达成", exhausted: "预算耗尽", blocked: "受阻", cancelled: "已取消", invalid: "无效" };
+    $("#view").innerHTML = `
+      <section class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">MULTI-AGENT STATIC EXPLORATION</span>
+          <h2>编排任务</h2>
+          <p>规划者事件驱动派发审计意图，执行者并发只读读码，结论写回可回溯的探索图。Agent 产出恒为候选发现，不是确认漏洞；runtime_status 始终保持 not_run。</p>
+          <div class="hero-meta" id="orchMeta"><span class="chip">加载中…</span></div>
+        </div>
+        <div class="hero-side">
+          <div class="hero-badge" id="orchBadge"><strong>0</strong><span>TASKS</span></div>
+          <button class="btn primary" type="button" id="orchNew"><svg class="icon"><use href="#i-plus"/></svg>新建任务</button>
+        </div>
+      </section>
+      <div class="grid-2">
+        <section class="card">
+          <div class="card-head"><h3><svg class="icon"><use href="#i-flag"/></svg>任务</h3><span class="card-sub">最近 50 个 · 每 5 秒刷新</span></div>
+          <div class="card-body tight" id="orchList"><div class="sk sk-row"></div></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h3><svg class="icon"><use href="#i-shield"/></svg>运行方式</h3></div>
+          <div class="card-body">
+            <div class="kv">
+              ${kvRow("规划者", "事件驱动派意图，唯一生成者")}
+              ${kvRow("执行者", "并发领意图，只读工具读码")}
+              ${kvRow("图写回", "引擎校验引用后才落图")}
+              ${kvRow("候选发现", "不是确认漏洞，需人+三态确认", "warn")}
+              ${kvRow("预算收尾", "最后一次调用前强制写回", "good")}
+              ${kvRow("与手动 Run", "互斥，同一时刻只跑一个", "warn")}
+            </div>
+          </div>
+        </section>
+      </div>
+      <section class="card section-gap" id="orchFormCard" hidden>
+        <div class="card-head"><h3><svg class="icon"><use href="#i-plus"/></svg>新建编排任务</h3><span class="card-sub">外发需显式批准</span></div>
+        <div class="card-body">
+          <form id="orchForm">
+            <div class="grid-2">
+              <label class="field"><span>任务标题</span><input class="input" id="orchTitle" maxlength="200" placeholder="例如：market 后台模块专项审计" required></label>
+              <label class="field"><span>模型配置</span><select class="input" id="orchProfile"></select></label>
+            </div>
+            <label class="field"><span>审计目标（规划者的最终目标，可含量化验收条件）</span><textarea class="input" id="orchGoal" rows="4" maxlength="8000" placeholder="例如：梳理全部 HTTP 入口并核查鉴权缺失；每条意图给出文件与行号证据。" required></textarea></label>
+            <div class="grid-3">
+              <label class="field"><span>规划轮数上限</span><input class="input" id="orchRounds" type="number" min="1" max="12" value="6"></label>
+              <label class="field"><span>意图总数上限</span><input class="input" id="orchIntents" type="number" min="1" max="24" value="12"></label>
+              <label class="field"><span>并发执行者</span><input class="input" id="orchWorkers" type="number" min="1" max="4" value="2"></label>
+            </div>
+            <div class="grid-3">
+              <label class="field"><span>截止（分钟）</span><input class="input" id="orchDeadline" type="number" min="5" max="240" value="30"></label>
+              <label class="field"><span>单会话模型调用上限</span><input class="input" id="orchModelCalls" type="number" min="1" max="64" value="12"></label>
+              <label class="field"><span>单会话工具调用上限</span><input class="input" id="orchToolCalls" type="number" min="1" max="256" value="24"></label>
+            </div>
+            <label class="check egress"><input type="checkbox" id="orchEgress" required>我批准外发：快照与目标将随每个规划/执行会话发送到所选模型端点</label>
+            <div class="row-actions"><button class="btn primary" type="submit">启动任务</button><button class="btn" type="button" id="orchFormCancel">取消</button></div>
+          </form>
+        </div>
+      </section>
+      <div id="orchDetail" class="section-gap"></div>`;
+
+    if (deepTask) {
+      const detail = $("#orchDetail");
+      const hero = $("#view .hero");
+      if (detail && hero) hero.after(detail);
+    }
+
+    const setMeta = (tasks) => {
+      const meta = $("#orchMeta");
+      const badge = $("#orchBadge");
+      if (!meta || !badge) return;
+      badge.querySelector("strong").textContent = String(tasks.length);
+      const running = tasks.filter((task) => task.state === "running").length;
+      const finished = tasks.filter((task) => task.state === "completed").length;
+      const stopped = tasks.filter((task) => task.state === "cancelled" || task.state === "failed").length;
+      meta.innerHTML = `
+        <span class="chip"><span class="dot ${running ? "ok" : ""}"></span>运行中 ${running}</span>
+        <span class="chip">已完成 ${finished}</span>
+        <span class="chip">停止/失败 ${stopped}</span>
+        <span class="chip mono">并发上限 4 · 意图上限 24</span>`;
+    };
+
+    async function refreshList() {
+      const list = $("#orchList");
+      if (!list) return;
+      let payload;
+      try {
+        payload = await api("/api/agent/orchestration");
+      } catch (error) {
+        setMeta([]);
+        list.innerHTML = emptyState("i-server", "编排未启用", error.message || "需要写库会话与主体令牌");
+        if (state.orch && state.orch.timer) {
+          clearInterval(state.orch.timer);
+          state.orch.timer = null;
+        }
+        return;
+      }
+      const tasks = payload.tasks || [];
+      setMeta(tasks);
+      if (!tasks.length) {
+        list.innerHTML = emptyState("i-flag", "还没有编排任务", "新建一个任务后，规划者会自动开始派发审计意图；候选发现会按血缘写回探索图。");
+        return;
+      }
+      list.innerHTML = `<table class="orch-tasks"><thead><tr><th>ID</th><th>标题</th><th>状态</th><th>轮次</th><th>意图</th><th>截止</th><th></th></tr></thead><tbody>
+        ${tasks.map((task) => `<tr>
+          <td class="mono">#${task.id}</td>
+          <td><strong>${esc(task.title)}</strong>${task.reason ? `<div class="card-sub">${esc(task.reason)}</div>` : ""}</td>
+          <td>${statePill(task.state)}</td>
+          <td class="mono">${task.planner_rounds}/${task.max_planner_rounds}</td>
+          <td class="mono">${task.intents_spawned}/${task.max_intents}</td>
+          <td class="mono">${esc((task.deadline || "").slice(5, 16).replace("T", " "))}</td>
+          <td><span class="row-actions">
+            <button class="btn sm" type="button" data-detail="${task.id}">查看图</button>
+            ${task.state === "running" && payload.active_task === task.id ? `<button class="btn sm danger" type="button" data-stop="${task.id}">停止</button>` : ""}
+          </span></td>
+        </tr>`).join("")}
+      </tbody></table>`;
+      list.querySelectorAll("[data-detail]").forEach((button) => button.addEventListener("click", async () => {
+        state.orch.detailId = Number(button.dataset.detail);
+        await viewOrchTasks();
+        const detail = $("#orchDetail");
+        if (detail) detail.scrollIntoView({ behavior: "smooth", block: "start" });
+      }));
+      list.querySelectorAll("[data-stop]").forEach((button) => button.addEventListener("click", async () => {
+        try { await api(`/api/agent/orchestration/stop?id=${button.dataset.stop}`, { method: "POST" }); toast("已请求停止；在跑会话会保留已提交步骤", "ok"); viewOrchTasks(); }
+        catch (error) { toast(error.message, "bad"); }
+      }));
+    }
+
+    async function refreshProfiles() {
+      const select = $("#orchProfile");
+      if (!select) return;
+      const payload = await api("/api/agent/chat/state").catch(() => ({ profiles: [], resolved: {} }));
+      const profiles = payload.profiles || [];
+      const resolved = payload.resolved || {};
+      const follow = resolved.planner && resolved.worker
+        ? `跟随角色配置（规划者 ${resolved.planner.entry_name} · 执行者 ${resolved.worker.entry_name}）`
+        : "跟随角色配置（规划者 / 执行者）";
+      select.innerHTML = `<option value="" selected>${esc(follow)}</option>` + profiles.map((profile) => `<option value="${esc(profile.id)}">${esc(profile.label)}（${esc(profile.model)}）</option>`).join("");
+      if (!profiles.length) select.disabled = true;
+    }
+
+    async function refreshDetail() {
+      const target = $("#orchDetail");
+      if (!target) return;
+      if (!state.orch.detailId) { target.innerHTML = ""; return; }
+      let payload;
+      try { payload = await api(`/api/agent/orchestration/detail?id=${state.orch.detailId}`); }
+      catch (error) { target.innerHTML = `<div class="card"><div class="empty">${esc(error.message)}</div></div>`; return; }
+      const task = payload.task || {};
+      const nodes = payload.nodes || [];
+      const kindRows = (kind, hint, icon) => {
+        const rows = nodes.filter((node) => node.kind === kind);
+        if (!rows.length) return "";
+        return `<section class="card section-gap">
+          <div class="card-head"><h3><svg class="icon"><use href="#${icon}"/></svg>${hint}</h3><span class="card-sub">${rows.length} 条</span></div>
+          <div class="card-body tight"><table class="orch-nodes"><thead><tr><th>ID</th><th>状态</th><th>内容</th><th>会话</th></tr></thead><tbody>
+            ${rows.map((node) => {
+              let run = 0;
+              try { const parsed = JSON.parse(node.payload || "{}"); run = parsed.run || parsed.planner_run || 0; } catch (_) {}
+              return `<tr>
+                <td class="mono">#${node.id}</td>
+                <td><span class="chip">${esc(nodeStateLabel[node.state] || node.state)}</span>${node.confidence ? `<span class="chip mono">${esc(node.confidence)}</span>` : ""}</td>
+                <td>${esc(node.summary)}</td>
+                <td>${run ? `<a class="chip mono" href="#/agent?run=${run}" title="在 Agent 对话页查看该 Run">Run ${run}</a>` : "—"}</td>
+              </tr>`;
+            }).join("")}
+          </tbody></table></div>
+        </section>`;
+      };
+      const constraints = (payload.constraints || []).map((item) => `<span class="chip ${item.kind === "deny" ? "bad" : ""}">${item.kind === "deny" ? "禁止" : "允许"}：${esc(item.text)}</span>`).join(" ");
+      const conversationHref = task.conversation_id ? `#/agent?conversation=${task.conversation_id}` : "#/agent";
+      target.innerHTML = `
+        <section class="card">
+          <div class="card-head">
+            <h3><svg class="icon"><use href="#i-flag"/></svg>任务 #${task.id} · ${esc(task.title)}</h3>
+            <span class="card-head-actions">${statePill(task.state)}<a class="card-link" href="${conversationHref}">${task.conversation_id ? `会话 #${task.conversation_id}` : "会话记录"}<svg class="icon"><use href="#i-chev-right"/></svg></a></span>
+          </div>
+          <div class="card-body">
+            <p class="task-goal">${esc(task.goal)}</p>
+            <div class="kv">
+              ${kvRow("轮次", `${task.planner_rounds} / ${task.max_planner_rounds}`)}
+              ${kvRow("意图", `${task.intents_spawned} / ${task.max_intents}`)}
+              ${kvRow("并发执行者", String(task.max_workers))}
+              ${kvRow("截止", esc((task.deadline || "").slice(0, 19).replace("T", " ")))}
+              ${task.reason ? kvRow("结论", esc(task.reason), "warn") : ""}
+            </div>
+            ${constraints ? `<div class="hero-meta mt-10">${constraints}</div>` : ""}
+          </div>
+        </section>
+        ${kindRows("goal", "目标", "i-flag")}
+        ${kindRows("intent", "意图", "i-route")}
+        ${kindRows("fact", "事实（Agent 观察）", "i-info")}
+        ${kindRows("finding_candidate", "候选发现（不是确认漏洞）", "i-bug")}
+        <section class="card section-gap">
+          <div class="card-head"><h3><svg class="icon"><use href="#i-sliders"/></svg>操舵</h3><span class="card-sub">写回图，下一轮派发生效</span></div>
+          <div class="card-body">
+            <div class="grid-3">
+              <label class="field"><span>补充意图</span><input class="input" id="steerIntent" placeholder="直接注入一条要审的方向"></label>
+              <label class="field"><span>战略提示</span><input class="input" id="steerHint" placeholder="给规划者的调整建议"></label>
+              <label class="field"><span>新增目标</span><input class="input" id="steerGoal" placeholder="新增一个要达成的目标"></label>
+            </div>
+            <label class="field"><span>操作约束（以「禁止」开头登记为 deny，否则 allow）</span><input class="input" id="steerConstraint" placeholder="例如：只审 src/main 下的自有代码"></label>
+            <div class="row-actions">
+              <button class="btn sm" type="button" id="steerIntentBtn">注入意图</button>
+              <button class="btn sm" type="button" id="steerHintBtn">提交提示</button>
+              <button class="btn sm" type="button" id="steerGoalBtn">登记目标</button>
+              <button class="btn sm" type="button" id="steerConstraintBtn">登记约束</button>
+            </div>
+            <p class="card-sub mt-8">每条操舵只写回图，运行中的会话不被打断；候选发现是 Agent 推断，不是确认漏洞。</p>
+          </div>
+        </section>`;
+      const steer = async (kind, inputId) => {
+        const input = $(`#${inputId}`);
+        const text = (input.value || "").trim();
+        if (!text) { toast("内容不能为空", "bad"); return; }
+        try {
+          await api("/api/agent/orchestration/steer", { method: "POST", body: { task_id: task.id, kind, text } });
+          toast(kind === "constraint" ? "约束已登记" : "已写回探索图，下一轮派发生效", "ok");
+          input.value = "";
+          viewOrchTasks();
+        } catch (error) { toast(error.message, "bad"); }
+      };
+      $("#steerIntentBtn").addEventListener("click", () => steer("intent", "steerIntent"));
+      $("#steerHintBtn").addEventListener("click", () => steer("hint", "steerHint"));
+      $("#steerGoalBtn").addEventListener("click", () => steer("goal", "steerGoal"));
+      $("#steerConstraintBtn").addEventListener("click", () => steer("constraint", "steerConstraint"));
+    }
+
+    $("#orchNew").addEventListener("click", () => { state.orch.showForm = true; $("#orchFormCard").hidden = false; refreshProfiles(); });
+    $("#orchFormCancel").addEventListener("click", () => { $("#orchFormCard").hidden = true; });
+    $("#orchForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const body = {
+        title: $("#orchTitle").value.trim(), goal: $("#orchGoal").value.trim(),
+        approve_egress: $("#orchEgress").checked,
+        profile_id: $("#orchProfile").value,
+        max_planner_rounds: Number($("#orchRounds").value) || undefined,
+        max_intents: Number($("#orchIntents").value) || undefined,
+        max_workers: Number($("#orchWorkers").value) || undefined,
+        deadline_minutes: Number($("#orchDeadline").value) || undefined,
+        max_model_calls: Number($("#orchModelCalls").value) || undefined,
+        max_tool_calls: Number($("#orchToolCalls").value) || undefined,
+      };
+      try {
+        const payload = await api("/api/agent/orchestration", { method: "POST", body });
+        toast(`任务 ${payload.task_id} 已启动；规划者正在生成第一批意图`, "ok");
+        state.orch.detailId = payload.task_id;
+        await viewOrchTasks();
+        const detail = $("#orchDetail");
+        if (detail) detail.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (error) { toast(error.message, "bad"); }
+    });
+    await Promise.all([refreshList(), refreshDetail()]);
+    if (deepTask) {
+      const detail = $("#orchDetail");
+      if (detail) detail.scrollIntoView({ block: "start" });
+    }
+    clearInterval(state.orch.timer);
+    state.orch.timer = setInterval(() => {
+      if (state.route !== "tasks" || !state.orch.timer) { clearInterval(state.orch.timer); return; }
+      refreshList().catch(() => {});
+      if (state.orch.detailId) refreshDetail().catch(() => {});
+    }, 5000);
+  }
+
 })();

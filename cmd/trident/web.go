@@ -17,7 +17,7 @@ import (
 	"trident/internal/webui"
 )
 
-const webUsage = "usage: trident web [--workspace <dir>] [--project <dir> | --snapshot <dir> --snapshot-hash <sha256>] [--advisories <file|dir>] [--package-map <file>] [--runtime-report <file>] [--addr 127.0.0.1:8787] [--token <value> | --tokens <file>] [--access-log <file>]"
+const webUsage = "usage: trident web [--workspace <dir>] [--project <dir> | --snapshot <dir> --snapshot-hash <sha256>] [--advisories <file|dir>] [--package-map <file>] [--runtime-report <file>] [--cases <dir>] [--addr 127.0.0.1:8787] [--token <value> | --tokens <file>] [--access-log <file>]"
 
 // webFlags lists the flags that accept a value. It backs the "forgot the --"
 // diagnostic: `trident web workspace .trident` stops flag parsing at the first
@@ -25,7 +25,7 @@ const webUsage = "usage: trident web [--workspace <dir>] [--project <dir> | --sn
 var webFlags = map[string]string{
 	"workspace": "--workspace", "project": "--project", "snapshot": "--snapshot",
 	"snapshot-hash": "--snapshot-hash", "advisories": "--advisories",
-	"package-map": "--package-map", "runtime-report": "--runtime-report",
+	"package-map": "--package-map", "runtime-report": "--runtime-report", "cases": "--cases",
 	"addr": "--addr", "token": "--token", "tokens": "--tokens", "access-log": "--access-log",
 }
 
@@ -57,7 +57,7 @@ func explainPositional(args []string) error {
 func runWeb(ctx context.Context, args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("web", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	var snapshotDir, expectedHash, advisoryPath, addr, token, tokensFile, accessLog, packageMap, runtimeReport, agentDSN, projectSource, workspace string
+	var snapshotDir, expectedHash, advisoryPath, addr, token, tokensFile, accessLog, packageMap, runtimeReport, agentDSN, projectSource, workspace, casesDir string
 	var agentToken, agentEndpoint, agentModel, agentKeyEnv string
 	var enableAgentChat bool
 	flags.StringVar(&projectSource, "project", "", "local source directory to import and serve (one-click mode)")
@@ -71,6 +71,7 @@ func runWeb(ctx context.Context, args []string, out io.Writer) error {
 	flags.StringVar(&accessLog, "access-log", "", "append-only JSONL access log path; token values are never recorded")
 	flags.StringVar(&packageMap, "package-map", "", "optional JSON map from group:artifact to package prefixes; enables the reachability view")
 	flags.StringVar(&runtimeReport, "runtime-report", "", "optional correlation report file from 'runtime http correlate --out'; displayed read-only")
+	flags.StringVar(&casesDir, "cases", "", "optional local Case catalog directory; defaults to <working directory>/cases")
 	flags.StringVar(&agentDSN, "agent-dsn", "", "Agent database DSN; enables the Agent runs view (read-only unless chat is enabled)")
 	flags.BoolVar(&enableAgentChat, "enable-agent-chat", false, "turn the console into an Agent control plane: the page may create runs and call the model (requires --agent-dsn, --agent-token and a model binding)")
 	flags.StringVar(&agentToken, "agent-token", "", "principal token used by the console to create Agent runs; prefer TRIDENT_AGENT_TOKEN")
@@ -157,10 +158,12 @@ func runWeb(ctx context.Context, args []string, out io.Writer) error {
 		AdvisoryPath: advisoryPath, AdvisoryDir: advisoryDir,
 		Token: token, TokensFile: tokensFile, AccessLog: accessLog,
 		PackageMap: packageMap, RuntimeReport: runtimeReport, AgentDSN: agentDSN,
-		AgentToken:      firstNonEmpty(agentToken, os.Getenv("TRIDENT_AGENT_TOKEN")),
-		EnableAgentChat: enableAgentChat, AgentEndpoint: agentEndpoint, AgentModel: agentModel, AgentKeyEnv: agentKeyEnv,
+		AgentDSNExplicit: agentDSN != "",
+		AgentToken:       firstNonEmpty(agentToken, os.Getenv("TRIDENT_AGENT_TOKEN")),
+		EnableAgentChat:  enableAgentChat, AgentEndpoint: agentEndpoint, AgentModel: agentModel, AgentKeyEnv: agentKeyEnv,
 		Workspace: workspace, ProjectSource: projectSource,
-		Version: productVersion,
+		CasesDir: casesDir,
+		Version:  productVersion,
 	})
 	if err != nil {
 		return err

@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"trident/internal/project"
 	"trident/internal/sca"
+	"trident/internal/store"
 )
 
 // workspaceFile is the persisted console state inside a workspace directory.
@@ -26,6 +26,18 @@ type workspaceFile struct {
 	PackageMap    string         `json:"package_map_path,omitempty"`
 	RuntimeReport string         `json:"runtime_report,omitempty"`
 	AgentModel    string         `json:"agent_model,omitempty"`
+	// AgentDSN persists the Agent session database connection so the console
+	// connects on every start without repeating --agent-dsn. It contains
+	// database credentials and must never leave the machine; the file is
+	// written 0600 and .trident/ is git-ignored.
+	AgentDSN string `json:"agent_dsn,omitempty"`
+	// AgentToken is the write principal token used to create Runs. It is stored
+	// locally (0600) so the console can start unattended, is never returned to
+	// the browser, and can be cleared from the runtime settings page.
+	AgentToken string `json:"agent_token,omitempty"`
+	// AgentChatEnabled mirrors the runtime toggle so a disabled feature stays
+	// disabled after restart without requiring a flag.
+	AgentChatEnabled bool `json:"agent_chat_enabled,omitempty"`
 }
 
 type workspaceProj struct {
@@ -78,11 +90,7 @@ func saveWorkspaceConfig(workspace string, file workspaceFile) error {
 	}
 	data = append(data, '\n')
 	path := workspaceConfigPath(workspace)
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, data, 0o600); err != nil {
-		return fmt.Errorf("console workspace is not writable: %w", err)
-	}
-	return os.Rename(temporary, path)
+	return writeFileAtomic(path, data, 0o600)
 }
 
 // mergeConfig keeps explicit flags and only fills fields the caller left empty.
@@ -99,20 +107,6 @@ func mergeConfig(persisted workspaceFile, current consoleConfig) consoleConfig {
 		merged.RuntimeReport = persisted.RuntimeReport
 	}
 	return merged
-}
-
-func configToWorkspace(projectSource, snapshotDir, snapshotHash string, cfg consoleConfig) workspaceFile {
-	file := workspaceFile{
-		SchemaVersion: workspaceSchemaVersion,
-		AdvisoryPath:  cfg.AdvisoryPath,
-		AdvisoryDir:   cfg.AdvisoryDir,
-		PackageMap:    cfg.PackageMapPath,
-		RuntimeReport: cfg.RuntimeReport,
-	}
-	if projectSource != "" {
-		file.Project = &workspaceProj{Source: projectSource, SnapshotDir: snapshotDir, SnapshotHash: snapshotHash}
-	}
-	return file
 }
 
 func randomSuffix() (string, error) {
@@ -184,10 +178,15 @@ type configSnapshot struct {
 		RuntimeConfigured bool   `json:"runtime_configured"`
 	} `json:"paths"`
 	Features struct {
-		WorkspaceEditable bool `json:"workspace_editable"`
-		ProjectImport     bool `json:"project_import"`
-		JavaModel         bool `json:"java_model"`
-		AgentStore        bool `json:"agent_store"`
+		WorkspaceEditable bool   `json:"workspace_editable"`
+		ProjectImport     bool   `json:"project_import"`
+		JavaModel         bool   `json:"java_model"`
+		AgentStore        bool   `json:"agent_store"`
+		AgentDSNStored    bool   `json:"agent_dsn_stored"`
+		AgentDSNError     string `json:"agent_dsn_error,omitempty"`
+		AgentChatEnabled  bool   `json:"agent_chat_enabled"`
+		AgentChatReady    bool   `json:"agent_chat_ready"`
+		AgentTokenStored  bool   `json:"agent_token_stored"`
 	} `json:"features"`
 	JavaModelReason string `json:"java_model_reason,omitempty"`
 	Analysis        struct {
@@ -230,6 +229,15 @@ func (c *Console) buildConfigSnapshot() configSnapshot {
 	out.Features.WorkspaceEditable = c.workspace != ""
 	out.Features.ProjectImport = c.workspace != ""
 	out.Features.AgentStore = c.agentStore != nil
+	runtime := c.agentRuntimeStatus()
+	out.Features.AgentChatEnabled = runtime.Enabled
+	out.Features.AgentChatReady = runtime.Ready
+	out.Features.AgentTokenStored = runtime.TokenStored
+	out.Features.AgentDSNStored = c.workspace != "" && c.storedAgentDSN != ""
+	c.agentStoreMu.Lock()
+	agentErr := c.agentConnectError
+	c.agentStoreMu.Unlock()
+	out.Features.AgentDSNError = agentErr
 	c.mu.Lock()
 	state := c.state
 	c.mu.Unlock()
@@ -253,6 +261,8 @@ type configUpdateRequest struct {
 	AdvisoriesPath string `json:"advisories_path"`
 	PackageMapPath string `json:"package_map_path"`
 	RuntimeReport  string `json:"runtime_report"`
+	AgentDSN       string `json:"agent_dsn,omitempty"`
+	ClearAgentDSN  bool   `json:"agent_dsn_clear,omitempty"`
 }
 
 func (c *Console) handleConfig(w http.ResponseWriter, _ *http.Request) {
@@ -315,12 +325,32 @@ func (c *Console) handleConfigUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "advisories_invalid", err.Error())
 		return
 	}
+	// The Agent session DSN is validated against the real database before it is
+	// persisted; a bad connection string must never replace a working one.
+	agentDSN := strings.TrimSpace(request.AgentDSN)
+	var pendingStore *store.Store
+	if agentDSN != "" {
+		observation, err := store.Open(r.Context(), agentDSN, false)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "agent_dsn_invalid", "Agent 会话库连接失败："+err.Error())
+			return
+		}
+		pendingStore = observation
+	}
 	c.cfgMu.Lock()
+	previous := c.config
 	c.config = next
 	c.cfgMu.Unlock()
-	c.resetAnalysis()
+	// Saving only the Agent DSN must not throw away a 40-second analysis:
+	// reset the cache only when a path that feeds the analysis changed.
+	if previous != next {
+		c.resetAnalysis()
+	}
 	file, err := loadWorkspaceConfig(c.workspace)
 	if err != nil {
+		if pendingStore != nil {
+			pendingStore.Close()
+		}
 		writeError(w, http.StatusInternalServerError, "workspace_error", err.Error())
 		return
 	}
@@ -329,6 +359,28 @@ func (c *Console) handleConfigUpdate(w http.ResponseWriter, r *http.Request) {
 	file.AdvisoryDir = next.AdvisoryDir
 	file.PackageMap = next.PackageMapPath
 	file.RuntimeReport = next.RuntimeReport
+	switch {
+	case request.ClearAgentDSN:
+		file.AgentDSN = ""
+		file.AgentChatEnabled = false
+		c.storedAgentDSN = ""
+		c.agentChatEnabled = false
+		c.cfgMu.Lock()
+		c.chat.enabled = false
+		c.chat.reason = "未启用：在「设置 → Agent 与编排」里开启（无需重启）"
+		c.cfgMu.Unlock()
+		if c.agentWrite != nil {
+			c.agentWrite.Close()
+			c.agentWrite = nil
+			c.agentSession = store.Session{}
+			c.orchEngine = nil
+		}
+		c.swapAgentStore(nil)
+	case pendingStore != nil:
+		file.AgentDSN = agentDSN
+		c.storedAgentDSN = agentDSN
+		c.swapAgentStore(pendingStore)
+	}
 	if file.Project != nil {
 		file.Project.SnapshotDir = dir
 		file.Project.SnapshotHash = c.snapshotRef().Hash()
@@ -379,92 +431,6 @@ func (c *Console) handleAnalysisRerun(w http.ResponseWriter, r *http.Request) {
 		response.Analysis.JavaTypes = state.model.Coverage.TypesIndexed
 	}
 	writeJSON(w, http.StatusOK, response)
-}
-
-type projectImportRequest struct {
-	Source string `json:"source"`
-}
-
-type projectImportResponse struct {
-	SchemaVersion int    `json:"schema_version"`
-	Status        string `json:"status"`
-	Source        string `json:"source"`
-	Hash          string `json:"hash"`
-	Files         int    `json:"files"`
-	Bytes         int64  `json:"bytes"`
-}
-
-// handleProjectImport switches the console to another local source directory.
-// The source is only read; the snapshot is created inside the workspace and the
-// previous snapshot stays on disk untouched.
-func (c *Console) handleProjectImport(w http.ResponseWriter, r *http.Request) {
-	if c.workspace == "" {
-		writeError(w, http.StatusConflict, "pinned_console", "该控制台以固定快照启动；使用 --workspace 启动后才能导入其他项目")
-		return
-	}
-	body := http.MaxBytesReader(w, r.Body, MaxBodyBytes)
-	defer body.Close()
-	decoder := json.NewDecoder(body)
-	decoder.DisallowUnknownFields()
-	var request projectImportRequest
-	if err := decoder.Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "导入请求不是合法 JSON")
-		return
-	}
-	source := strings.TrimSpace(request.Source)
-	if source == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "需要提供源码目录")
-		return
-	}
-	dir, hash, err := ImportProject(r.Context(), c.workspace, source)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "import_failed", err.Error())
-		return
-	}
-	opened, err := project.Open(r.Context(), dir, hash)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "snapshot_open_failed", err.Error())
-		return
-	}
-	c.snapMu.Lock()
-	previous := c.snapshot
-	c.snapshot = opened
-	c.snapshotDir = dir
-	c.projectSource = source
-	c.snapMu.Unlock()
-	c.resetAnalysis()
-	if previous != nil && previous != opened {
-		_ = previous.Close()
-	}
-	file, err := loadWorkspaceConfig(c.workspace)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "workspace_error", err.Error())
-		return
-	}
-	cfg := c.currentConfig()
-	file.Project = &workspaceProj{Source: source, SnapshotDir: dir, SnapshotHash: hash}
-	file.AdvisoryPath = cfg.AdvisoryPath
-	file.AdvisoryDir = cfg.AdvisoryDir
-	file.PackageMap = cfg.PackageMapPath
-	file.RuntimeReport = cfg.RuntimeReport
-	if err := saveWorkspaceConfig(c.workspace, file); err != nil {
-		writeError(w, http.StatusInternalServerError, "workspace_error", err.Error())
-		return
-	}
-	manifest := opened.Manifest()
-	c.rememberProject(projectEntry{
-		Source: source, SnapshotDir: dir, Hash: hash,
-		Files: manifest.TotalFiles, Bytes: manifest.TotalBytes,
-		ImportedAt: time.Now().UTC().Format(time.RFC3339),
-	})
-	writeJSON(w, http.StatusOK, projectImportResponse{
-		SchemaVersion: SchemaVersion,
-		Status:        "ok",
-		Source:        source,
-		Hash:          hash,
-		Files:         manifest.TotalFiles,
-		Bytes:         manifest.TotalBytes,
-	})
 }
 
 func (c *Console) currentSnapshotDir() string {

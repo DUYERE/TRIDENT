@@ -28,8 +28,11 @@ import (
 
 	"trident/internal/audit"
 	"trident/internal/authz"
+	"trident/internal/casework"
+	"trident/internal/codescan"
 	"trident/internal/findings"
 	"trident/internal/javaast"
+	"trident/internal/orchestrator"
 	"trident/internal/project"
 	"trident/internal/reach"
 	"trident/internal/sca"
@@ -56,6 +59,9 @@ const (
 	// MaxJavaModelFiles bounds the optional semantic model. Its memory grows with
 	// the whole project, unlike the other analyzers that stream file by file.
 	MaxJavaModelFiles = 2000
+	// MaxCodeAuditFiles bounds the optional multi-language rule pass on the
+	// console. CLI analysis keeps its own larger, explicit budget.
+	MaxCodeAuditFiles = 1500
 	// MaxConfigBytes bounds the runtime configuration payload.
 	MaxConfigBytes = 256 << 10
 )
@@ -87,6 +93,10 @@ type Options struct {
 	RuntimeReport string
 	// AgentDSN opens a read-only observation database for the Agent view.
 	AgentDSN string
+	// AgentDSNExplicit records that the caller passed --agent-dsn on the
+	// command line; an explicit DSN that fails must stop the start, while a
+	// persisted or environment DSN degrades gracefully.
+	AgentDSNExplicit bool
 	// AgentToken authenticates the console against the Agent database when
 	// chat is enabled. It is a principal token, never persisted by the console.
 	AgentToken string
@@ -104,6 +114,9 @@ type Options struct {
 	// ProjectSource records where the pinned snapshot was imported from. It is
 	// display metadata only and is never read again.
 	ProjectSource string
+	// CasesDir is the local evidence-case catalog. An empty value discovers
+	// <working directory>/cases; a missing directory leaves the workbench empty.
+	CasesDir string
 	// Version is the product build string shown in the console footer.
 	Version string
 }
@@ -111,29 +124,43 @@ type Options struct {
 // Console owns the pinned snapshot and the cached analysis reports. It must be
 // closed by the caller; it is safe for concurrent HTTP handlers.
 type Console struct {
-	snapshot      *project.Snapshot
-	snapshotDir   string
-	snapMu        sync.RWMutex
-	projectSource string
-	workspace     string
-	tokens        *tokenRegistry
-	singleToken   string // plaintext of the legacy single-token mode; empty in file mode
-	version       string
-	startedAt     time.Time
-	accessLog     *accessLogger
-	reachState    *reach.Report
-	reachMu       sync.Mutex
-	agentStore    *store.Store
-	agentWrite    *store.Store
-	agentSession  store.Session
-	chat          agentChat
-	chatMu        sync.Mutex
-	chatActive    int64
-	chatError     string
+	snapshot          *project.Snapshot
+	snapshotDir       string
+	snapMu            sync.RWMutex
+	projectSource     string
+	workspace         string
+	cases             *casework.Catalog
+	tokens            *tokenRegistry
+	singleToken       string // plaintext of the legacy single-token mode; empty in file mode
+	sessionLimit      *sessionLimiter
+	version           string
+	startedAt         time.Time
+	accessLog         *accessLogger
+	reachState        *reach.Report
+	reachMu           sync.Mutex
+	codeState         *codescan.Report
+	codeReason        string
+	codeFatal         error
+	codeMu            sync.Mutex
+	agentStore        *store.Store
+	agentStoreMu      sync.Mutex
+	storedAgentDSN    string
+	agentConnectError string
+	agentWrite        *store.Store
+	agentSession      store.Session
+	orchEngine        *orchestrator.Engine
+	agentChatEnabled  bool
+	storedAgentToken  string
+	chat              agentChat
+	chatMu            sync.Mutex
+	chatActive        int64
+	chatError         string
+	quickProbe        func(context.Context, string, []string) quickProbeResult
 
-	cfgMu  sync.Mutex
-	config consoleConfig
-	models modelsFile
+	cfgMu     sync.Mutex
+	config    consoleConfig
+	models    modelsFile
+	modelKeys map[string]string
 
 	requestsTotal     atomic.Int64
 	unauthorizedTotal atomic.Int64
@@ -253,8 +280,10 @@ func New(ctx context.Context, opts Options) (*Console, error) {
 		snapshotDir:   opts.SnapshotDir,
 		projectSource: opts.ProjectSource,
 		workspace:     opts.Workspace,
+		cases:         casework.NewCatalog(opts.CasesDir, opts.Workspace),
 		tokens:        registry,
 		singleToken:   token,
+		sessionLimit:  newSessionLimiter(),
 		version:       version,
 		startedAt:     time.Now().UTC(),
 		config: consoleConfig{
@@ -273,8 +302,23 @@ func New(ctx context.Context, opts Options) (*Console, error) {
 		// Explicit flags win over the persisted file so a one-off override is
 		// possible without hand-editing the workspace.
 		console.config = mergeConfig(persisted, console.config)
+		console.storedAgentDSN = persisted.AgentDSN
+		console.storedAgentToken = persisted.AgentToken
+		console.agentChatEnabled = opts.EnableAgentChat || persisted.AgentChatEnabled
+		if opts.AgentToken == "" {
+			opts.AgentToken = persisted.AgentToken
+		}
 		if console.chat.model == "" && persisted.AgentModel != "" {
 			console.chat.model = persisted.AgentModel
+		}
+		// Resolution order for the Agent session database: explicit flag, then
+		// the persisted workspace value, then the environment. A persisted or
+		// environment DSN that cannot connect must not stop the whole console.
+		if opts.AgentDSN == "" {
+			opts.AgentDSN = persisted.AgentDSN
+		}
+		if opts.AgentDSN == "" {
+			opts.AgentDSN = os.Getenv("TRIDENT_AGENT_DSN")
 		}
 		// Record the served project so the next start only needs --workspace.
 		source := opts.ProjectSource
@@ -306,10 +350,17 @@ func New(ctx context.Context, opts Options) (*Console, error) {
 	if opts.AgentDSN != "" {
 		observation, err := store.Open(ctx, opts.AgentDSN, false)
 		if err != nil {
-			closeSnapshot(snapshot)
-			return nil, err
+			if opts.AgentDSNExplicit {
+				closeSnapshot(snapshot)
+				return nil, err
+			}
+			// A persisted or environment DSN that is temporarily unreachable
+			// (container stopped, password rotated) degrades gracefully: the
+			// Agent page reports the reason instead of blocking every start.
+			console.agentConnectError = "打开 Agent 会话库失败：" + err.Error()
+		} else {
+			console.agentStore = observation
 		}
-		console.agentStore = observation
 	}
 	if opts.AgentKeyEnv == "" {
 		opts.AgentKeyEnv = "TRIDENT_MODEL_API_KEY"
@@ -334,9 +385,9 @@ func New(ctx context.Context, opts Options) (*Console, error) {
 			console.models = modelsFile{SchemaVersion: modelsSchemaVersion, Profiles: []modelProfile{}}
 		}
 	}
-	if len(console.models.Profiles) > 0 && console.models.Default == "" {
-		console.models.Default = console.models.Profiles[0].ID
-	}
+	// Seeded or hand-written libraries must carry the v2 role slots before
+	// applyModels resolves them.
+	normalizeModels(&console.models)
 	if opts.Workspace != "" && len(console.models.Profiles) > 0 {
 		// Persist the seeded library once so the file is visible and editable
 		// instead of being rebuilt from flags on every start.
@@ -344,34 +395,47 @@ func New(ctx context.Context, opts Options) (*Console, error) {
 			_ = saveModels(opts.Workspace, console.models)
 		}
 	}
+	if opts.Workspace != "" {
+		keys, keyErr := loadModelKeys(opts.Workspace)
+		if keyErr != nil {
+			closeSnapshot(snapshot)
+			return nil, keyErr
+		}
+		console.modelKeys = keys
+	}
+	if console.modelKeys == nil {
+		console.modelKeys = map[string]string{}
+	}
 	// The library is the source of truth for endpoint/model/key variable once it
 	// exists, so a saved profile survives a restart without repeating the flags.
 	console.applyModels(console.models)
 
 	switch {
-	case !opts.EnableAgentChat:
-		console.chat.reason = "对话未启用：启动时加 --enable-agent-chat，并配置 --agent-dsn / --agent-token / 模型"
+	case !console.agentChatEnabled:
+		console.chat.reason = "未启用：在「设置 → Agent 与编排」里开启（无需重启）"
 	case opts.AgentDSN == "":
-		console.chat.reason = "对话需要 --agent-dsn 指向可写数据库"
+		console.chat.reason = "需要 Agent 会话库连接串：在「设置 → Agent 与编排」里填写"
 	case opts.AgentToken == "":
-		console.chat.reason = "对话需要 --agent-token（具备创建 Run 权限的主体令牌）"
-	case opts.AgentEndpoint == "" || opts.AgentModel == "":
-		console.chat.reason = "对话需要 --agent-endpoint 与 --agent-model"
+		console.chat.reason = "需要主体令牌：在「设置 → Agent 与编排」里填写（具备创建 Run 权限）"
 	default:
 		writable, err := store.Open(ctx, opts.AgentDSN, false)
 		if err != nil {
 			console.chat.reason = "打开可写 Agent 数据库失败：" + err.Error()
+			console.agentChatEnabled = true
 			break
 		}
 		session, err := writable.Authenticate(ctx, opts.AgentToken)
 		if err != nil {
 			writable.Close()
-			console.chat.reason = "Agent 令牌无效或已撤销"
+			console.chat.reason = "Agent 令牌无效或已撤销：在「设置 → Agent 与编排」里更新"
+			console.agentChatEnabled = true
 			break
 		}
 		console.agentWrite = writable
 		console.agentSession = session
 		console.chat.enabled = true
+		console.agentChatEnabled = true
+		console.orchEngine = orchestrator.New(writable, session)
 	}
 	if opts.AccessLog != "" {
 		logger, err := newAccessLogger(opts.AccessLog)
@@ -382,6 +446,19 @@ func New(ctx context.Context, opts Options) (*Console, error) {
 		console.accessLog = logger
 	}
 	return console, nil
+}
+
+// swapAgentStore replaces the observation store at runtime after a settings
+// save. A nil observation clears the stored connection and returns the Agent
+// page to the "not configured" state.
+func (c *Console) swapAgentStore(observation *store.Store) {
+	c.agentStoreMu.Lock()
+	defer c.agentStoreMu.Unlock()
+	if c.agentStore != nil {
+		c.agentStore.Close()
+	}
+	c.agentStore = observation
+	c.agentConnectError = ""
 }
 
 func randomToken() (string, error) {
@@ -461,6 +538,11 @@ func (c *Console) resetAnalysis() {
 	c.reachMu.Lock()
 	c.reachState = nil
 	c.reachMu.Unlock()
+	c.codeMu.Lock()
+	c.codeState = nil
+	c.codeReason = ""
+	c.codeFatal = nil
+	c.codeMu.Unlock()
 }
 
 // analyze runs SCA, the endpoint inventory, bounded dataflow, the authorization
@@ -515,6 +597,10 @@ func (c *Console) analyze(ctx context.Context) (*analysisState, error) {
 			state.model = &model
 		}
 	}
+	// Multi-language rule audit is deliberately NOT part of the synchronous
+	// first analysis: a large PHP/.NET project can take tens of seconds, and
+	// every page (including project import feedback) would block on it. It is
+	// computed lazily on the first /api/code-audit request instead.
 	state.duration = time.Since(started)
 	state.at = time.Now().UTC()
 	c.state = state
@@ -539,6 +625,12 @@ func (c *Console) Handler() http.Handler {
 	mux.HandleFunc("GET /api/overview", c.handleOverview)
 	mux.HandleFunc("GET /api/findings", c.handleFindings)
 	mux.HandleFunc("GET /api/finding", c.handleFinding)
+	mux.HandleFunc("GET /api/cases", c.handleCases)
+	mux.HandleFunc("POST /api/cases", c.handleCaseCreate)
+	mux.HandleFunc("GET /api/case", c.handleCase)
+	mux.HandleFunc("POST /api/case/propose", c.handleCasePropose)
+	mux.HandleFunc("POST /api/case/verify", c.handleCaseVerify)
+	mux.HandleFunc("GET /api/case/export", c.handleCaseExport)
 	mux.HandleFunc("GET /api/endpoints", c.handleEndpoints)
 	mux.HandleFunc("GET /api/dependencies", c.handleDependencies)
 	mux.HandleFunc("GET /api/files", c.handleFiles)
@@ -552,23 +644,37 @@ func (c *Console) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sarif", c.handleSARIF)
 	mux.HandleFunc("GET /api/reachability", c.handleReachability)
 	mux.HandleFunc("GET /api/runtime-report", c.handleRuntimeReport)
-	mux.HandleFunc("GET /api/agent/runs", c.handleAgentRuns)
 	mux.HandleFunc("GET /api/agent/threads", c.handleAgentThreads)
+	mux.HandleFunc("GET /api/agent/conversations", c.handleAgentConversations)
+	mux.HandleFunc("GET /api/agent/conversations/detail", c.handleAgentConversationDetail)
 	mux.HandleFunc("GET /api/agent/chat/state", c.handleAgentChatState)
 	mux.HandleFunc("GET /api/agent/models", c.handleModelProfiles)
 	mux.HandleFunc("POST /api/agent/models", c.handleModelProfileUpsert)
-	mux.HandleFunc("POST /api/agent/models/default", c.handleModelProfileDefault)
 	mux.HandleFunc("POST /api/agent/models/remove", c.handleModelProfileRemove)
 	mux.HandleFunc("POST /api/agent/models/probe", c.handleModelProbe)
+	mux.HandleFunc("POST /api/agent/models/roles", c.handleModelRole)
+	mux.HandleFunc("POST /api/agent/models/key", c.handleModelKey)
+	mux.HandleFunc("GET /api/agent/runtime", c.handleAgentRuntime)
+	mux.HandleFunc("POST /api/agent/runtime", c.handleAgentRuntimeUpdate)
+	mux.HandleFunc("GET /api/agent/runtime/quick", c.handleAgentRuntimeQuick)
+	mux.HandleFunc("POST /api/agent/runtime/quick", c.handleAgentRuntimeQuickEnable)
+	mux.HandleFunc("GET /api/agent/model-channels", c.handleModelChannels)
+	mux.HandleFunc("GET /api/agent/model-channels/{provider}/models", c.handleModelChannelModels)
+	mux.HandleFunc("GET /api/agent/model-catalog/lookup", c.handleModelCatalogLookup)
 	mux.HandleFunc("POST /api/agent/chat", c.handleAgentChat)
-	mux.HandleFunc("POST /api/agent/chat/cancel", c.handleAgentChatCancel)
 	mux.HandleFunc("GET /api/agent/steps", c.handleAgentSteps)
+	mux.HandleFunc("POST /api/agent/orchestration", c.handleOrchestrationCreate)
+	mux.HandleFunc("GET /api/agent/orchestration", c.handleOrchestrationList)
+	mux.HandleFunc("GET /api/agent/orchestration/detail", c.handleOrchestrationDetail)
+	mux.HandleFunc("POST /api/agent/orchestration/steer", c.handleOrchestrationSteer)
+	mux.HandleFunc("POST /api/agent/orchestration/stop", c.handleOrchestrationStop)
 	mux.HandleFunc("GET /api/authz", c.handleAuthz)
+	mux.HandleFunc("GET /api/code-audit", c.handleCodeAudit)
+	mux.HandleFunc("GET /api/symbols", c.handleSymbols)
 	mux.HandleFunc("GET /api/model", c.handleModel)
 	mux.HandleFunc("GET /api/model/type", c.handleModelType)
 	mux.HandleFunc("GET /api/config", c.handleConfig)
 	mux.HandleFunc("POST /api/config", c.handleConfigUpdate)
-	mux.HandleFunc("POST /api/project", c.handleProjectImport)
 	mux.HandleFunc("GET /api/projects", c.handleProjects)
 	mux.HandleFunc("POST /api/projects", c.handleProjectCreate)
 	mux.HandleFunc("POST /api/projects/select", c.handleProjectSelect)
@@ -679,7 +785,15 @@ func requiresProject(path string) bool {
 	case path == "/api/session", path == "/api/health", path == "/api/metrics",
 		path == "/api/config", path == "/api/fs",
 		path == "/api/projects", path == "/api/projects/select", path == "/api/projects/forget",
-		path == "/api/agent/chat/state", path == "/api/agent/models":
+		path == "/api/cases", path == "/api/case", path == "/api/case/propose",
+		path == "/api/case/verify", path == "/api/case/export",
+		path == "/api/agent/chat/state", path == "/api/agent/models", path == "/api/agent/models/key",
+		path == "/api/agent/runtime", path == "/api/agent/runtime/quick":
+		return false
+	case strings.HasPrefix(path, "/api/agent/model-channels"),
+		strings.HasPrefix(path, "/api/agent/model-catalog/"):
+		// The catalog is static and needed before a project exists so the model
+		// settings page can render its channel picker.
 		return false
 	}
 	return true
@@ -835,10 +949,18 @@ func (c *Console) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "trailing session payload")
 		return
 	}
+	key := sessionClientKey(r)
+	if wait := c.sessionLimit.retryAfter(key); wait > 0 {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(wait.Seconds()+0.999)))
+		writeError(w, http.StatusTooManyRequests, "session_rate_limited", "too many rejected tokens; retry later")
+		return
+	}
 	if _, ok := c.tokens.lookup(request.Token); !ok {
+		c.sessionLimit.fail(key)
 		writeError(w, http.StatusUnauthorized, "unauthorized", "access token rejected")
 		return
 	}
+	c.sessionLimit.reset(key)
 	http.SetCookie(w, &http.Cookie{Name: SessionCookie, Value: request.Token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 8 * 60 * 60})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -871,10 +993,17 @@ type errorResponse struct {
 	SchemaVersion int    `json:"schema_version"`
 	Code          string `json:"code"`
 	Error         string `json:"error"`
+	Details       any    `json:"details,omitempty"`
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, errorResponse{SchemaVersion: SchemaVersion, Code: code, Error: message})
+}
+
+// writeErrorDetails adds a bounded machine-readable payload (for example the
+// roles that still reference a model entry). Existing errors stay unchanged.
+func writeErrorDetails(w http.ResponseWriter, status int, code, message string, details any) {
+	writeJSON(w, status, errorResponse{SchemaVersion: SchemaVersion, Code: code, Error: message, Details: details})
 }
 
 func queryInt(r *http.Request, name string, fallback, minimum, maximum int) (int, error) {

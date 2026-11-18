@@ -9,7 +9,11 @@ import (
 
 	"trident/internal/audit"
 	"trident/internal/authz"
+	"trident/internal/codescan"
 	"trident/internal/dataflow"
+	entrycap "trident/internal/entry"
+	"trident/internal/entrypoint"
+	"trident/internal/evidence"
 	"trident/internal/findings"
 	"trident/internal/project"
 	"trident/internal/sbom"
@@ -102,6 +106,8 @@ type analysisInfo struct {
 	ToolVersions           toolVersions   `json:"tool_versions"`
 	EndpointCoverage       audit.Coverage `json:"endpoint_coverage"`
 	SCACoverage            sca.Coverage   `json:"sca_coverage"`
+	ApplicationEntries     int            `json:"application_entries"`
+	ApplicationEntryLangs  int            `json:"application_entry_languages"`
 }
 
 type statusCounts struct {
@@ -160,6 +166,19 @@ type authzSummary struct {
 	Runtime     string `json:"runtime_status"`
 }
 
+// codeAuditSummary exposes the multi-language rule engine on the overview.
+// It is a separate report from the Java-centric unified findings model.
+type codeAuditSummary struct {
+	Available      bool   `json:"available"`
+	Reason         string `json:"reason,omitempty"`
+	Findings       int    `json:"findings"`
+	Languages      int    `json:"languages"`
+	Rules          int    `json:"rules"`
+	Routes         int    `json:"routes"`
+	RuleSetVersion string `json:"ruleset_version"`
+	Partial        bool   `json:"partial"`
+}
+
 type modelSummary struct {
 	Enabled       bool   `json:"enabled"`
 	Reason        string `json:"reason,omitempty"`
@@ -181,6 +200,7 @@ type overviewResponse struct {
 	Coverage      findings.Coverage `json:"coverage"`
 	Categories    []categorySummary `json:"categories"`
 	Authz         authzSummary      `json:"authz"`
+	Code          codeAuditSummary  `json:"code"`
 	Model         modelSummary      `json:"model"`
 	Severities    []severitySummary `json:"severities"`
 	Limitations   []string          `json:"limitations"`
@@ -198,6 +218,11 @@ func (c *Console) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	manifest := c.snapshotRef().Manifest()
+	entryReport, err := entrypoint.Inspect(r.Context(), c.snapshotRef())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "analysis_failed", err.Error())
+		return
+	}
 	counts := statusCounts{}
 	categories := make([]categorySummary, len(categoryOrder))
 	index := map[string]int{}
@@ -210,7 +235,15 @@ func (c *Console) handleOverview(w http.ResponseWriter, r *http.Request) {
 	for i := range severities {
 		severityIndex[severities[i].Key] = i
 	}
-	for _, finding := range state.findings.Findings {
+	// The overview must agree with the findings page: once the multi-language
+	// report has been computed it is merged into the same tallies. Before it
+	// runs, the frontend warms it in the background and refreshes this page.
+	all := state.findings.Findings
+	if cached, _, cachedOK := c.codeAuditCached(); cachedOK {
+		merged := codescan.AsFindingsReport(cached)
+		all = append(append([]findings.Finding(nil), all...), merged.Findings...)
+	}
+	for _, finding := range all {
 		counts.Total++
 		switch finding.Status {
 		case "static_confirmed":
@@ -228,6 +261,11 @@ func (c *Console) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 		position, ok := index[categoryKey(finding.Kind)]
 		if !ok {
+			// Merged code findings carry the rule category ("xss", "sql", ...)
+			// which maps directly onto the overview category keys.
+			position, ok = index[strings.ToLower(finding.Category)]
+		}
+		if !ok {
 			continue
 		}
 		category := &categories[position]
@@ -240,6 +278,22 @@ func (c *Console) handleOverview(w http.ResponseWriter, r *http.Request) {
 		default:
 			category.Inconclusive++
 		}
+	}
+	// The code audit is lazy: never start a 30+ second analysis just to render
+	// the overview. Once computed it is cached and reported normally.
+	codeSummary := codeAuditSummary{Available: false, Reason: "analysis_pending: 打开「代码审计」页后运行多语言分析"}
+	if cached, reason, ok := c.codeAuditCached(); ok {
+		codeSummary = codeAuditSummary{
+			Available:      true,
+			Findings:       len(cached.Findings),
+			Languages:      countScannedLanguages(cached.Languages),
+			Rules:          cached.Coverage.RulesActive,
+			Routes:         len(cached.Routes),
+			RuleSetVersion: cached.RuleSetVersion,
+			Partial:        cached.Partial,
+		}
+	} else if reason != "" {
+		codeSummary.Reason = reason
 	}
 	report := overviewResponse{
 		SchemaVersion: SchemaVersion,
@@ -260,6 +314,8 @@ func (c *Console) handleOverview(w http.ResponseWriter, r *http.Request) {
 			ToolVersions:           toolVersions{Findings: findings.ToolVersion, SCA: sca.ToolVersion, Audit: audit.ToolVersion, Dataflow: dataflow.ToolVersion},
 			EndpointCoverage:       state.audit.Coverage,
 			SCACoverage:            state.sca.Coverage,
+			ApplicationEntries:     len(entryReport.Entries),
+			ApplicationEntryLangs:  countEntryLanguages(entryReport.Entries),
 		},
 		Counts:     counts,
 		Coverage:   state.findings.Coverage,
@@ -276,6 +332,7 @@ func (c *Console) handleOverview(w http.ResponseWriter, r *http.Request) {
 			Partial:     state.authz.Partial,
 			Runtime:     state.authz.RuntimeStatus,
 		},
+		Code:        codeSummary,
 		Limitations: state.findings.Limitations,
 	}
 	if state.model != nil {
@@ -318,9 +375,28 @@ type findingSummary struct {
 	Title           string                 `json:"title"`
 	Endpoint        *findings.EndpointRef  `json:"endpoint,omitempty"`
 	Component       *findings.ComponentRef `json:"component,omitempty"`
+	Location        string                 `json:"location,omitempty"`
 	EvidenceCount   int                    `json:"evidence_count"`
 	HypothesisCount int                    `json:"hypothesis_count"`
 	Limitations     []string               `json:"limitations"`
+}
+
+// locationFor gives endpoint-less findings (merged multi-language rules) a
+// stable file:line column so the findings table stays actionable.
+func locationFor(finding findings.Finding) string {
+	if finding.Endpoint != nil || finding.Component != nil {
+		return ""
+	}
+	for _, item := range finding.Evidence {
+		if item.Kind == "sink" && item.File != "" {
+			line := item.StartLine
+			if line < 1 {
+				line = item.EndLine
+			}
+			return fmt.Sprintf("%s:%d", item.File, line)
+		}
+	}
+	return ""
 }
 
 type findingsResponse struct {
@@ -379,8 +455,17 @@ func (c *Console) handleFindings(w http.ResponseWriter, r *http.Request) {
 	for i := range severities {
 		severityIndex[severities[i].Key] = i
 	}
-	matched := make([]findings.Finding, 0, len(state.findings.Findings))
-	for _, finding := range state.findings.Findings {
+	// The findings page is the user's primary evidence view. Non-Java source
+	// would silently read as "no findings" if the multi-language rule report
+	// were only visible on its own page, so it is merged here. The lazy
+	// codeAudit call may take tens of seconds on first use for a large project.
+	all := state.findings.Findings
+	if codeReport, _, codeErr := c.codeAudit(r.Context()); codeErr == nil {
+		merged := codescan.AsFindingsReport(codeReport)
+		all = append(append([]findings.Finding(nil), all...), merged.Findings...)
+	}
+	matched := make([]findings.Finding, 0, len(all))
+	for _, finding := range all {
 		counts.Total++
 		switch finding.Status {
 		case "static_confirmed":
@@ -418,6 +503,7 @@ func (c *Console) handleFindings(w http.ResponseWriter, r *http.Request) {
 				ID: finding.ID, Kind: finding.Kind, Category: finding.Category, CWE: finding.CWE,
 				Severity: finding.Severity, Status: finding.Status, RuntimeStatus: finding.RuntimeStatus,
 				Title: finding.Title, Endpoint: finding.Endpoint, Component: finding.Component,
+				Location:      locationFor(finding),
 				EvidenceCount: len(finding.Evidence), HypothesisCount: len(finding.Hypotheses),
 				Limitations: finding.Limitations,
 			})
@@ -459,6 +545,14 @@ func (c *Console) handleFinding(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if codeReport, _, codeErr := c.codeAudit(r.Context()); codeErr == nil {
+		for _, finding := range codescan.AsFindingsReport(codeReport).Findings {
+			if finding.ID == id {
+				writeJSON(w, http.StatusOK, finding)
+				return
+			}
+		}
+	}
 	writeError(w, http.StatusNotFound, "not_found", "finding not present in this snapshot report")
 }
 
@@ -474,16 +568,24 @@ type endpointAuthz struct {
 }
 
 type endpointsResponse struct {
-	SchemaVersion int                      `json:"schema_version"`
-	Total         int                      `json:"total"`
-	Items         []audit.Endpoint         `json:"items"`
-	Authz         map[string]endpointAuthz `json:"authz"`
-	AuthzCounts   authzCounts              `json:"authz_counts"`
-	Partial       bool                     `json:"partial"`
-	Coverage      audit.Coverage           `json:"coverage"`
-	Limitations   []string                 `json:"limitations"`
-	Limit         int                      `json:"limit"`
-	Offset        int                      `json:"offset"`
+	SchemaVersion               int                         `json:"schema_version"`
+	Total                       int                         `json:"total"`
+	Items                       []audit.Endpoint            `json:"items"`
+	Authz                       map[string]endpointAuthz    `json:"authz"`
+	AuthzCounts                 authzCounts                 `json:"authz_counts"`
+	Partial                     bool                        `json:"partial"`
+	Coverage                    audit.Coverage              `json:"coverage"`
+	Limitations                 []string                    `json:"limitations"`
+	ApplicationEntries          []entrypoint.Entry          `json:"application_entries"`
+	ApplicationEntriesPartial   bool                        `json:"application_entries_partial"`
+	ApplicationEntryLimitations []string                    `json:"application_entry_limitations"`
+	Entries                     []evidence.Entry            `json:"entries"`
+	EntryTotal                  int                         `json:"entry_total"`
+	EntryCoverage               []evidence.LanguageCoverage `json:"entry_coverage"`
+	EntryPartial                bool                        `json:"entry_partial"`
+	EntryLimitations            []string                    `json:"entry_limitations"`
+	Limit                       int                         `json:"limit"`
+	Offset                      int                         `json:"offset"`
 }
 
 func (c *Console) handleEndpoints(w http.ResponseWriter, r *http.Request) {
@@ -546,7 +648,64 @@ func (c *Console) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 		}
 		matched = append(matched, endpoint)
 	}
-	response := endpointsResponse{SchemaVersion: SchemaVersion, Total: len(matched), Items: []audit.Endpoint{}, Authz: map[string]endpointAuthz{}, AuthzCounts: counts, Partial: state.audit.Partial, Coverage: state.audit.Coverage, Limitations: state.audit.Limitations, Limit: limit, Offset: offset}
+	applicationReport, err := entrypoint.Inspect(r.Context(), c.snapshotRef())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "analysis_failed", err.Error())
+		return
+	}
+	applicationItems := make([]entrypoint.Entry, 0, len(applicationReport.Entries))
+	for _, entryItem := range applicationReport.Entries {
+		if needle != "" {
+			fields := []string{entryItem.Path, entryItem.Language, entryItem.Framework, entryItem.Reason}
+			hit := false
+			for _, field := range fields {
+				if strings.Contains(strings.ToLower(field), needle) {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				continue
+			}
+		}
+		applicationItems = append(applicationItems, entryItem)
+	}
+	var codeAudit *codescan.Report
+	if cached, _, ok := c.codeAuditCached(); ok {
+		codeAudit = &cached
+	}
+	unified, err := entrycap.NewRegistry().Build(r.Context(), entrycap.Input{
+		Snapshot:           c.snapshotRef(),
+		JavaAudit:          &state.audit,
+		Authz:              &state.authz,
+		CodeAudit:          codeAudit,
+		ApplicationEntries: &applicationReport,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "analysis_failed", err.Error())
+		return
+	}
+	unifiedItems := filterEntryEvidence(unified.Entries, needle, decisionFilter)
+	response := endpointsResponse{
+		SchemaVersion:               SchemaVersion,
+		Total:                       len(matched),
+		Items:                       []audit.Endpoint{},
+		Authz:                       map[string]endpointAuthz{},
+		AuthzCounts:                 counts,
+		Partial:                     state.audit.Partial,
+		Coverage:                    state.audit.Coverage,
+		Limitations:                 state.audit.Limitations,
+		ApplicationEntries:          applicationItems,
+		ApplicationEntriesPartial:   applicationReport.Partial,
+		ApplicationEntryLimitations: applicationReport.Limitations,
+		Entries:                     unifiedItems,
+		EntryTotal:                  len(unifiedItems),
+		EntryCoverage:               unified.Coverage,
+		EntryPartial:                unified.Partial,
+		EntryLimitations:            unified.Limitations,
+		Limit:                       limit,
+		Offset:                      offset,
+	}
 	if offset < len(matched) {
 		end := offset + limit
 		if end > len(matched) {
@@ -566,6 +725,46 @@ func (c *Console) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func countEntryLanguages(entries []entrypoint.Entry) int {
+	languages := map[string]struct{}{}
+	for _, entry := range entries {
+		if entry.Language != "" {
+			languages[entry.Language] = struct{}{}
+		}
+	}
+	return len(languages)
+}
+
+func filterEntryEvidence(items []evidence.Entry, needle, decisionFilter string) []evidence.Entry {
+	filtered := make([]evidence.Entry, 0, len(items))
+	for _, item := range items {
+		if needle != "" {
+			fields := []string{
+				item.Language, item.Framework, item.Kind, item.Source,
+				item.Path, item.Symbol, item.File, item.Class, item.Method,
+				strings.Join(item.HTTPMethods, ","),
+			}
+			hit := false
+			for _, field := range fields {
+				if strings.Contains(strings.ToLower(field), needle) {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				continue
+			}
+		}
+		if decisionFilter != "" && decisionFilter != "all" {
+			if item.Authz == nil || item.Authz.Decision != decisionFilter {
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
 }
 
 type dependenciesResponse struct {

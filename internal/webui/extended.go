@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -53,11 +52,6 @@ func (c *Console) handleSARIF(w http.ResponseWriter, r *http.Request) {
 // and dropped whenever the configuration or the snapshot changes.
 func (c *Console) handleReachability(w http.ResponseWriter, r *http.Request) {
 	cfg := c.currentConfig()
-	if cfg.PackageMapPath == "" {
-		writeError(w, http.StatusPreconditionFailed, "package_map_missing",
-			"未配置 package map：在设置页填写依赖到包前缀的映射后即可启用可达性视图")
-		return
-	}
 	c.reachMu.Lock()
 	defer c.reachMu.Unlock()
 	if c.reachState == nil {
@@ -97,26 +91,11 @@ func (c *Console) handleRuntimeReport(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, report)
 }
 
-// handleAgentRuns lists recent Agent runs from the observation database.
-func (c *Console) handleAgentRuns(w http.ResponseWriter, _ *http.Request) {
-	if c.agentStore == nil {
-		writeError(w, http.StatusPreconditionFailed, "agent_database_missing",
-			"start the console with --agent-dsn <readonly-dsn> to observe Agent runs")
-		return
-	}
-	runs, err := c.agentStore.ListAgentRunsReadOnly(context.Background(), 100)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "agent_query_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"total": len(runs), "runs": runs})
-}
-
 // handleAgentSteps serves one run with its step timeline.
 func (c *Console) handleAgentSteps(w http.ResponseWriter, r *http.Request) {
 	if c.agentStore == nil {
 		writeError(w, http.StatusPreconditionFailed, "agent_database_missing",
-			"start the console with --agent-dsn <readonly-dsn> to observe Agent runs")
+			"未连接 Agent 会话库：在「设置 → Agent 与编排」填写连接串并保存即可立即接入，无需重启")
 		return
 	}
 	runID, err := strconv.ParseInt(r.URL.Query().Get("run_id"), 10, 64)
@@ -140,5 +119,8 @@ func (c *Console) handleAgentSteps(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "agent_query_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"run": run, "steps": steps})
+	// Usage is derived from committed provider usage, never invented. It is
+	// returned alongside the timeline so the console can show a bounded cost
+	// estimate without a second round trip.
+	writeJSON(w, http.StatusOK, map[string]any{"run": run, "steps": steps, "usage": c.runUsageOf(run, steps)})
 }

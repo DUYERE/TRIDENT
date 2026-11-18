@@ -278,8 +278,20 @@ func TestConsoleOverviewAndFindings(t *testing.T) {
 	if err = json.Unmarshal(body, &list); err != nil {
 		t.Fatal(err)
 	}
-	if list.Filtered != 1 || list.Items[0].Status != "static_confirmed" || list.Items[0].Kind != "sql_injection" {
+	// The findings page merges the multi-language rule report; this fixture's
+	// App.java triggers one code finding besides the dataflow one.
+	if list.Filtered != 2 {
 		t.Fatalf("confirmed list: %+v", list)
+	}
+	seenKinds := map[string]bool{}
+	for _, item := range list.Items {
+		if item.Status != "static_confirmed" {
+			t.Fatalf("non-confirmed item in confirmed list: %+v", item)
+		}
+		seenKinds[item.Kind] = true
+	}
+	if !seenKinds["sql_injection"] || !seenKinds["java.sql.statement"] {
+		t.Fatalf("dataflow/code merge incomplete: %+v", list)
 	}
 	response, body = c.do(http.MethodGet, "/api/findings?category=dependency", true, true)
 	if response.StatusCode != http.StatusOK {
@@ -336,6 +348,18 @@ func TestConsoleEndpointsAndDependencies(t *testing.T) {
 	}
 	if endpoints.Total != 1 || endpoints.Items[0].Path != "/users" || endpoints.Items[0].Parameters[0].BindingName != "name" {
 		t.Fatalf("endpoint payload: %+v", endpoints)
+	}
+	if endpoints.EntryTotal < 1 || len(endpoints.Entries) == 0 {
+		t.Fatalf("unified endpoint evidence missing: %+v", endpoints)
+	}
+	foundAnnotation := false
+	for _, item := range endpoints.Entries {
+		if item.Kind == "annotation_route" && item.Path == "/users" {
+			foundAnnotation = true
+		}
+	}
+	if !foundAnnotation {
+		t.Fatalf("unified Java annotation missing: %+v", endpoints.Entries)
 	}
 
 	response, body = c.do(http.MethodGet, "/api/dependencies", true, true)

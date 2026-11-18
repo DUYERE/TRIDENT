@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"trident/internal/authz"
+	"trident/internal/codescan"
 	"trident/internal/javaast"
 )
 
@@ -19,21 +20,22 @@ type authzCounts struct {
 }
 
 type authzResponse struct {
-	SchemaVersion int                      `json:"schema_version"`
-	ToolVersion   string                   `json:"tool_version"`
-	SnapshotHash  string                   `json:"snapshot_hash"`
-	AnalysisKind  string                   `json:"analysis_kind"`
-	Partial       bool                     `json:"partial"`
-	Total         int                      `json:"total"`
-	Counts        authzCounts              `json:"counts"`
-	Endpoints     []authz.EndpointDecision `json:"endpoints"`
-	Controls      []authz.Control          `json:"controls"`
-	Chains        []authz.FilterChain      `json:"chains"`
-	Coverage      authz.Coverage           `json:"coverage"`
-	Limitations   []string                 `json:"limitations"`
-	RuntimeStatus string                   `json:"runtime_status"`
-	Limit         int                      `json:"limit"`
-	Offset        int                      `json:"offset"`
+	SchemaVersion    int                      `json:"schema_version"`
+	ToolVersion      string                   `json:"tool_version"`
+	SnapshotHash     string                   `json:"snapshot_hash"`
+	AnalysisKind     string                   `json:"analysis_kind"`
+	Partial          bool                     `json:"partial"`
+	Total            int                      `json:"total"`
+	Counts           authzCounts              `json:"counts"`
+	Endpoints        []authz.EndpointDecision `json:"endpoints"`
+	LanguageAdapters []authz.LanguageAdapter  `json:"language_adapters"`
+	Controls         []authz.Control          `json:"controls"`
+	Chains           []authz.FilterChain      `json:"chains"`
+	Coverage         authz.Coverage           `json:"coverage"`
+	Limitations      []string                 `json:"limitations"`
+	RuntimeStatus    string                   `json:"runtime_status"`
+	Limit            int                      `json:"limit"`
+	Offset           int                      `json:"offset"`
 }
 
 func (c *Console) handleAuthz(w http.ResponseWriter, r *http.Request) {
@@ -84,21 +86,22 @@ func (c *Console) handleAuthz(w http.ResponseWriter, r *http.Request) {
 	})
 	page := pageSlice(matched, offset, limit)
 	writeJSON(w, http.StatusOK, authzResponse{
-		SchemaVersion: report.SchemaVersion,
-		ToolVersion:   report.ToolVersion,
-		SnapshotHash:  report.SnapshotHash,
-		AnalysisKind:  report.AnalysisKind,
-		Partial:       report.Partial,
-		Total:         len(matched),
-		Counts:        counts,
-		Endpoints:     page,
-		Controls:      report.Controls,
-		Chains:        report.Chains,
-		Coverage:      report.Coverage,
-		Limitations:   report.Limitations,
-		RuntimeStatus: report.RuntimeStatus,
-		Limit:         limit,
-		Offset:        offset,
+		SchemaVersion:    report.SchemaVersion,
+		ToolVersion:      report.ToolVersion,
+		SnapshotHash:     report.SnapshotHash,
+		AnalysisKind:     report.AnalysisKind,
+		Partial:          report.Partial,
+		Total:            len(matched),
+		Counts:           counts,
+		Endpoints:        page,
+		LanguageAdapters: report.LanguageAdapters,
+		Controls:         report.Controls,
+		Chains:           report.Chains,
+		Coverage:         report.Coverage,
+		Limitations:      report.Limitations,
+		RuntimeStatus:    report.RuntimeStatus,
+		Limit:            limit,
+		Offset:           offset,
 	})
 }
 
@@ -131,20 +134,26 @@ type modelTypeSummary struct {
 }
 
 type modelResponse struct {
-	SchemaVersion int                `json:"schema_version"`
-	Enabled       bool               `json:"enabled"`
-	Reason        string             `json:"reason,omitempty"`
-	ToolVersion   string             `json:"tool_version,omitempty"`
-	SnapshotHash  string             `json:"snapshot_hash"`
-	AnalysisKind  string             `json:"analysis_kind,omitempty"`
-	Partial       bool               `json:"partial"`
-	Total         int                `json:"total"`
-	Types         []modelTypeSummary `json:"types"`
-	Coverage      *javaast.Coverage  `json:"coverage,omitempty"`
-	Limitations   []string           `json:"limitations,omitempty"`
-	RuntimeStatus string             `json:"runtime_status"`
-	Limit         int                `json:"limit"`
-	Offset        int                `json:"offset"`
+	SchemaVersion   int                        `json:"schema_version"`
+	Enabled         bool                       `json:"enabled"`
+	Reason          string                     `json:"reason,omitempty"`
+	ToolVersion     string                     `json:"tool_version,omitempty"`
+	SnapshotHash    string                     `json:"snapshot_hash"`
+	AnalysisKind    string                     `json:"analysis_kind,omitempty"`
+	Partial         bool                       `json:"partial"`
+	Total           int                        `json:"total"`
+	Types           []modelTypeSummary         `json:"types"`
+	Coverage        *javaast.Coverage          `json:"coverage,omitempty"`
+	Limitations     []string                   `json:"limitations,omitempty"`
+	RuntimeStatus   string                     `json:"runtime_status"`
+	Limit           int                        `json:"limit"`
+	Offset          int                        `json:"offset"`
+	Symbols         []codescan.Symbol          `json:"symbols"`
+	Calls           []codescan.Call            `json:"calls"`
+	Unresolved      []codescan.Unresolved      `json:"unresolved"`
+	SymbolLanguages []codescan.LanguageSummary `json:"symbol_languages"`
+	SymbolPartial   bool                       `json:"symbol_partial"`
+	SymbolReason    string                     `json:"symbol_reason,omitempty"`
 }
 
 func (c *Console) handleModel(w http.ResponseWriter, r *http.Request) {
@@ -154,6 +163,7 @@ func (c *Console) handleModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if state.model == nil {
+		symbols, calls, unresolved, symbolLanguages, symbolPartial, symbolReason := c.cachedSymbolPayload()
 		writeJSON(w, http.StatusOK, modelResponse{
 			SchemaVersion: SchemaVersion,
 			Enabled:       false,
@@ -161,6 +171,8 @@ func (c *Console) handleModel(w http.ResponseWriter, r *http.Request) {
 			SnapshotHash:  c.snapshotRef().Hash(),
 			Types:         []modelTypeSummary{},
 			RuntimeStatus: "not_run",
+			Symbols:       symbols, Calls: calls, Unresolved: unresolved,
+			SymbolLanguages: symbolLanguages, SymbolPartial: symbolPartial, SymbolReason: symbolReason,
 		})
 		return
 	}
@@ -188,20 +200,27 @@ func (c *Console) handleModel(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].FQN < all[j].FQN })
 	coverage := state.model.Coverage
+	symbols, calls, unresolved, symbolLanguages, symbolPartial, symbolReason := c.cachedSymbolPayload()
 	writeJSON(w, http.StatusOK, modelResponse{
-		SchemaVersion: state.model.SchemaVersion,
-		Enabled:       true,
-		ToolVersion:   state.model.ToolVersion,
-		SnapshotHash:  state.model.SnapshotHash,
-		AnalysisKind:  state.model.AnalysisKind,
-		Partial:       state.model.Partial,
-		Total:         len(all),
-		Types:         pageSlice(all, offset, limit),
-		Coverage:      &coverage,
-		Limitations:   state.model.Limitations,
-		RuntimeStatus: state.model.Coverage.RuntimeStatus,
-		Limit:         limit,
-		Offset:        offset,
+		SchemaVersion:   state.model.SchemaVersion,
+		Enabled:         true,
+		ToolVersion:     state.model.ToolVersion,
+		SnapshotHash:    state.model.SnapshotHash,
+		AnalysisKind:    state.model.AnalysisKind,
+		Partial:         state.model.Partial,
+		Total:           len(all),
+		Types:           pageSlice(all, offset, limit),
+		Coverage:        &coverage,
+		Limitations:     state.model.Limitations,
+		RuntimeStatus:   state.model.Coverage.RuntimeStatus,
+		Limit:           limit,
+		Offset:          offset,
+		Symbols:         symbols,
+		Calls:           calls,
+		Unresolved:      unresolved,
+		SymbolLanguages: symbolLanguages,
+		SymbolPartial:   symbolPartial,
+		SymbolReason:    symbolReason,
 	})
 }
 
@@ -264,6 +283,21 @@ func capEdges(edges []javaast.CallEdge, limit int) []javaast.CallEdge {
 		return edges
 	}
 	return edges[:limit]
+}
+
+// cachedSymbolPayload exposes only an already computed multi-language report.
+// It never starts code audit from the Java model page: opening the model page
+// must not silently launch a second heavy analysis.
+func (c *Console) cachedSymbolPayload() ([]codescan.Symbol, []codescan.Call, []codescan.Unresolved, []codescan.LanguageSummary, bool, string) {
+	report, reason, ok := c.codeAuditCached()
+	if !ok {
+		if reason == "" {
+			reason = "analysis_pending: 打开「代码审计」页运行多语言分析后，这里会显示符号索引"
+		}
+		return []codescan.Symbol{}, []codescan.Call{}, []codescan.Unresolved{}, []codescan.LanguageSummary{}, false, reason
+	}
+	return capSymbols(report.Symbols), capCalls(report.Calls), capUnresolved(report.Unresolved),
+		append([]codescan.LanguageSummary(nil), report.Languages...), report.SymbolPartial, ""
 }
 
 func pageSlice[T any](items []T, offset, limit int) []T {
