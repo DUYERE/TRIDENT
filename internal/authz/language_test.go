@@ -97,3 +97,24 @@ func TestLanguageAuthAdaptersFixture(t *testing.T) {
 		}
 	}
 }
+
+// A plain class with public methods is not a route. Treating it as one floods
+// /api/authz with "unprotected" model files that are never HTTP entries.
+func TestPHPRoutePatternSkipsPlainClassMethods(t *testing.T) {
+	for _, content := range []string{
+		"<?php\nclass Admin extends Model {\n    public function index() { }\n}\n",
+		"<?php\nclass Admin {\n    public function save($data) { return $data; }\n}\n",
+	} {
+		if languageHasRoute("php", content) {
+			t.Fatalf("plain class method treated as a route: %q", content)
+		}
+	}
+	for _, content := range []string{
+		"<?php\nRoute::rule('reports/archive', 'Reports/archive');\n",
+		"<?php\nreturn $this->fetch('reports/archive');\n",
+	} {
+		if !languageHasRoute("php", content) {
+			t.Fatalf("route declaration not recognized: %q", content)
+		}
+	}
+}

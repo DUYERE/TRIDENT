@@ -39,3 +39,17 @@ func TestThinkPHPConventionCandidatesAreSeparate(t *testing.T) {
 		t.Fatalf("convention routes = %+v", report.Routes)
 	}
 }
+
+func TestThinkPHPDynamicRouteWithoutSnapshotRowsIsExplicit(t *testing.T) {
+	report := &Report{Routes: []Route{
+		{Language: "php", Path: "<dynamic>", PathStatus: "dynamic_unresolved", Reason: "route_path_not_literal", Symbol: `\think\Route.rule`},
+		{Language: "php", Path: "<dynamic>", PathStatus: "dynamic_unresolved", Reason: "route_path_not_literal", Symbol: `route(`},
+	}}
+	annotateURLConfigAbsent(report)
+	if report.Routes[0].Reason != "database_urlconfig_absent" {
+		t.Fatalf("thinkphp reason = %q", report.Routes[0].Reason)
+	}
+	if report.Routes[1].Reason != "route_path_not_literal" {
+		t.Fatalf("plain route reason changed: %q", report.Routes[1].Reason)
+	}
+}

@@ -48,7 +48,7 @@ var languagePatterns = []languagePattern{
 }
 
 var languageRoutePatterns = []languageRoutePattern{
-	{language: "php", re: regexp.MustCompile(`(?i)(Route::|route\(|->rule\(|\$this->fetch|public\s+function\s+[A-Za-z_][A-Za-z0-9_]*\s*\()`)},
+	{language: "php", re: regexp.MustCompile(`(?i)(Route::|route\(|->rule\(|\$this->fetch)`)},
 	{language: "csharp", re: regexp.MustCompile(`(?i)(\[(?:HttpGet|HttpPost|Route)|Map(?:Get|Post)|AddEndpoint|ControllerBase|ApiController)`)},
 	{language: "python", re: regexp.MustCompile(`(?i)(@(?:app|router)\.(get|post|route)|urlpatterns|path\s*\(|add_url_rule)`)},
 	{language: "javascript", re: regexp.MustCompile(`(?i)(router\.(get|post|put|delete)|app\.(get|post|put|delete)|@(Get|Post|Controller)|defineEventHandler)`)},

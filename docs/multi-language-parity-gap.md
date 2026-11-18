@@ -74,7 +74,7 @@
   - `public/index.php`，`php`，`ThinkPHP`，证据行 23，`application_entry`
   - `public/router.php`，`php`，`ThinkPHP`，证据行 16，`application_entry`
   - `public/ipapi.php`，`php`，`request_script`，证据行 263
-- PHP 请求脚本鉴权（2026-11-18）：`public/ipapi.php:263` 返回 `unprotected`，`reason=php_script_no_recognized_guard_before_request_access`；应用入口 `index.php`/`router.php` 不附着脚本鉴权，权限保持“未评估”。`/api/authz` 只统计 Java 端点决策，脚本决策在 `language_adapters` 与统一入口 `authz` 字段。
+- PHP 请求脚本鉴权（2026-11-18）：`public/ipapi.php:263` 返回 `unprotected`，`reason=php_script_no_recognized_guard_before_request_access`；应用入口 `index.php`/`router.php` 不附着脚本鉴权，权限保持“未评估”。`/api/authz` 顶层 `counts` 只统计 Java 端点决策；非 Java 入口决策在 `language_adapters`（带 `entry_kind`）与 `language_counts`，未匹配入口的文件级观测单列在 `file_evidence`。
 - 概览：`application_entries=2`、`application_entry_languages=1`；入口页不再只显示空表，而是明确“这是文件级候选，不是已部署 URL”。
 
 ## 5. 完善顺序
@@ -232,7 +232,7 @@
 
 ### C3 多语言鉴权适配
 - 新增 PHP / C# / Python / JS / TS / Go 文件级词法适配器；决策为 `protected | public | unprotected | unknown`。
-- 语言适配证据与 Java 端点决策分开返回，Web 权限页新增“多语言控制适配”卡片；文件级证据不证明端点级鉴权。
+- 语言适配证据与 Java 端点决策分开返回，Web 权限页新增“多语言控制适配”卡片；文件级证据不证明端点级鉴权。2026-11-18 收口后：适配器必须绑定统一入口 `entry_kind` 才计入入口统计，未附着到入口的观测进入 `file_evidence`，顶部另有 7 语言 `language_counts`。
 
 ### C4 Composer / NuGet / pip / npm / Go SCA 与 SBOM
 - 支持 `package.json` / `package-lock.json`、`composer.json` / `composer.lock`、`requirements*.txt` / `pyproject.toml` / `Pipfile`、`go.mod`、`*.csproj` / `packages.config` / `packages.lock.json`。

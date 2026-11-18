@@ -3,10 +3,14 @@ package webui
 import (
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"trident/internal/authz"
 	"trident/internal/codescan"
+	entrycap "trident/internal/entry"
+	"trident/internal/entrypoint"
+	"trident/internal/evidence"
 	"trident/internal/javaast"
 )
 
@@ -19,23 +23,42 @@ type authzCounts struct {
 	Unknown     int `json:"unknown"`
 }
 
+// authzLanguageCount keeps the per-language distribution separate from the
+// Java endpoint counts. FileEvidence counts observations that are not attached
+// to any entry, so a reviewer can tell "no route evidence" apart from "no
+// control on an entry".
+type authzLanguageCount struct {
+	Language     string `json:"language"`
+	Protected    int    `json:"protected"`
+	Public       int    `json:"public"`
+	Unprotected  int    `json:"unprotected"`
+	Unknown      int    `json:"unknown"`
+	Total        int    `json:"total"`
+	FileEvidence int    `json:"file_evidence"`
+}
+
+var authzLanguageOrder = []string{"java", "php", "csharp", "python", "javascript", "typescript", "go"}
+
 type authzResponse struct {
-	SchemaVersion    int                      `json:"schema_version"`
-	ToolVersion      string                   `json:"tool_version"`
-	SnapshotHash     string                   `json:"snapshot_hash"`
-	AnalysisKind     string                   `json:"analysis_kind"`
-	Partial          bool                     `json:"partial"`
-	Total            int                      `json:"total"`
-	Counts           authzCounts              `json:"counts"`
-	Endpoints        []authz.EndpointDecision `json:"endpoints"`
-	LanguageAdapters []authz.LanguageAdapter  `json:"language_adapters"`
-	Controls         []authz.Control          `json:"controls"`
-	Chains           []authz.FilterChain      `json:"chains"`
-	Coverage         authz.Coverage           `json:"coverage"`
-	Limitations      []string                 `json:"limitations"`
-	RuntimeStatus    string                   `json:"runtime_status"`
-	Limit            int                      `json:"limit"`
-	Offset           int                      `json:"offset"`
+	SchemaVersion     int                      `json:"schema_version"`
+	ToolVersion       string                   `json:"tool_version"`
+	SnapshotHash      string                   `json:"snapshot_hash"`
+	AnalysisKind      string                   `json:"analysis_kind"`
+	Partial           bool                     `json:"partial"`
+	Total             int                      `json:"total"`
+	Counts            authzCounts              `json:"counts"`
+	Endpoints         []authz.EndpointDecision `json:"endpoints"`
+	LanguageAdapters  []authz.LanguageAdapter  `json:"language_adapters"`
+	FileEvidence      []authz.LanguageAdapter  `json:"file_evidence"`
+	FileEvidenceTotal int                      `json:"file_evidence_total"`
+	LanguageCounts    []authzLanguageCount     `json:"language_counts"`
+	Controls          []authz.Control          `json:"controls"`
+	Chains            []authz.FilterChain      `json:"chains"`
+	Coverage          authz.Coverage           `json:"coverage"`
+	Limitations       []string                 `json:"limitations"`
+	RuntimeStatus     string                   `json:"runtime_status"`
+	Limit             int                      `json:"limit"`
+	Offset            int                      `json:"offset"`
 }
 
 func (c *Console) handleAuthz(w http.ResponseWriter, r *http.Request) {
@@ -85,24 +108,156 @@ func (c *Console) handleAuthz(w http.ResponseWriter, r *http.Request) {
 		return matched[i].Path < matched[j].Path
 	})
 	page := pageSlice(matched, offset, limit)
-	writeJSON(w, http.StatusOK, authzResponse{
-		SchemaVersion:    report.SchemaVersion,
-		ToolVersion:      report.ToolVersion,
-		SnapshotHash:     report.SnapshotHash,
-		AnalysisKind:     report.AnalysisKind,
-		Partial:          report.Partial,
-		Total:            len(matched),
-		Counts:           counts,
-		Endpoints:        page,
-		LanguageAdapters: report.LanguageAdapters,
-		Controls:         report.Controls,
-		Chains:           report.Chains,
-		Coverage:         report.Coverage,
-		Limitations:      report.Limitations,
-		RuntimeStatus:    report.RuntimeStatus,
-		Limit:            limit,
-		Offset:           offset,
+	applicationReport, err := entrypoint.Inspect(r.Context(), c.snapshotRef())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "analysis_failed", err.Error())
+		return
+	}
+	var codeAudit *codescan.Report
+	if codeReport, _, codeErr := c.codeAudit(r.Context()); codeErr == nil {
+		codeAudit = &codeReport
+	}
+	unified, err := entrycap.NewRegistry().Build(r.Context(), entrycap.Input{
+		Snapshot:           c.snapshotRef(),
+		JavaAudit:          &state.audit,
+		Authz:              &report,
+		CodeAudit:          codeAudit,
+		ApplicationEntries: &applicationReport,
 	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "analysis_failed", err.Error())
+		return
+	}
+	attached, fileEvidence := splitLanguageAdapters(report.LanguageAdapters, unified.Entries)
+	languageCounts := buildLanguageCounts(attached, fileEvidence, counts)
+	writeJSON(w, http.StatusOK, authzResponse{
+		SchemaVersion:     report.SchemaVersion,
+		ToolVersion:       report.ToolVersion,
+		SnapshotHash:      report.SnapshotHash,
+		AnalysisKind:      report.AnalysisKind,
+		Partial:           report.Partial,
+		Total:             len(matched),
+		Counts:            counts,
+		Endpoints:         page,
+		LanguageAdapters:  attached,
+		FileEvidence:      fileEvidence,
+		FileEvidenceTotal: len(fileEvidence),
+		LanguageCounts:    languageCounts,
+		Controls:          report.Controls,
+		Chains:            report.Chains,
+		Coverage:          report.Coverage,
+		Limitations:       report.Limitations,
+		RuntimeStatus:     report.RuntimeStatus,
+		Limit:             limit,
+		Offset:            offset,
+	})
+}
+
+// splitLanguageAdapters binds language evidence to the unified entry list.
+// A file-scope adapter is attached only when that file is an entry; when a
+// request-script decision already covers the file, the coarse file-scope
+// observation is dropped to avoid double counting.
+func splitLanguageAdapters(adapters []authz.LanguageAdapter, entries []evidence.Entry) ([]authz.LanguageAdapter, []authz.LanguageAdapter) {
+	if len(adapters) == 0 {
+		return nil, nil
+	}
+	requestScriptKind := map[string]string{}
+	requestScriptFile := map[string]bool{}
+	fileKind := map[string]string{}
+	for _, item := range entries {
+		switch item.Kind {
+		case evidence.KindRequestScript:
+			requestScriptKind[entryFileLine(item.File, item.StartLine)] = item.Kind
+			requestScriptFile[item.File] = true
+		case evidence.KindRouteDeclaration:
+			fileKind[item.File] = item.Kind
+		case evidence.KindApplicationEntry:
+			if _, ok := fileKind[item.File]; !ok {
+				fileKind[item.File] = item.Kind
+			}
+		}
+	}
+	attached := make([]authz.LanguageAdapter, 0, len(adapters))
+	fileEvidence := make([]authz.LanguageAdapter, 0, len(adapters))
+	for _, adapter := range adapters {
+		out := adapter
+		out.EntryKind = ""
+		switch {
+		case adapter.Scope == "request_script":
+			out.EntryKind = requestScriptKind[entryFileLine(adapter.File, adapter.Line)]
+		case requestScriptFile[adapter.File]:
+			continue
+		default:
+			out.EntryKind = fileKind[adapter.File]
+		}
+		if out.EntryKind == "" {
+			fileEvidence = append(fileEvidence, out)
+			continue
+		}
+		attached = append(attached, out)
+	}
+	return attached, fileEvidence
+}
+
+func entryFileLine(file string, line int) string {
+	return file + "\x00" + strconv.Itoa(line)
+}
+
+func buildLanguageCounts(attached, fileEvidence []authz.LanguageAdapter, java authzCounts) []authzLanguageCount {
+	rows := map[string]*authzLanguageCount{}
+	for _, language := range authzLanguageOrder {
+		rows[language] = &authzLanguageCount{Language: language}
+	}
+	row := func(language string) *authzLanguageCount {
+		if existing, ok := rows[language]; ok {
+			return existing
+		}
+		created := &authzLanguageCount{Language: language}
+		rows[language] = created
+		return created
+	}
+	javaRow := row("java")
+	javaRow.Protected, javaRow.Public, javaRow.Unprotected, javaRow.Unknown = java.Protected, java.Public, java.Unprotected, java.Unknown
+	javaRow.Total = java.Protected + java.Public + java.Unprotected + java.Unknown
+	for _, adapter := range attached {
+		target := row(adapter.Language)
+		switch adapter.Decision {
+		case "protected":
+			target.Protected++
+		case "public":
+			target.Public++
+		case "unprotected":
+			target.Unprotected++
+		default:
+			target.Unknown++
+		}
+		target.Total++
+	}
+	for _, adapter := range fileEvidence {
+		row(adapter.Language).FileEvidence++
+	}
+	out := make([]authzLanguageCount, 0, len(rows))
+	for _, language := range authzLanguageOrder {
+		out = append(out, *rows[language])
+	}
+	extra := make([]string, 0, len(rows))
+	for language := range rows {
+		found := false
+		for _, ordered := range authzLanguageOrder {
+			if ordered == language {
+				found = true
+				break
+			}
+		}
+		if !found {
+			extra = append(extra, language)
+		}
+	}
+	sort.Strings(extra)
+	for _, language := range extra {
+		out = append(out, *rows[language])
+	}
+	return out
 }
 
 // rank orders the most actionable decisions first: an endpoint with no

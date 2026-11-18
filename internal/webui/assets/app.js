@@ -4362,7 +4362,7 @@
         </section>
       </div>
       <section class="card section-gap">
-        <div class="card-head"><h3><svg class="icon"><use href="#i-shield"/></svg>多语言控制适配</h3><span class="card-sub">PHP 请求脚本 / C# / Python / JS / Go · 文件级词法</span></div>
+        <div class="card-head"><h3><svg class="icon"><use href="#i-shield"/></svg>多语言控制适配</h3><span class="card-sub">入口级决策；未附着的文件级证据单列（应用入口不附着脚本鉴权）</span></div>
         <div class="card-body" id="authzLanguageAdapters"></div>
       </section>
       <section class="card section-gap">
@@ -4429,7 +4429,8 @@
       if (seq !== authz.seq) return;
       authz.total = data.total;
       authz.limitations = data.limitations || [];
-      $("#authzCount").textContent = `无控制 ${fmtNum(data.counts.unprotected)} · 未知 ${fmtNum(data.counts.unknown)} · 受保护 ${fmtNum(data.counts.protected)} · 公开 ${fmtNum(data.counts.public)}`;
+      const languageEntries = (data.language_counts || []).filter((row) => row.language !== "java").reduce((sum, row) => sum + (row.total || 0), 0);
+      $("#authzCount").textContent = `无控制 ${fmtNum(data.counts.unprotected)} · 未知 ${fmtNum(data.counts.unknown)} · 受保护 ${fmtNum(data.counts.protected)} · 公开 ${fmtNum(data.counts.public)} · 非 Java 入口 ${fmtNum(languageEntries)} · 文件级证据 ${fmtNum(data.file_evidence_total || 0)}`;
       if (!data.endpoints.length) {
         rows.innerHTML = `<tr><td colspan="5">${emptyState("i-lock", "没有匹配的入口", "调整决策筛选或检索条件。缺少已识别控制不代表可未授权访问。")}</td></tr>`;
       } else {
@@ -4442,7 +4443,7 @@
       $("#authzNext").disabled = data.offset + authz.limit >= data.total;
       renderAuthzChains(data.chains || []);
       renderAuthzControls(data.controls || []);
-      renderAuthzLanguageAdapters(data.language_adapters || []);
+      renderAuthzLanguageAdapters(data.language_adapters || [], data.file_evidence || [], data.language_counts || []);
       const limits = $("#authzLimits");
       if (limits) limits.innerHTML = limitationList(data.limitations);
     } catch (error) {
@@ -4471,22 +4472,22 @@
     host.innerHTML = `<ul class="limits">${controls.slice(0, 40).map((control) => `<li class="limit-row"><svg class="icon"><use href="#i-shield"/></svg><span><b>${esc(controlKindLabel(control.kind))}</b> <span class="limit-text">${esc((control.paths || []).join(" ") || requirementLabel(control.requirement))} · ${esc(control.file)}:${control.line}</span></span></li>`).join("")}</ul>`;
   }
 
-  function renderAuthzLanguageAdapters(adapters) {
+  function authzEntryKindLabel(kind) {
+    return { application_entry: "应用入口", request_script: "请求脚本", route_declaration: "路由声明" }[kind] || "文件级";
+  }
+
+  function renderAuthzLanguageAdapters(adapters, fileEvidence, counts) {
     const host = $("#authzLanguageAdapters");
     if (!host) return;
-    if (!adapters.length) {
-      host.innerHTML = emptyState("i-shield", "没有非 Java 控制证据", "快照中未发现可识别的 PHP / C# / Python / JS / Go 鉴权标记；这不等于这些语言没有访问控制。");
-      return;
-    }
-    const languages = Array.from(new Set(adapters.map((item) => item.language).filter(Boolean)));
-    host.innerHTML = `<div class="kv">${languages.map((language) => {
-      const items = adapters.filter((item) => item.language === language);
-      const protectedCount = items.filter((item) => item.decision === "protected").length;
-      const unprotectedCount = items.filter((item) => item.decision === "unprotected").length;
-      const unknownCount = items.filter((item) => item.decision === "unknown").length;
-      const publicCount = items.filter((item) => item.decision === "public").length;
-      return `<div class="kv-row"><span class="kv-key">${esc(language)}</span><span class="kv-val">受保护 ${fmtNum(protectedCount)} · 无控制 ${fmtNum(unprotectedCount)} · 未知 ${fmtNum(unknownCount)} · 公开 ${fmtNum(publicCount)} · 证据 ${fmtNum(items.length)}</span></div>`;
-    }).join("")}</div><ul class="limits section-gap">${adapters.slice(0, 60).map((item) => `<li class="limit-row"><svg class="icon"><use href="#i-${item.decision === "protected" ? "lock" : "alert"}"/></svg><span><b>${esc(item.framework || item.language)}</b> <span class="limit-text">${esc(item.scope === "request_script" ? "请求脚本" : "文件级")} · ${esc(item.decision)} · ${esc(item.control || "none")} · ${esc(item.file)}:${item.line}${item.control_line ? ` · 控制:${item.control_line}` : ""}</span></span></li>`).join("")}</ul>`;
+    const rows = Array.isArray(counts) ? counts : [];
+    const summary = rows.map((row) => `<div class="kv-row"><span class="kv-key">${esc(row.language)}</span><span class="kv-val">受保护 ${fmtNum(row.protected)} · 无控制 ${fmtNum(row.unprotected)} · 未知 ${fmtNum(row.unknown)} · 公开 ${fmtNum(row.public)} · 入口 ${fmtNum(row.total)}${row.file_evidence ? ` · 文件级 ${fmtNum(row.file_evidence)}` : ""}</span></div>`).join("");
+    const attachedList = adapters.length
+      ? `<ul class="limits section-gap">${adapters.slice(0, 60).map((item) => `<li class="limit-row"><svg class="icon"><use href="#i-${item.decision === "protected" ? "lock" : "alert"}"/></svg><span><b>${esc(item.language)} · ${esc(authzEntryKindLabel(item.entry_kind))}</b> <span class="limit-text">${esc(item.decision)} · ${esc(item.control || "none")} · ${esc(item.file)}:${item.line}${item.control_line ? ` · 控制:${item.control_line}` : ""}</span></span></li>`).join("")}</ul>`
+      : emptyState("i-shield", "没有入口级控制证据", "请求脚本、路由声明与应用入口均未发现可识别的鉴权标记；这不等于这些入口没有访问控制。");
+    const evidenceList = fileEvidence.length
+      ? `<div class="card-sub section-gap">文件级证据（未附着到入口） ${fmtNum(fileEvidence.length)} 条</div><ul class="limits">${fileEvidence.slice(0, 40).map((item) => `<li class="limit-row"><svg class="icon"><use href="#i-alert"/></svg><span><b>${esc(item.language)}</b> <span class="limit-text">${esc(item.decision)} · ${esc(item.control || "none")} · ${esc(item.file)}:${item.line}（未附着到入口，不计入入口统计）</span></span></li>`).join("")}</ul>`
+      : "";
+    host.innerHTML = `${summary ? `<div class="kv">${summary}</div>` : ""}${attachedList}${evidenceList}`;
   }
 
   // ── java semantic model ────────────────────────────────────────────────

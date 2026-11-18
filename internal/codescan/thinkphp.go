@@ -46,6 +46,7 @@ func expandThinkPHPDatabaseRoutes(ctx context.Context, snapshot *project.Snapsho
 	}
 	rows := loadURLConfigRows(ctx, snapshot)
 	if len(rows) == 0 {
+		annotateURLConfigAbsent(report)
 		return
 	}
 	if len(rows) > MaxDatabaseRoutes {
@@ -81,6 +82,18 @@ func applyURLConfigRows(report *Report, rows []urlConfigRow) {
 func isThinkPHPRule(symbol string) bool {
 	lower := strings.ToLower(symbol)
 	return strings.Contains(lower, "route") && strings.Contains(lower, "rule")
+}
+
+// annotateURLConfigAbsent distinguishes "the snapshot carries no urlconfig
+// rows" from "the path expression itself was not a literal". Both stay
+// unresolved; only the first is expandable once such rows are available.
+func annotateURLConfigAbsent(report *Report) {
+	for index := range report.Routes {
+		route := &report.Routes[index]
+		if route.PathStatus == "dynamic_unresolved" && isThinkPHPRule(route.Symbol) {
+			route.Reason = "database_urlconfig_absent"
+		}
+	}
 }
 
 func loadURLConfigRows(ctx context.Context, snapshot *project.Snapshot) []urlConfigRow {

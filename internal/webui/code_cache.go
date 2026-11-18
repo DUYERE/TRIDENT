@@ -10,7 +10,7 @@ import (
 	"trident/internal/codescan"
 )
 
-const codeCacheVersion = "p3.0"
+const codeCacheVersion = "p3.1"
 
 // codeCachePath returns the per-snapshot cache file. A snapshot-only console
 // has no workspace, so it keeps the previous in-memory behavior.

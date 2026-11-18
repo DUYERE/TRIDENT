@@ -17,6 +17,30 @@
 | R2 CycloneDX SBOM | 已实现并完成官方 Schema 验收；确定性 1.5 JSON、依赖声明/公告候选映射、本地观测制品 SHA-256；无传递树，依赖可达性不写入 SBOM | `sbom-contract.md`、`internal/sbom/`、`cmd/trident/sca.go` |
 | R3 隔离验证/补丁闭环 | 已实现调用者与 AI 生成补丁、remediation policy、隔离副本、离线 Maven（含有效依赖树）/maven-compile/maven-test/javac/JUnit、Docker/gVisor、质量评分、最多 5 轮修复、原快照复验；支持新文件/BOM/多文件补丁；真实 Java/Maven/JUnit、真实模型合成补丁、真实项目编译级补丁、集中式访问控制运行时单测与真实 Tomcat/MySQL HTTP 权限测试已完成；运行时 HTTP 验证执行器已实现（显式 origin、cookie session、有界断言）；硬件 VM 与生产验证未实现 | `patch-contract.md`、`runtime-contract.md`、`internal/r3/`、`internal/httpverify/`、`cmd/trident/patch.go`、`cmd/trident/runtime.go`、`docs/evidence/2026-11-14-market-access-control.patch` |
 
+## 2026-11-18（续二）：P7 收口与 C1/C2 核验
+
+### P7 统一展示面与入口 kind
+
+- `internal/authz/language.go`：PHP 路由判定删除 `public function ...` 分支，只保留 `Route::`/`route(`/`->rule(`/`$this->fetch`；`app/admin/model/*` 的普通方法不再被当成路由。
+- `internal/authz.LanguageAdapter` 新增 `entry_kind`：`application_entry | request_script | route_declaration`。
+- `internal/webui`：`/api/authz` 复用统一入口构建器，把适配器拆成入口级 `language_adapters[]` 与 `file_evidence[]`（未附着到入口，另给 `file_evidence_total`）；新增 `language_counts[]`，固定 7 语言四态 + `file_evidence`，Java 行复用顶层 `counts`，非 Java 行只统计入口级适配器。
+- `internal/webui/assets/app.js`：权限页统计条增加“非 Java 入口 / 文件级证据”；卡片按语言显示四态与入口数；文件级证据单列并标注“未附着到入口，不计入入口统计”。
+- 回归：先写失败测试 `TestPHPRoutePatternSkipsPlainClassMethods`（普通模型方法曾被当作路由）与 `TestAuthzViewAttachesLanguageAdaptersToEntries`（适配器缺 `entry_kind`），确认失败原因后实现；`internal/authz`、`internal/webui` 两包全绿，`node --check` 0。
+
+### C1/C2 核验（计划口径已过期）
+
+- C1 实际已在 11-17 落地：`codescan` 输出 `variables`/`string_constants`（`kind=variable|constant`），`Call` 带 `resolved_file`/`resolved_symbol`，唯一跨文件匹配为 `same_project`、同名冲突为 `ambiguous_symbol`（`symbols_test.go` 覆盖）；`/api/code-audit` 与 `#/code` 已消费。
+- C2 实际已在 11-17 落地：`thinkphp.go` 从快照内 `urlconfig` 的 SQL/JSON 行展开动态路由（`source=database`、`path_status=declared`），默认控制器生成 `convention_candidate`；本次补 `reason=database_urlconfig_absent`，区分“快照无 urlconfig 行”与“路径表达式非字面量”。
+- 真实 `www.test.com`（控制台实测）：`/api/code-audit` 覆盖 694 文件，`calls_resolved=442/4000`，变量 10000、字符串 5000（均触上限并标 partial）；路由 82 条 = 81 条 `convention_candidate` + 1 条 `dynamic_unresolved`（`app/route.php:17`，快照内无 urlconfig 数据）。
+- 边界：SQLite 格式未支持（需新增驱动，当前只解析快照内 `.sql`/`.json`）；真实路由表在 MySQL 运行时库中，快照不含时保持 `dynamic_unresolved`，不连库、不猜 URL。
+
+### 验证
+
+- `go test ./... -count=1` 30 包全绿，`go vet ./...` 与 `node --check internal/webui/assets/app.js` 退出 0；两个 P7 测试均先确认失败原因再实现。
+- 以 `trident-p7b.exe` 重启 `127.0.0.1:8791`（PID 45564），`/healthz` 200；`/api/endpoints` 仍为 4 条统一入口（2 `application_entry`、1 `request_script`、1 `route_declaration`）。
+- 真实 `www.test.com` `/api/authz`：入口级适配器从 31 条降到 2 条（`app/route.php:1` `route_declaration`、`public/ipapi.php:263` `request_script`，均 `unprotected`）；19 条控制器/模型级观测进入 `file_evidence`，`model` 文件在 `language_adapters` 中为 0；`language_counts` 仅 php 有值（入口 2、文件级 19），Java 行沿用顶层 `counts=0`。
+- `/api/code-audit`（缓存版本 `p3.1`）：694 文件、`calls_resolved=442/4000`、变量 10000/字符串 5000、路由 82 条（81 `convention_candidate` + 1 `dynamic_unresolved`）；`app/route.php:17` 的 `reason` 为 `database_urlconfig_absent`。
+
 ## 2026-11-18：PHP 请求脚本端点级鉴权证据（续 P1.5）
 
 ### 修改
@@ -79,7 +103,7 @@
 - `internal/codescan` 输出 `symbols/calls/unresolved`，上限 2000/4000/2000；`/api/code-audit`、`/api/model`、`#/code`、`#/model` 消费。
 - 第二批：`/api/symbols`（language/kind/q/limit/offset）；`#/code` 支持筛选、分页与源码行跳转；`FileSummary.scope=project|vendor|generated` 与 `rejected_scopes`。
 - 实测 `www.test.com`：符号 2000、class 145、`Layuipaginate` 搜索 15 条、分页 1–50/2000→51–100、`rejected_scopes=vendor:12`、跳转 `app/Layuipaginate.php:L8`。
-- 未完成：变量/常量索引、跨文件/类型解析、调用图（计划 C1）。
+- 未完成：变量/常量索引、跨文件/类型解析、调用图（计划 C1）；其中变量/常量索引与唯一跨文件调用解析已于同日 P3 批次补齐，类型解析与完整调用图仍未实现。
 
 ### P3–P6 有界适配器
 
@@ -114,7 +138,7 @@
 
 ### 边界
 
-- 本次只做基线入库与运行面复验，未新增分析能力；P3–P7 计划中 C1（变量/跨文件调用）、C2（ThinkPHP 动态路由展开）仍未实现。
+- 本次只做基线入库与运行面复验，未新增分析能力；C1（变量/常量索引、唯一跨文件调用解析）与 C2（ThinkPHP 快照内 urlconfig 展开）已在 11-17 落地，核验见上方「续二」。
 
 ## 2026-11-16：删除 48 KiB 检查点硬上限（续九）
 
